@@ -5,7 +5,7 @@ GitHub Issues is where Wooble tracks bugs, product proposals, and planned work. 
 ## What to include
 
 - **Clear title:** describe the observed problem or desired outcome, not a proposed code change alone.
-- **What to solve:** who is affected, which workspace or canvas role is involved, what happens today, and why it matters.
+- **What happened:** who is affected, which workspace or canvas role is involved, what happens today, and why it matters.
 - **How:** for a bug, give steps to reproduce and expected behavior. For a proposal or task, describe the desired user journey or a suggested approach; you do not need to know the exact implementation.
 - **Evidence:** include browser/Bun version when relevant, and a screenshot or a small fictional example.
 - **Scope:** identify the affected page, API route, contract, or deployment path if you know it. It is fine to say you are unsure.

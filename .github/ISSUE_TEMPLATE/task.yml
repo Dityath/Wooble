@@ -6,8 +6,8 @@ body:
   - type: textarea
     id: goal
     attributes:
-      label: What to solve
-      description: Explain the outcome and why it matters.
+      label: What happened
+      description: Describe the current gap or evidence, and explain why it matters.
     validations:
       required: true
   - type: textarea
