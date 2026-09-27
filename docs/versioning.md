@@ -8,6 +8,8 @@ The recommended first public release is **`v0.1.0`**, labeled as a preview. The 
 
 Do not tag a release until the public repository exists, CI passes there, installation from a fresh clone is checked, and release notes describe known limits. Subsequent pre-1.0 releases can use `v0.2.0`, `v0.3.0`, and so on for meaningful feature sets; use a patch version for fixes to a released line. Record database and configuration changes in each release note.
 
+For each release, review the generated notes grouped by [`.github/release.yml`](../.github/release.yml), then use the [release description template](../.github/RELEASE_TEMPLATE.md) to add user-facing highlights, upgrade instructions, validation, and limitations. Generated categories depend on labels on the merged **pull requests**, so maintainers should label those PRs before creating the release. The Markdown template is copied into the release description manually; GitHub does not automatically insert that file.
+
 ## What `v1.0.0` should mean
 
 `v1.0.0` is the first release for which Wooble commits to a documented, dependable core experience and upgrade path. The proposed release criteria are:

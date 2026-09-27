@@ -4,12 +4,12 @@ Thanks for helping improve Wooble. The project welcomes code, documentation, des
 
 ## Contribution flow
 
-1. **Report or discuss an issue.** Describe the problem, expected behavior, and evidence. For a feature, explain the user journey and how it fits the semantic architecture model.
+1. **Report or discuss an issue.** Follow the [issue reporting guide](docs/reporting-issues.md) and choose the matching GitHub form. Describe the problem, expected behavior, and evidence. For a feature, explain the user journey and how it fits the semantic architecture model.
 2. **Wait for scope acceptance on substantial work.** A maintainer will confirm that the issue is ready. Comment to claim it so others know you are working on it. Small typo and documentation fixes may go straight to a PR.
 3. **Fork the repository** and create a focused branch.
 4. **Make the change.** Keep data contracts, API routes, and web consumers aligned. Add or update meaningful tests for behavior you changed.
 5. **Review your own diff.** Check the change manually. For AI-assisted work, two separate agents are strongly recommended: one to implement and another to independently review the diff. Resolve the review findings yourself. For UI changes, include screenshots or a short recording and verify the interaction in a browser.
-6. **Open a pull request** linked to the issue. Explain what changed, why, how you tested it, and any limitations or migration steps. If AI was used, describe its role and whether a separate review agent examined the final diff.
+6. **Open a pull request** linked to the issue and fill in the [PR template](.github/PULL_REQUEST_TEMPLATE.md). Explain what problem it solves, how the change solves it, how you tested and reviewed it, and any limitations or migration steps.
 7. **Respond to review.** The maintainer decides when the PR is ready to merge.
 
 ## Local checks

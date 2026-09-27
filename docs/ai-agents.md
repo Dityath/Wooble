@@ -10,7 +10,7 @@ Every agent working in this repository must follow [AGENTS.md](../AGENTS.md), th
 2. **Implementation agent.** Make a focused change. Keep domain types, contracts, database schema, API routes, and web consumers consistent. Update docs and meaningful tests where behavior changes. Record the commands and manual checks actually performed.
 3. **Review agent.** Use a separate agent or fresh context. Give it the issue, guardrails, and final diff. Ask it to look for behavioral regressions, security and access gaps, data or migration risks, incomplete tests, documentation errors, and unrelated changes. It should report findings with file and line references and distinguish verified defects from questions.
 4. **Resolve and verify.** The contributor evaluates each finding, fixes real problems, and reruns relevant checks. If the diff changes materially, have the reviewer inspect the final version again.
-5. **Open the PR.** State what the agents did, whether an independent agent reviewed the final diff, which checks ran, and what remains unverified. The maintainer reviews and decides whether to merge.
+5. **Open the PR.** Explain the problem, change, review findings, checks that ran, and what remains unverified. The PR template asks for review evidence without requiring anyone to use or report an agent. The maintainer reviews and decides whether to merge.
 
 Two agents may run sequentially; they do not need to edit concurrently. Prefer a reviewer that did not author the change and has no reason to defend its implementation. An AI review supplements your own diff review and the maintainer's review.
 
@@ -27,4 +27,4 @@ Two agents may run sequentially; they do not need to edit concurrently. Prefer a
 
 ## Practical limits
 
-Do not paste secrets or private customer data into an agent prompt. Do not let an agent run destructive database commands, publish a branch, rewrite shared Git history, or deploy without the contributor's authorization. If two agents are unavailable, disclose that in the PR and perform a careful manual review; a second agent is strongly recommended, not a CI gate.
+Do not paste secrets or private customer data into an agent prompt. Do not let an agent run destructive database commands, publish a branch, rewrite shared Git history, or deploy without the contributor's authorization. If two agents are unavailable, perform a careful manual review; a second agent is strongly recommended, not a CI gate.
