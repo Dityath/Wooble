@@ -9,7 +9,51 @@ permissions:
   contents: read
 
 jobs:
-  checks:
+  code-quality:
+    name: Code quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install dependencies
+        id: install
+        run: bun install --frozen-lockfile
+      - name: Lint
+        id: lint
+        run: bun run lint
+      - name: Check formatting
+        id: format
+        run: bun run format:check
+      - name: Typecheck
+        id: typecheck
+        run: bun run typecheck
+      - name: Build
+        id: build
+        run: bun run build
+      - name: Summarize code quality
+        if: ${{ always() }}
+        env:
+          INSTALL_RESULT: ${{ steps.install.outcome }}
+          LINT_RESULT: ${{ steps.lint.outcome }}
+          FORMAT_RESULT: ${{ steps.format.outcome }}
+          TYPECHECK_RESULT: ${{ steps.typecheck.outcome }}
+          BUILD_RESULT: ${{ steps.build.outcome }}
+        run: |
+          bash .github/scripts/report-ci.sh "Code quality" \
+            "Install dependencies=$INSTALL_RESULT" \
+            "Lint=$LINT_RESULT" \
+            "Formatting=$FORMAT_RESULT" \
+            "Typecheck=$TYPECHECK_RESULT" \
+            "Build=$BUILD_RESULT"
+
+  tests:
+    name: Tests
+    needs: code-quality
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -35,11 +79,28 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
-      - run: bun install --frozen-lockfile
-      - run: bun run lint
-      - run: bun run format:check
-      - run: bun run typecheck
-      - run: bun run build
-      - run: bun test apps/web/tests
-      - run: bun run db:migrate
-      - run: bun test apps/api/tests
+      - name: Install dependencies
+        id: install
+        run: bun install --frozen-lockfile
+      - name: Web tests
+        id: web
+        run: bun test apps/web/tests
+      - name: Apply database migrations
+        id: migrate
+        run: bun run db:migrate
+      - name: API tests
+        id: api
+        run: bun test apps/api/tests
+      - name: Summarize tests
+        if: ${{ always() }}
+        env:
+          INSTALL_RESULT: ${{ steps.install.outcome }}
+          WEB_RESULT: ${{ steps.web.outcome }}
+          MIGRATE_RESULT: ${{ steps.migrate.outcome }}
+          API_RESULT: ${{ steps.api.outcome }}
+        run: |
+          bash .github/scripts/report-ci.sh "Tests" \
+            "Install dependencies=$INSTALL_RESULT" \
+            "Web tests=$WEB_RESULT" \
+            "Database migrations=$MIGRATE_RESULT" \
+            "API tests=$API_RESULT"
