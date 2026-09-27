@@ -1,0 +1,31 @@
+name: Task
+description: Propose tests, documentation, maintenance, or other scoped work.
+title: "[Task] "
+labels: [task, status:needs-triage]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal and reason
+      description: Explain the outcome and why it matters.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Suggested scope
+      description: Mention affected modules or journeys if known.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: List verifiable acceptance criteria.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Current evidence
+      description: Links, measurements, or reproduction steps; avoid private data.

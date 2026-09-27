@@ -4,7 +4,7 @@ Thanks for helping improve Wooble. The project welcomes code, documentation, des
 
 ## Contribution flow
 
-1. **Report or discuss an issue.** Describe the problem, expected behavior, and evidence. For a feature, explain the user journey and how it fits the semantic architecture model.
+1. **Report or discuss an issue.** Follow the [issue reporting guide](docs/reporting-issues.md) and choose the matching GitHub form. Describe the problem, expected behavior, and evidence. For a feature, explain the user journey and how it fits the semantic architecture model.
 2. **Wait for scope acceptance on substantial work.** A maintainer will confirm that the issue is ready. Comment to claim it so others know you are working on it. Small typo and documentation fixes may go straight to a PR.
 3. **Fork the repository** and create a focused branch.
 4. **Make the change.** Keep data contracts, API routes, and web consumers aligned. Add or update meaningful tests for behavior you changed.

@@ -52,7 +52,7 @@ The database defaults are suitable for local Docker development. To customize th
 
 For a private self-hosted installation with Docker or Bun, follow [the self-hosting guide](docs/self-hosting.md). The setup above is for local development.
 
-To contribute, follow [CONTRIBUTING.md](CONTRIBUTING.md). AI-assisted contributors should read the [AI agent guide](docs/ai-agents.md) and [repository guardrails](AGENTS.md). Pull requests run two sequential GitHub Actions jobs: code quality (lint, formatting, typecheck, build), then web and API tests. Each job publishes a result table in the workflow summary.
+To contribute, follow [CONTRIBUTING.md](CONTRIBUTING.md) and the [issue reporting guide](docs/reporting-issues.md). AI-assisted contributors should read the [AI agent guide](docs/ai-agents.md) and [repository guardrails](AGENTS.md). Pull requests run two sequential GitHub Actions jobs: code quality (lint, formatting, typecheck, build), then web and API tests. Each job publishes a result table in the workflow summary.
 
 | Command | Purpose |
 | --- | --- |
