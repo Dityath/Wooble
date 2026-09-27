@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: architecture
+      POSTGRES_PASSWORD: architecture
+      POSTGRES_DB: architecture_canvas
+    ports:
+      - "${WOOBLE_DB_PORT:-5432}:5432"
+    volumes:
+      - architecture-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U architecture -d architecture_canvas"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  architecture-postgres:

@@ -1,0 +1,67 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: wooble
+      POSTGRES_PASSWORD: ${WOOBLE_DB_PASSWORD:?Set WOOBLE_DB_PASSWORD in .env.selfhost}
+      POSTGRES_DB: wooble
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wooble -d wooble"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  migrate:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: api
+    environment:
+      DATABASE_URL: postgres://wooble:${WOOBLE_DB_PASSWORD}@postgres:5432/wooble
+    command: ["bun", "run", "--cwd", "packages/db", "migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: api
+    restart: unless-stopped
+    environment:
+      API_PORT: 3001
+      DATABASE_URL: postgres://wooble:${WOOBLE_DB_PASSWORD}@postgres:5432/wooble
+      NODE_ENV: production
+      TRUST_PROXY: "true"
+      WEB_ORIGIN: ${WOOBLE_ORIGIN:-http://localhost:8080}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - -e
+        - "fetch('http://127.0.0.1:3001/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${WOOBLE_HTTP_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres-data:

@@ -1,0 +1,28 @@
+{
+  "name": "wooble-architecture-canvas",
+  "private": true,
+  "license": "Unlicense",
+  "type": "module",
+  "packageManager": "bun@1.3.14",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "bun --env-file=.env ./node_modules/.bin/turbo dev",
+    "build": "turbo build",
+    "typecheck": "turbo typecheck",
+    "lint": "biome lint .",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "db:migrate": "bun run --cwd packages/db migrate",
+    "db:seed": "bun run --cwd packages/db seed"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.14",
+    "@types/node": "^22.15.30",
+    "tsx": "^4.19.4",
+    "turbo": "^2.5.4",
+    "typescript": "^5.8.3"
+  }
+}

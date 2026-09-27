@@ -1,0 +1,59 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.14/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "ignoreUnknown": false
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 120
+  },
+  "linter": {
+    "enabled": true,
+    "includes": ["**/*.{js,jsx,ts,tsx}"],
+    "rules": {
+      "preset": "recommended"
+    }
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double"
+    }
+  },
+  "css": {
+    "formatter": { "enabled": false }
+  },
+  "overrides": [
+    {
+      "includes": ["apps/web/src/**/*.tsx"],
+      "linter": {
+        "rules": {
+          "style": {
+            "useComponentExportOnlyModules": {
+              "level": "warn",
+              "options": {
+                "allowConstantExport": true,
+                "allowExportNames": [
+                  "Dialog",
+                  "DialogTrigger",
+                  "DialogClose",
+                  "Tabs",
+                  "TooltipProvider",
+                  "Tooltip",
+                  "TooltipTrigger"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "assist": { "enabled": false }
+}

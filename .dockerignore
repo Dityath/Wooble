@@ -1,0 +1,10 @@
+.git
+.env*
+node_modules
+**/node_modules
+**/dist
+.turbo
+coverage
+*.tsbuildinfo
+*.bak*
+.DS_Store

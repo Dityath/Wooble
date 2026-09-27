@@ -1,0 +1,25 @@
+{
+  "name": "@wooble/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@wooble/domain": "workspace:*",
+    "drizzle-orm": "^0.44.2",
+    "pg": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.4",
+    "drizzle-kit": "^0.31.1"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome lint src",
+    "migrate": "drizzle-kit migrate --config drizzle.config.ts",
+    "seed": "tsx src/seed.ts"
+  }
+}

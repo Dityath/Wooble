@@ -1,0 +1,1 @@
+ALTER TABLE "canvas_events" ADD COLUMN "undone_at" timestamp with time zone;

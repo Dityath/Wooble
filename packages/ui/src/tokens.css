@@ -1,0 +1,35 @@
+:root {
+  color-scheme: light;
+
+  /* Wooble Brand & Design System v0.1: quiet surfaces and a restrained moss accent. */
+  --wooble-surface: #faf7ef;
+  --wooble-panel: #fffdf8;
+  --wooble-canvas: #f2f0e9;
+  --wooble-inset: #f1eee6;
+  --wooble-neutral: #ddd6c8;
+  --wooble-border-soft: rgb(73 65 52 / 11%);
+  --wooble-primary: #6b7f6e;
+  --wooble-primary-strong: #435e49;
+  --wooble-accent: #c9a892;
+  --wooble-mist: #e8e8e8;
+  --wooble-ink: #1f1f1f;
+  --wooble-ink-soft: #4e544f;
+  --wooble-muted: #696e69;
+
+  --background: 45 43% 96%;
+  --foreground: 0 0% 12%;
+  --surface: 45 43% 96%;
+  --muted: 40 21% 83%;
+  --muted-foreground: 130 3% 42%;
+  --border: 40 21% 83%;
+  --accent: 25 35% 69%;
+  --primary: 130 8% 46%;
+
+  --font-display: "General Sans", "Avenir Next", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --radius-control: 0.65rem;
+  --radius-surface: 1rem;
+  --shadow-surface: 0 1px 3px rgb(31 31 31 / 4%), 0 12px 32px rgb(31 31 31 / 6%);
+}

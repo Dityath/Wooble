@@ -1,0 +1,18 @@
+{
+  "name": "@wooble/ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./tokens.css": "./src/tokens.css"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome lint src"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}
