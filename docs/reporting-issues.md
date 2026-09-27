@@ -5,8 +5,9 @@ GitHub Issues is where Wooble tracks bugs, product proposals, and planned work. 
 ## What to include
 
 - **Clear title:** describe the observed problem or desired outcome, not a proposed code change alone.
-- **Context and impact:** who is affected, which workspace or canvas role is involved, and why it matters.
-- **Evidence:** for a bug, give steps to reproduce, actual and expected behavior, browser/Bun version when relevant, and a screenshot or a small fictional example. For a proposal, describe the user journey and acceptance criteria.
+- **What to solve:** who is affected, which workspace or canvas role is involved, what happens today, and why it matters.
+- **How:** for a bug, give steps to reproduce and expected behavior. For a proposal or task, describe the desired user journey or a suggested approach; you do not need to know the exact implementation.
+- **Evidence:** include browser/Bun version when relevant, and a screenshot or a small fictional example.
 - **Scope:** identify the affected page, API route, contract, or deployment path if you know it. It is fine to say you are unsure.
 
 Do not post credentials, private URLs, real customer data, or security exploit details in a public issue. Replace identifiers and data with fictional examples. To report a vulnerability, open [Security advisories](https://github.com/Dityath/Wooble/security/advisories) and choose **Report a vulnerability**; private vulnerability reporting is enabled for this repository.

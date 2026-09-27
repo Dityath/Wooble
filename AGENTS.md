@@ -18,4 +18,4 @@
 # AI-assisted contributions
 
 - For substantial AI-assisted changes, strongly prefer two separate agents: an implementation agent and an independent review agent. The reviewer examines the final diff, tests, security and access implications, and documentation; the implementer resolves findings before the PR. A human contributor remains responsible for the submitted change.
-- Both agents follow these guardrails. See `docs/ai-agents.md` for the workflow and PR disclosure.
+- Both agents follow these guardrails. See `docs/ai-agents.md` for the suggested workflow.

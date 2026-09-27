@@ -6,15 +6,15 @@ body:
   - type: textarea
     id: goal
     attributes:
-      label: Goal and reason
+      label: What to solve
       description: Explain the outcome and why it matters.
     validations:
       required: true
   - type: textarea
     id: scope
     attributes:
-      label: Suggested scope
-      description: Mention affected modules or journeys if known.
+      label: How to approach it
+      description: Suggest steps or affected modules. If the approach is uncertain, say what needs investigation; the maintainer and contributor can refine it.
     validations:
       required: true
   - type: textarea
