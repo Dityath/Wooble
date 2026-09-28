@@ -520,6 +520,13 @@ code, kbd, .sidebar-shortcut > span:first-child, .flow-watermark, .architecture-
 .flow-surface.tool-hand .react-flow__pane { cursor: grab; }
 .flow-surface.tool-hand .react-flow__pane:active { cursor: grabbing; }
 .flow-surface.tool-node .react-flow__pane, .flow-surface.tool-system .react-flow__pane { cursor: crosshair; }
+.flow-surface.tool-select .react-flow__node { cursor: pointer; }
+.flow-surface.tool-node .react-flow__node-system, .flow-surface.tool-system .react-flow__node-system { cursor: crosshair; }
+.flow-surface.tool-node .react-flow__node:not(.react-flow__node-system), .flow-surface.tool-system .react-flow__node:not(.react-flow__node-system) { cursor: pointer; }
+.flow-surface.tool-connector .react-flow__node { cursor: crosshair; }
+.flow-surface.tool-connector .architecture-edge-hitbox { cursor: default; }
+.flow-surface.tool-edit-connector .react-flow__node { cursor: default; }
+.flow-surface.is-viewer .react-flow__node { cursor: pointer; }
 .flow-surface.tool-hand .react-flow__edgelabel-renderer { pointer-events: none; }
 .flow-surface.tool-hand .architecture-edge-label { pointer-events: none; }
 .flow-surface.tool-hand .architecture-edge-hitbox { pointer-events: none; }
@@ -539,6 +546,7 @@ code, kbd, .sidebar-shortcut > span:first-child, .flow-watermark, .architecture-
 .canvas-toolbox > button { display: grid; width: 36px; height: 36px; place-items: center; border: 0; border-radius: 8px; color: var(--wooble-muted); background: transparent; cursor: pointer; }
 .canvas-toolbox > button:hover, .canvas-toolbox > button[aria-pressed="true"] { color: var(--wooble-primary); background: color-mix(in srgb, var(--wooble-primary) 14%, white); }
 .canvas-toolbox > button:disabled { opacity: .55; cursor: wait; }
+.toolbox-shortcut { margin-left: 7px; padding: 0 5px; border: 1px solid color-mix(in srgb, currentColor 32%, transparent); border-radius: 4px; font: 500 10px/1.6 var(--font-body); opacity: .85; }
 .auto-neat-spinner { animation: auto-neat-spin 1s linear infinite; }
 @keyframes auto-neat-spin { to { transform: rotate(360deg); } }
 .canvas-auto-neat-status { position: absolute; z-index: 8; bottom: 78px; left: 50%; display: flex; align-items: center; gap: 7px; max-width: min(420px, calc(100% - 24px)); padding: 8px 12px; border: 1px solid var(--wooble-neutral); border-radius: 9px; color: var(--wooble-primary); background: #fffdf8; box-shadow: 0 5px 18px rgb(31 31 31 / 9%); font-size: 12px; text-align: center; transform: translateX(-50%); }

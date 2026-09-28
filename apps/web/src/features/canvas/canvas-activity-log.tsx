@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import type { CanvasEvent } from "@wooble/contracts";
 import { api } from "../../lib/api";
+import { canvasShortcutLabel } from "./canvas-shortcuts";
 import { seededParticipantColor } from "./participant-color";
 
 const actionPresentation: Partial<Record<CanvasEvent["action"], { icon: typeof Plus; text: string }>> = {
@@ -89,6 +90,7 @@ export function CanvasActivityLog({
             <X size={14} />
           </button>
         </div>
+        <p className="canvas-activity-hint">{canvasShortcutLabel("undo")} undoes the last change</p>
         <div className="canvas-activity-list">
           {activity.isPending ? (
             <span className="canvas-activity-empty">Loading activity…</span>

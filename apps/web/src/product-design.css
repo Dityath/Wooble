@@ -272,6 +272,7 @@ p { text-wrap: pretty; }
 .canvas-activity-log.is-open { visibility: visible; transform: translateX(0); }
 .canvas-activity-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 5px; }
 .canvas-activity-title { color: var(--wooble-muted); font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+.canvas-activity-hint { margin: 0; padding: 0 5px; color: var(--wooble-muted); font-size: 10px; }
 .canvas-activity-close { display: grid; width: 22px; height: 22px; place-items: center; border: 0; border-radius: 6px; color: var(--wooble-muted); background: transparent; cursor: pointer; }
 .canvas-activity-close:hover { color: var(--wooble-ink); background: var(--wooble-inset); }
 .canvas-activity-list { display: grid; flex: 1; align-content: start; gap: 2px; overflow-y: auto; }
