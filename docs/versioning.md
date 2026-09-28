@@ -4,9 +4,11 @@ Wooble versions the self-hosted application as a whole using [Semantic Versionin
 
 ## First public release
 
-The recommended first public release is **`v0.1.0`**, labeled as a preview. The repository is usable for local and trusted-group self-hosting, but product workflows and the public installation story are still developing. A `0.y.z` version communicates that compatibility may change during initial development.
+The first public release is **[`v0.1.0`](https://github.com/Dityath/Wooble/releases/tag/v0.1.0)**, labeled as a preview. The repository is usable for local and trusted-group self-hosting, but product workflows and the public installation story are still developing. A `0.y.z` version communicates that compatibility may change during initial development.
 
-Do not tag a release until the public repository exists, CI passes there, installation from a fresh clone is checked, and release notes describe known limits. Subsequent pre-1.0 releases can use `v0.2.0`, `v0.3.0`, and so on for meaningful feature sets; use a patch version for fixes to a released line. Record database and configuration changes in each release note.
+Tag subsequent releases only after CI passes, installation from a fresh clone is checked, and release notes describe known limits. Subsequent pre-1.0 releases can use `v0.2.0`, `v0.3.0`, and so on for meaningful feature sets; use a patch version for fixes to a released line. Record database and configuration changes in each release note.
+
+The initial `v0.2.0`–`v0.6.0` target dates and criteria of done are tracked in the [product roadmap](roadmap.md). Targets may move with contributor capacity; a version is tagged only when its release criteria are met.
 
 For each release, review the generated notes grouped by [`.github/release.yml`](../.github/release.yml), then use the [release description template](../.github/RELEASE_TEMPLATE.md) to add user-facing highlights, upgrade instructions, validation, and limitations. Generated categories depend on labels on the merged **pull requests**, so maintainers should label those PRs before creating the release. The Markdown template is copied into the release description manually; GitHub does not automatically insert that file.
 
