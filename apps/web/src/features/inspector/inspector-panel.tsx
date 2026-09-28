@@ -105,6 +105,7 @@ export function InspectorPanel({
   graph,
   canvasId,
   onOpenDetails,
+  deleteRequest,
   mode = "overview",
   detailSection = "overview",
   onSelectDetailSection,
@@ -112,6 +113,8 @@ export function InspectorPanel({
   graph: CanvasGraph;
   canvasId: string;
   onOpenDetails?: (section: DetailSection) => void;
+  /** A serial-stamped request to open the delete confirmation, e.g. from Backspace/Delete. */
+  deleteRequest?: { serial: number } | null;
   mode?: "overview" | "details";
   detailSection?: DetailSection;
   onSelectDetailSection?: (section: DetailSection) => void;
@@ -132,6 +135,16 @@ export function InspectorPanel({
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const queryClient = useQueryClient();
+  // Seeded with the incoming request so a stale serial left by a previous
+  // selection cannot reopen the dialog when this panel remounts; only requests
+  // newer than the mount open it.
+  const openedDeleteRequest = useRef(deleteRequest);
+  useEffect(() => {
+    if (deleteRequest && deleteRequest !== openedDeleteRequest.current) {
+      openedDeleteRequest.current = deleteRequest;
+      setDeleteOpen(true);
+    }
+  }, [deleteRequest]);
   const removedNodeCount = entity ? canvasSubtreeIds(graph.placements, entity.id).length : 0;
   const deleteSelected = async () => {
     if (!entity && !connection) return;

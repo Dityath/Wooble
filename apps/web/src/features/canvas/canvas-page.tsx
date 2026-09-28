@@ -57,6 +57,7 @@ import { nodeTypes } from "./node-types";
 import type { ArchitectureFlowNode } from "./architecture-nodes";
 import { buildAutoNeatLayout } from "./auto-neat";
 import { CanvasActivityLog } from "./canvas-activity-log";
+import { canvasShortcutLabel, resolveCanvasKeyDown, type CanvasTool } from "./canvas-shortcuts";
 import { participantColor } from "./participant-color";
 import { SystemResizeContext } from "./system-resize-context";
 import {
@@ -287,7 +288,7 @@ function CanvasViewer({
     <div className="canvas-editor">
       <div className="canvas-workspace">
         <div
-          className="flow-surface"
+          className="flow-surface is-viewer"
           onPointerMove={(event) => {
             const point = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
             live.sendCursor(point.x, point.y);
@@ -309,6 +310,8 @@ function CanvasViewer({
             panOnScroll
             zoomOnScroll
             proOptions={{ hideAttribution: true }}
+            // Viewers never delete; keyboard deletion stays editor-only via the confirmed dialog path.
+            deleteKeyCode={null}
           >
             <Background variant={BackgroundVariant.Lines} gap={24} size={1} color="var(--canvas-grid)" />
             <MiniMap
@@ -383,7 +386,7 @@ function CanvasEditor({
   live: ReturnType<typeof useCanvasLive>;
   focusRequest: { id: string; serial: number } | null;
 }) {
-  const [tool, setTool] = useState<"select" | "hand" | "node" | "connector" | "system" | "edit-connector">("select");
+  const [tool, setTool] = useState<CanvasTool>("select");
   const [connectionSource, setConnectionSource] = useState<string | null>(null);
   const [creationError, setCreationError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -391,6 +394,7 @@ function CanvasEditor({
   const [autoNeatError, setAutoNeatError] = useState<string | null>(null);
   const [undoError, setUndoError] = useState<string | null>(null);
   const [undoNotice, setUndoNotice] = useState<string | null>(null);
+  const [deleteRequest, setDeleteRequest] = useState<{ serial: number } | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailSection, setDetailSection] = useState<"overview" | "documentation" | "schema" | "contract">("overview");
   const [activityOpen, setActivityOpen] = useState(false);
@@ -708,43 +712,36 @@ function CanvasEditor({
     })();
   }, [autoNeatBusy, canvasId, clearPositions, creating, queryClient]);
   useEffect(() => {
-    const shortcuts: Record<string, typeof tool> = {
-      s: "select",
-      h: "hand",
-      n: "node",
-      c: "connector",
-      b: "system",
-      e: "edit-connector",
-    };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.repeat) return;
       const target = event.target;
-      if (
-        detailsOpen ||
-        (target instanceof Element &&
-          target.closest("[role='dialog'], input, textarea, select, [contenteditable='true']"))
-      )
+      const inInteractiveTarget = Boolean(
+        target instanceof Element &&
+          target.closest("[role='dialog'], input, textarea, select, [contenteditable='true']"),
+      );
+      const action = resolveCanvasKeyDown(event, {
+        busy: autoNeatBusy || creating,
+        detailsOpen,
+        selection: selectedEntityId ? "entity" : selectedConnectionId ? "connection" : null,
+        inInteractiveTarget,
+        onConnectorBendHandle: Boolean(target instanceof Element && target.closest(".connector-bend-handle")),
+      });
+      if (action.kind === "none") return;
+      event.preventDefault();
+      if (action.kind === "tool") {
+        if (action.tool === "hand") clearSelection();
+        setTool(action.tool);
+        setConnectionSource(null);
         return;
-      const key = event.key.toLowerCase();
-      if (key === "z") {
-        event.preventDefault();
-        if (event.shiftKey) return;
-        if (autoNeatBusy || creating) return;
+      }
+      if (action.kind === "undo") {
         runUndo();
         return;
       }
-      if (event.shiftKey) return;
-      const nextTool = shortcuts[key];
-      if (!nextTool) return;
-      event.preventDefault();
-      if (autoNeatBusy || creating) return;
-      if (nextTool === "hand") clearSelection();
-      setTool(nextTool);
-      setConnectionSource(null);
+      if (action.kind === "request-delete") setDeleteRequest({ serial: Date.now() });
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [autoNeatBusy, clearSelection, creating, detailsOpen, runUndo]);
+  }, [autoNeatBusy, clearSelection, creating, detailsOpen, runUndo, selectedConnectionId, selectedEntityId]);
 
   const saveBend = useCallback(
     (connectionId: string, bend: ConnectionPath) => {
@@ -890,6 +887,8 @@ function CanvasEditor({
                 selectionOnDrag={false}
                 proOptions={{ hideAttribution: true }}
                 defaultEdgeOptions={{ deletable: false }}
+                // Keyboard deletion goes through the confirmed canvas API dialog, not React Flow's local removal.
+                deleteKeyCode={null}
               >
                 <Background variant={BackgroundVariant.Lines} gap={24} size={1} color="var(--canvas-grid)" />
                 <MiniMap
@@ -909,7 +908,9 @@ function CanvasEditor({
             <div className="canvas-toolbox" role="toolbar" aria-label="Canvas tools">
               <ToolButton
                 label="Select"
+                shortcut={canvasShortcutLabel("select")}
                 pressed={tool === "select"}
+                disabled={creating || autoNeatBusy}
                 onClick={() => {
                   setTool("select");
                   setConnectionSource(null);
@@ -919,7 +920,9 @@ function CanvasEditor({
               </ToolButton>
               <ToolButton
                 label="Hand"
+                shortcut={canvasShortcutLabel("hand")}
                 pressed={tool === "hand"}
+                disabled={creating || autoNeatBusy}
                 onClick={() => {
                   clearSelection();
                   setTool("hand");
@@ -931,7 +934,9 @@ function CanvasEditor({
               <span className="toolbox-divider" />
               <ToolButton
                 label="Add node"
+                shortcut={canvasShortcutLabel("node")}
                 pressed={tool === "node"}
+                disabled={creating || autoNeatBusy}
                 onClick={() => {
                   setTool("node");
                   setConnectionSource(null);
@@ -941,7 +946,9 @@ function CanvasEditor({
               </ToolButton>
               <ToolButton
                 label="Connector"
+                shortcut={canvasShortcutLabel("connector")}
                 pressed={tool === "connector"}
+                disabled={creating || autoNeatBusy}
                 onClick={() => {
                   setTool("connector");
                   setConnectionSource(null);
@@ -951,7 +958,9 @@ function CanvasEditor({
               </ToolButton>
               <ToolButton
                 label="System box"
+                shortcut={canvasShortcutLabel("system")}
                 pressed={tool === "system"}
+                disabled={creating || autoNeatBusy}
                 onClick={() => {
                   setTool("system");
                   setConnectionSource(null);
@@ -962,7 +971,9 @@ function CanvasEditor({
               <span className="toolbox-divider" />
               <ToolButton
                 label="Edit connector"
+                shortcut={canvasShortcutLabel("edit-connector")}
                 pressed={tool === "edit-connector"}
+                disabled={creating || autoNeatBusy}
                 onClick={() => {
                   setTool("edit-connector");
                   setConnectionSource(null);
@@ -1045,6 +1056,7 @@ function CanvasEditor({
             key={`sidebar-${selectedEntityId ?? selectedConnectionId}`}
             graph={graph}
             canvasId={canvasId}
+            deleteRequest={deleteRequest}
             onOpenDetails={(section) => {
               setDetailSection(section);
               setDetailsOpen(true);
@@ -1084,12 +1096,15 @@ function CanvasEditor({
 
 function ToolButton({
   label,
+  shortcut,
   pressed,
   disabled,
   onClick,
   children,
 }: {
   label: string;
+  /** Visible platform shortcut hint, or undefined for actions without a keyboard shortcut. */
+  shortcut?: string;
   pressed?: boolean;
   disabled?: boolean;
   onClick: () => void;
@@ -1102,7 +1117,10 @@ function ToolButton({
           {children}
         </button>
       </TooltipTrigger>
-      <TooltipContent side="top">{label}</TooltipContent>
+      <TooltipContent side="top">
+        {label}
+        {shortcut && <span className="toolbox-shortcut">{shortcut}</span>}
+      </TooltipContent>
     </Tooltip>
   );
 }
