@@ -8,9 +8,23 @@ Wooble gives architecture components stable identities and shows them across mul
 
 The app includes a canvas library, a grouped system diagram, selectable protocol connections, a right side inspector, password login, workspace and canvas sharing, an Elysia API running on Bun, and PostgreSQL persistence.
 
+## Roadmap
+
+Wooble's `v0.1.0` public preview is available. The next releases target one usable product outcome every two weeks:
+
+| Release | Initial target | Outcome |
+| --- | --- | --- |
+| `v0.2.0` | 10 October 2026 | Collaborative documentation with blocks, Markdown import, and live co-editing |
+| `v0.3.0` | 24 October 2026 | Usable API and Protobuf contracts on connectors |
+| `v0.4.0` | 7 November 2026 | Editable database diagrams from SQL or visual authoring |
+| `v0.5.0` | 21 November 2026 | Contextual comments and discussion across architecture details |
+| `v0.6.0` | 5 December 2026 | Stability fixes and user experience improvements informed by use |
+
+These are revisable targets for an open-source project, not promised release dates. A version ships when its user journey and [criteria of done](docs/roadmap.md) are met. Follow the [public GitHub Roadmap](https://github.com/users/Dityath/projects/1/views/2) for current dates; contributor-ready tasks are tracked separately in issues.
+
 ## Architecture
 
-See the [architecture and tech stack guide](docs/architecture.md) for the current implementation and the [brand guide](docs/brand.md) for visual and voice decisions. [Product direction](docs/product.md) tracks areas that need improvement; [versioning](docs/versioning.md) explains the proposed release path.
+See the [architecture and tech stack guide](docs/architecture.md) for the current implementation and the [brand guide](docs/brand.md) for visual and voice decisions. [Product direction](docs/product.md) tracks areas that need improvement; [versioning](docs/versioning.md) explains the release path.
 
 This is a Bun workspace managed by Turborepo:
 

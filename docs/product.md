@@ -20,11 +20,11 @@ The repository contains workspace and canvas access control, password accounts, 
 
 ## Areas to improve
 
-These are product directions, not promises that the features already exist or are scheduled for a particular release:
+The initial release sequence, target dates, and criteria of done for the first four directions are in the [product roadmap](roadmap.md). Dates are revisable targets, and these entries do not claim the features already exist:
 
 - **Comments and discussion:** let people discuss an architecture element or connection in its context.
 - **Collaborative documentation:** make documentation more useful and let members contribute, review, and maintain it together. Current documentation fields are basic.
-- **Consistent interface:** tighten visual patterns and interaction behavior across the canvas, inspector, dialogs, and supporting pages.
+- **Consistent interface:** tighten visual patterns and interaction behavior across the canvas, inspector, dialogs, and supporting pages; the first focused stability and usability pass is planned for `v0.6.0`.
 - **API and protobuf contracts:** go beyond basic manual fields to represent, edit, and inspect contracts properly; consider OpenAPI and protobuf import or synchronization.
 - **Database diagrams:** provide a dedicated view of schemas and relationships, building on the existing schema fields.
 - **External sources:** explore synchronization with databases, repositories, and deployment systems where it helps keep the model accurate.

@@ -1,6 +1,6 @@
 # Reporting and choosing issues
 
-GitHub Issues is where Wooble tracks bugs, product proposals, and planned work. Search [open and closed issues](https://github.com/Dityath/Wooble/issues) before opening a new one. Choose **Bug report**, **Feature proposal**, or **Task** from the issue form chooser. For a question that does not fit those forms, use a blank issue and explain the context.
+The [product roadmap](roadmap.md) defines release outcomes and target dates, and the [public GitHub Project](https://github.com/users/Dityath/projects/1/views/2) displays them as draft items. GitHub Issues tracks bugs, product proposals, and contributor-ready planned work. Search [open and closed issues](https://github.com/Dityath/Wooble/issues) before opening a new one. Choose **Bug report**, **Feature proposal**, or **Task** from the issue form chooser. For a question that does not fit those forms, use a blank issue and explain the context.
 
 ## What to include
 
