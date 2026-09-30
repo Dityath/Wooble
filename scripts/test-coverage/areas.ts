@@ -8,7 +8,7 @@ export interface CoverageArea {
   id: "api" | "web" | "shared";
   label: string;
   sources: string[];
-  /** Floors enforced by `--enforce`. Ratchet them upward as tests land; the goal is 90/90 per area. */
+  /** Floors enforced by `--enforce`. Every area is held at the 90/90 target; do not lower them. */
   thresholds: { lines: number; functions: number };
 }
 
@@ -24,7 +24,7 @@ export const coverageAreas: CoverageArea[] = [
     id: "api",
     label: "API",
     sources: ["apps/api/src/**/*.ts"],
-    thresholds: { lines: 81, functions: 91 },
+    thresholds: { lines: 90, functions: 90 },
   },
   {
     id: "web",

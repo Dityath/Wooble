@@ -28,6 +28,10 @@ happy-dom does no layout, so the preload reports inline pixel sizes for elements
 - Wait for the animated initial `fitView` to settle before converting canvas coordinates to screen coordinates.
 - Node drags start on the first pointer move past a 1px threshold, so the drag helper nudges the pointer before moving it.
 
+## Writing API tests
+
+API tests call the Elysia app in process against the isolated database. `apiClient()` in `apps/api/tests/support/client.ts` registers fictional accounts with unique emails, promotes admins, and creates canvases, nodes, connections, and invitations. Registration and login share a per-IP rate limit across the suite, so call `resetLoginAttempts()` before each test that signs people in. Cover the permission matrix for a route: managers, editors, viewers, link visitors, outsiders, signed-out requests, and system admins where they differ.
+
 ## Running coverage locally
 
 ```sh
@@ -74,9 +78,8 @@ Exclusions live in `scripts/test-coverage/areas.ts`, each with a reason, and are
 
 ## Floors and the 90% target
 
-The target is **90% lines and 90% functions in each area**. `thresholds` in `scripts/test-coverage/areas.ts` holds the floor CI enforces for each area:
+The target is **90% lines and 90% functions in each area**. `thresholds` in `scripts/test-coverage/areas.ts` holds the floor CI enforces. API, web, and shared runtime code all meet the target and are held at 90/90, so `bun run coverage --enforce` fails if any area drops below 90% lines or 90% functions.
 
-- Areas that already reach the target are held at 90/90.
-- Other areas are held at their current baseline so coverage cannot regress. When tests raise an area's numbers, raise its floor in the same pull request.
+Do not lower a floor to make a change pass. Add tests for the new behavior instead, or document a narrow exclusion with its reason.
 
 Write tests that assert behavior users or API clients depend on: success, error, permission, and persistence paths. Importing a file only to count it, or assertions that mirror the implementation, do not close a gap.
