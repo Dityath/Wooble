@@ -21,7 +21,10 @@ bun run format:check
 bun run typecheck
 bun run build
 bun test apps/web/tests
+bun test packages/*/tests
 ```
+
+Run `bun run coverage` to see full-source coverage for the API, web app, and shared packages. CI fails when an area drops below its floor. See [testing and coverage](docs/testing.md) for the commands and what the numbers measure.
 
 API tests need an isolated PostgreSQL database. See [self-hosting](docs/self-hosting.md) for the database setup and `apps/api/scripts/test-isolated.sh` for the test database workflow. Do not point the isolated test script at a database containing data you want to keep: it recreates its target database.
 

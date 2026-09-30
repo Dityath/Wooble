@@ -15,6 +15,7 @@
     "lint": "biome lint .",
     "format": "biome format --write .",
     "format:check": "biome format .",
+    "coverage": "bun scripts/test-coverage/run.ts",
     "db:migrate": "bun run --cwd packages/db migrate",
     "db:seed": "bun run --cwd packages/db seed"
   },

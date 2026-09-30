@@ -85,22 +85,41 @@ jobs:
       - name: Web tests
         id: web
         run: bun test apps/web/tests
+      - name: Shared package tests
+        id: shared
+        run: bun test packages/*/tests
       - name: Apply database migrations
         id: migrate
         run: bun run db:migrate
       - name: API tests
         id: api
         run: bun test apps/api/tests
+      - name: Coverage
+        id: coverage
+        run: bun run coverage --enforce
+      - name: Upload coverage report
+        if: ${{ !cancelled() && steps.coverage.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage/summary.md
+            coverage/lcov.info
+          if-no-files-found: warn
       - name: Summarize tests
         if: ${{ always() }}
         env:
           INSTALL_RESULT: ${{ steps.install.outcome }}
           WEB_RESULT: ${{ steps.web.outcome }}
+          SHARED_RESULT: ${{ steps.shared.outcome }}
           MIGRATE_RESULT: ${{ steps.migrate.outcome }}
           API_RESULT: ${{ steps.api.outcome }}
+          COVERAGE_RESULT: ${{ steps.coverage.outcome }}
         run: |
           bash .github/scripts/report-ci.sh "Tests" \
             "Install dependencies=$INSTALL_RESULT" \
             "Web tests=$WEB_RESULT" \
+            "Shared package tests=$SHARED_RESULT" \
             "Database migrations=$MIGRATE_RESULT" \
-            "API tests=$API_RESULT"
+            "API tests=$API_RESULT" \
+            "Coverage floors=$COVERAGE_RESULT"
