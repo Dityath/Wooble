@@ -157,7 +157,8 @@ if (!inventoryRun.ok) {
   process.exit(1);
 }
 
-const suites: Suite[] = [{ id: "web", paths: ["apps/web/tests"] }];
+// The web suite preloads a DOM; the API suite must not get one (see apps/web/tests/support/dom.ts).
+const suites: Suite[] = [{ id: "web", paths: ["--preload", "./apps/web/tests/support/dom.ts", "apps/web/tests"] }];
 const sharedDirs = await packageTestDirs();
 if (sharedDirs.length) suites.push({ id: "shared", paths: sharedDirs });
 if (!withoutApi) suites.push({ id: "api", paths: ["apps/api/tests"] });

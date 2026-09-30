@@ -20,7 +20,7 @@ bun run lint
 bun run format:check
 bun run typecheck
 bun run build
-bun test apps/web/tests
+bun run test:web
 bun test packages/*/tests
 ```
 

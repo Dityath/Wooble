@@ -30,7 +30,7 @@ export const coverageAreas: CoverageArea[] = [
     id: "web",
     label: "Web",
     sources: ["apps/web/src/**/*.{ts,tsx}"],
-    thresholds: { lines: 6, functions: 23 },
+    thresholds: { lines: 90, functions: 90 },
   },
   {
     id: "shared",

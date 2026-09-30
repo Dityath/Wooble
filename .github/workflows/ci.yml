@@ -84,7 +84,7 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Web tests
         id: web
-        run: bun test apps/web/tests
+        run: bun run test:web
       - name: Shared package tests
         id: shared
         run: bun test packages/*/tests

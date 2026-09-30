@@ -5,6 +5,7 @@ import {
   type CanvasKeyContext,
   type CanvasKeyEvent,
   type CanvasShortcutAction,
+  type CanvasTool,
 } from "../src/features/canvas/canvas-shortcuts";
 
 describe("canvas shortcut labels", () => {
@@ -62,7 +63,7 @@ const resolve = (event: CanvasKeyEvent, context: Partial<CanvasKeyContext> = {})
 
 describe("canvas tool shortcuts", () => {
   test("map Cmd/Ctrl + letter to each tool", () => {
-    const cases: Array<[CanvasKeyEvent, string]> = [
+    const cases: Array<[CanvasKeyEvent, CanvasTool]> = [
       [key({ ctrlKey: true }), "select"],
       [key({ key: "s", metaKey: true }), "select"],
       [key({ key: "h", metaKey: true }), "hand"],

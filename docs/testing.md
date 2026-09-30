@@ -4,11 +4,29 @@ Wooble has three test suites, and each one runs with Bun:
 
 | Suite | Tests | Needs |
 | --- | --- | --- |
-| Web | `apps/web/tests` | Nothing extra |
+| Web | `bun run test:web` (`apps/web/tests`) | Nothing extra; a happy-dom DOM is preloaded |
 | Shared runtime | `packages/*/tests` | Nothing extra |
 | API | `apps/api/tests` | An isolated, migrated PostgreSQL database in `DATABASE_URL` |
 
 Canvas browser journeys run separately with Playwright; see [CONTRIBUTING.md](../CONTRIBUTING.md#local-checks).
+
+## Writing web tests
+
+`bun run test:web` preloads `apps/web/tests/support/dom.ts`, which registers a happy-dom browser environment and cleans up the DOM after each test. The preload applies only to the web suite: API tests need Bun's own `fetch`, `Request`, and `Response`. Test files are typechecked by `bun run typecheck` through `apps/web/tests/tsconfig.json`.
+
+Helpers in `apps/web/tests/support/`:
+
+- `renderRoute(path)` renders the real route tree (`src/routes/router.tsx`) with a fresh router and query cache, so route guards, redirects, and error pages run as in the browser. `renderWithQuery(ui)` renders a single component with query context.
+- `FakeApi` replaces `fetch` with in-memory routes such as `server.on("PATCH /api/entities/:id", handler)`. It records every request, so tests can check what the app sent. `failWith(status, message)` returns the API's error shape.
+- `FakeSocket` stands in for the live-canvas WebSocket. Tests open it, deliver presence messages, and read what the client sent.
+- `fixtures.ts` holds fictional users, workspaces, and a small canvas graph.
+
+Test behavior through roles, labels, and visible text. Assert on the requests a journey sends, not on component internals.
+
+happy-dom does no layout, so the preload reports inline pixel sizes for elements and a `ResizeObserver` that fires once per observed element. This is enough for React Flow to measure and render nodes and edges. In canvas tests:
+
+- Wait for the animated initial `fitView` to settle before converting canvas coordinates to screen coordinates.
+- Node drags start on the first pointer move past a 1px threshold, so the drag helper nudges the pointer before moving it.
 
 ## Running coverage locally
 
