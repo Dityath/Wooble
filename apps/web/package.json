@@ -7,7 +7,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tests",
-    "lint": "biome lint src e2e vite.config.ts tailwind.config.ts playwright.config.ts",
+    "lint": "biome lint --error-on-warnings src e2e vite.config.ts tailwind.config.ts playwright.config.ts",
     "test:browser": "playwright test"
   },
   "dependencies": {

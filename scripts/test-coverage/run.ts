@@ -5,6 +5,11 @@
  *   bun run coverage --without-api   # skip the API suite when no test database is available
  *   bun run coverage --enforce       # fail when an area drops below its floor in areas.ts
  *
+ * CI runs each suite in its own step and reports once at the end, so no test runs twice:
+ *
+ *   bun run coverage --suite web     # run one suite (web, shared, or api) and keep its raw coverage
+ *   bun run coverage --merge-only    # report on the suites already run; add --enforce to check floors
+ *
  * Writes coverage/lcov.info (merged, full-source) and coverage/summary.md.
  */
 import { existsSync } from "node:fs";
@@ -18,17 +23,30 @@ import { areaSources } from "./sources";
 const root = resolve(import.meta.dir, "../..");
 const outputDir = join(root, "coverage");
 const rawDir = join(outputDir, "raw");
-const args = new Set(process.argv.slice(2));
+const argv = process.argv.slice(2);
+const args = new Set(argv);
 const withoutApi = args.has("--without-api");
 const enforce = args.has("--enforce");
+const mergeOnly = args.has("--merge-only");
+const suiteIndex = argv.indexOf("--suite");
+const onlySuite = suiteIndex === -1 ? undefined : argv[suiteIndex + 1];
+const suiteIds = ["web", "shared", "api"];
 
-if (!withoutApi && !process.env.DATABASE_URL) {
-  console.error(
+function fail(message: string, code = 2): never {
+  console.error(message);
+  process.exit(code);
+}
+
+if (suiteIndex !== -1 && !suiteIds.includes(onlySuite ?? "")) fail(`--suite expects one of: ${suiteIds.join(", ")}.`);
+if (onlySuite && mergeOnly) fail("Use either --suite or --merge-only, not both.");
+if (onlySuite && (enforce || withoutApi)) fail("--enforce and --without-api apply to a report, not to --suite.");
+
+const needsDatabase = onlySuite ? onlySuite === "api" : !mergeOnly && !withoutApi;
+if (needsDatabase && !process.env.DATABASE_URL)
+  fail(
     "API coverage needs DATABASE_URL pointing at an isolated, migrated test database.\n" +
       "Set it (see CONTRIBUTING.md) or rerun with --without-api.",
   );
-  process.exit(2);
-}
 
 async function packageTestDirs(): Promise<string[]> {
   const dirs = new Set<string>();
@@ -107,7 +125,7 @@ function summarize(area: CoverageArea, files: string[], coverage: CoverageMap, t
   return { area, measured, files: rows, lines, functions, passes };
 }
 
-function markdown(results: AreaResult[], suites: Array<{ id: string; ok: boolean }>): string {
+function markdown(results: AreaResult[], suitesNote: string): string {
   const out: string[] = ["## Coverage", ""];
   out.push(
     `Full-source coverage: every eligible production file counts, and files no test loads count as 0%. ` +
@@ -124,7 +142,7 @@ function markdown(results: AreaResult[], suites: Array<{ id: string; ok: boolean
         `${result.area.thresholds.lines}% / ${result.area.thresholds.functions}% | ${status} |`,
     );
   }
-  out.push("", `Suites: ${suites.map((suite) => `${suite.id} ${suite.ok ? "passed" : "failed"}`).join(", ")}.`, "");
+  out.push("", suitesNote, "");
   for (const result of results) {
     const below = result.files
       .filter((row) => row.lines < coverageTarget.lines || row.functions < coverageTarget.functions)
@@ -145,26 +163,62 @@ function markdown(results: AreaResult[], suites: Array<{ id: string; ok: boolean
   return out.join("\n");
 }
 
-await rm(outputDir, { recursive: true, force: true });
+async function plannedSuites(): Promise<Suite[]> {
+  // The web suite preloads a DOM; the API suite must not get one (see apps/web/tests/support/dom.ts).
+  const suites: Suite[] = [{ id: "web", paths: ["--preload", "./apps/web/tests/support/dom.ts", "apps/web/tests"] }];
+  const sharedDirs = await packageTestDirs();
+  if (sharedDirs.length) suites.push({ id: "shared", paths: sharedDirs });
+  if (!withoutApi) suites.push({ id: "api", paths: ["apps/api/tests"] });
+  return suites;
+}
+
+async function readSuite(id: string): Promise<CoverageMap | undefined> {
+  const lcovPath = join(rawDir, id, "lcov.info");
+  return existsSync(lcovPath) ? parseLcov(await readFile(lcovPath, "utf8")) : undefined;
+}
+
+if (onlySuite) {
+  const suite = (await plannedSuites()).find((candidate) => candidate.id === onlySuite);
+  if (!suite) fail(`No tests found for the ${onlySuite} suite.`);
+  await rm(join(rawDir, suite.id), { recursive: true, force: true });
+  const run = await runSuite(suite);
+  console.log(
+    `\nRaw ${suite.id} coverage: coverage/raw/${suite.id}/lcov.info. Report with: bun run coverage --merge-only`,
+  );
+  process.exit(run.ok ? 0 : 1);
+}
+
+async function recordedRuns(suites: Suite[]) {
+  const runs: Array<{ id: string; ok: boolean; coverage: CoverageMap }> = [];
+  const missing: string[] = [];
+  for (const suite of suites) {
+    const coverage = await readSuite(suite.id);
+    if (coverage) runs.push({ id: suite.id, ok: true, coverage });
+    else missing.push(suite.id);
+  }
+  if (missing.length)
+    fail(`No coverage recorded for: ${missing.join(", ")}. Run \`bun run coverage --suite <name>\` for each first.`, 1);
+  return runs;
+}
+
+const suites = await plannedSuites();
+// A merge reads the suites' raw coverage, so it must not clear coverage/raw.
+const recorded = mergeOnly ? await recordedRuns(suites) : undefined;
+if (mergeOnly) await rm(join(rawDir, "inventory"), { recursive: true, force: true });
+else await rm(outputDir, { recursive: true, force: true });
 await mkdir(rawDir, { recursive: true });
 
 const inventoryRun = await runSuite({
   id: "inventory",
   paths: ["./scripts/test-coverage/inventory.probe.ts"],
 });
-if (!inventoryRun.ok) {
-  console.error("The coverage inventory could not load every eligible source file.");
-  process.exit(1);
-}
+if (!inventoryRun.ok) fail("The coverage inventory could not load every eligible source file.", 1);
 
-// The web suite preloads a DOM; the API suite must not get one (see apps/web/tests/support/dom.ts).
-const suites: Suite[] = [{ id: "web", paths: ["--preload", "./apps/web/tests/support/dom.ts", "apps/web/tests"] }];
-const sharedDirs = await packageTestDirs();
-if (sharedDirs.length) suites.push({ id: "shared", paths: sharedDirs });
-if (!withoutApi) suites.push({ id: "api", paths: ["apps/api/tests"] });
-
-const suiteRuns = [];
-for (const suite of suites) suiteRuns.push(await runSuite(suite));
+const suiteRuns = recorded ?? [];
+if (!recorded) for (const suite of suites) suiteRuns.push(await runSuite(suite));
+const suitesNote = recorded
+  ? `Suites merged from their own test steps: ${suites.map((suite) => suite.id).join(", ")}.`
+  : `Suites: ${suiteRuns.map((run) => `${run.id} ${run.ok ? "passed" : "failed"}`).join(", ")}.`;
 
 const tested = mergeRuns(suiteRuns.map((run) => run.coverage));
 const results: AreaResult[] = [];
@@ -176,7 +230,7 @@ for (const area of coverageAreas) {
   results.push(summarize(area, files, coverage, tested));
 }
 
-const summary = markdown(results, suiteRuns);
+const summary = markdown(results, suitesNote);
 await writeFile(join(outputDir, "lcov.info"), formatLcov(merged));
 await writeFile(join(outputDir, "summary.md"), summary);
 // biome-ignore lint/suspicious/noUndeclaredEnvVars: set by GitHub Actions; this script runs directly, not as a Turborepo task.

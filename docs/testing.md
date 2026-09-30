@@ -41,9 +41,18 @@ DATABASE_URL=<test-database-url> bun run coverage
 # Without a test database. API figures are skipped, and shared figures lose what API tests cover.
 bun run coverage --without-api
 
-# What CI runs: also fail when an area is below its floor.
+# Also fail when an area is below its floor.
 DATABASE_URL=<test-database-url> bun run coverage --enforce
 ```
+
+CI runs each suite once, in its own step, and then reports on all of them:
+
+```sh
+bun run coverage --suite web       # also: shared, api (api needs DATABASE_URL)
+bun run coverage --merge-only --enforce
+```
+
+`--suite` runs one suite with coverage and keeps its raw LCOV in `coverage/raw/<suite>/`. `--merge-only` builds the report from the suites already recorded there without running their tests again, and fails if any suite has no recorded coverage. Raw results from an older run are reused as they are, so rerun a suite after changing its tests or code.
 
 `apps/api/scripts/test-isolated.sh` shows how to create and migrate a throwaway test database. Never point `DATABASE_URL` at a database whose data you want to keep.
 

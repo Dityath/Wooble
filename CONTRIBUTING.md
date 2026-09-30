@@ -30,7 +30,7 @@ API tests need an isolated PostgreSQL database. See [self-hosting](docs/self-hos
 
 Canvas browser tests also need a separate, migrated PostgreSQL database and Playwright Chromium. Run `bunx playwright install chromium` once, then run `BROWSER_TEST_DATABASE_URL=<test-database-url> bun run --cwd apps/web test:browser`. The browser test command requires this variable and refuses to reuse an existing API or web server. Its fixtures create fictional users and canvases in the test database and leave them there for inspection; use a disposable database.
 
-Biome is the repository linter and formatter. Run `bun run format` when formatting needs to be applied. CSS formatting is disabled in `biome.json` to preserve the existing stylesheet.
+Biome is the repository linter and formatter. `bun run lint` treats warnings as errors, so CI fails on any lint warning. Run `bun run format` when formatting needs to be applied. CSS formatting is disabled in `biome.json` to preserve the existing stylesheet.
 
 ## Contribution rights
 
