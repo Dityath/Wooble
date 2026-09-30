@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
-    "typecheck": "tsc --noEmit",
-    "lint": "biome lint src e2e vite.config.ts tailwind.config.ts playwright.config.ts",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tests",
+    "lint": "biome lint --error-on-warnings src e2e vite.config.ts tailwind.config.ts playwright.config.ts",
     "test:browser": "playwright test"
   },
   "dependencies": {
@@ -34,8 +34,13 @@
     "zustand": "^5.0.5"
   },
   "devDependencies": {
+    "@happy-dom/global-registrator": "^20.14.5",
     "@playwright/test": "^1.63.0",
     "@tailwindcss/typography": "^0.5.16",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
+    "@types/bun": "^1.4.2",
     "@types/react": "^19.1.6",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.5.1",

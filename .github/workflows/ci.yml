@@ -23,16 +23,21 @@ jobs:
       - name: Install dependencies
         id: install
         run: bun install --frozen-lockfile
+      # Each check runs even when an earlier one fails, so a single push reports every problem.
       - name: Lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         id: lint
         run: bun run lint
       - name: Check formatting
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         id: format
         run: bun run format:check
       - name: Typecheck
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         id: typecheck
         run: bun run typecheck
       - name: Build
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         id: build
         run: bun run build
       - name: Summarize code quality
@@ -82,25 +87,49 @@ jobs:
       - name: Install dependencies
         id: install
         run: bun install --frozen-lockfile
+      # Each suite runs once, with coverage. The last step merges the results and checks the 90% floors.
       - name: Web tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         id: web
-        run: bun test apps/web/tests
+        run: bun run coverage --suite web
+      - name: Shared package tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        id: shared
+        run: bun run coverage --suite shared
       - name: Apply database migrations
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         id: migrate
         run: bun run db:migrate
       - name: API tests
+        if: ${{ !cancelled() && steps.migrate.outcome == 'success' }}
         id: api
-        run: bun test apps/api/tests
+        run: bun run coverage --suite api
+      - name: Coverage
+        id: coverage
+        run: bun run coverage --merge-only --enforce
+      - name: Upload coverage report
+        if: ${{ !cancelled() && steps.coverage.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage/summary.md
+            coverage/lcov.info
+          if-no-files-found: warn
       - name: Summarize tests
         if: ${{ always() }}
         env:
           INSTALL_RESULT: ${{ steps.install.outcome }}
           WEB_RESULT: ${{ steps.web.outcome }}
+          SHARED_RESULT: ${{ steps.shared.outcome }}
           MIGRATE_RESULT: ${{ steps.migrate.outcome }}
           API_RESULT: ${{ steps.api.outcome }}
+          COVERAGE_RESULT: ${{ steps.coverage.outcome }}
         run: |
           bash .github/scripts/report-ci.sh "Tests" \
             "Install dependencies=$INSTALL_RESULT" \
             "Web tests=$WEB_RESULT" \
+            "Shared package tests=$SHARED_RESULT" \
             "Database migrations=$MIGRATE_RESULT" \
-            "API tests=$API_RESULT"
+            "API tests=$API_RESULT" \
+            "Coverage floors=$COVERAGE_RESULT"

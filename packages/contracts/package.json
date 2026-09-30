@@ -13,6 +13,6 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "biome lint src"
+    "lint": "biome lint --error-on-warnings src"
   }
 }

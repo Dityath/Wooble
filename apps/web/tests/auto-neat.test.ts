@@ -134,7 +134,8 @@ test("Auto Neat lines up three root system boxes", () => {
       height: 300,
     })),
     connections: [],
-  } as CanvasGraph;
+    // Only the fields Auto Neat reads are filled in.
+  } as unknown as CanvasGraph;
   const systems = buildAutoNeatLayout(graph).placements;
   expect(systems.map((system) => system.y)).toEqual([0, 0, 0]);
   expect(systems[1]?.x).toBeGreaterThan((systems[0]?.x ?? 0) + (systems[0]?.width ?? 0));

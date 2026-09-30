@@ -12,9 +12,11 @@
     "dev": "bun --env-file=.env ./node_modules/.bin/turbo dev",
     "build": "turbo build",
     "typecheck": "turbo typecheck",
-    "lint": "biome lint .",
+    "lint": "biome lint --error-on-warnings .",
     "format": "biome format --write .",
     "format:check": "biome format .",
+    "test:web": "bun test --preload ./apps/web/tests/support/dom.ts apps/web/tests",
+    "coverage": "bun scripts/test-coverage/run.ts",
     "db:migrate": "bun run --cwd packages/db migrate",
     "db:seed": "bun run --cwd packages/db seed"
   },

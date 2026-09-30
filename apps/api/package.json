@@ -7,7 +7,7 @@
     "dev": "bun --watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "biome lint src",
+    "lint": "biome lint --error-on-warnings src",
     "test": "bun --env-file=../../.env test tests",
     "test:isolated": "bash scripts/test-isolated.sh",
     "admin:promote": "bun --env-file=../../.env scripts/promote-admin.ts"

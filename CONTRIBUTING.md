@@ -20,14 +20,17 @@ bun run lint
 bun run format:check
 bun run typecheck
 bun run build
-bun test apps/web/tests
+bun run test:web
+bun test packages/*/tests
 ```
+
+Run `bun run coverage` to see full-source coverage for the API, web app, and shared packages. CI fails when an area drops below its floor. See [testing and coverage](docs/testing.md) for the commands and what the numbers measure.
 
 API tests need an isolated PostgreSQL database. See [self-hosting](docs/self-hosting.md) for the database setup and `apps/api/scripts/test-isolated.sh` for the test database workflow. Do not point the isolated test script at a database containing data you want to keep: it recreates its target database.
 
 Canvas browser tests also need a separate, migrated PostgreSQL database and Playwright Chromium. Run `bunx playwright install chromium` once, then run `BROWSER_TEST_DATABASE_URL=<test-database-url> bun run --cwd apps/web test:browser`. The browser test command requires this variable and refuses to reuse an existing API or web server. Its fixtures create fictional users and canvases in the test database and leave them there for inspection; use a disposable database.
 
-Biome is the repository linter and formatter. Run `bun run format` when formatting needs to be applied. CSS formatting is disabled in `biome.json` to preserve the existing stylesheet.
+Biome is the repository linter and formatter. `bun run lint` treats warnings as errors, so CI fails on any lint warning. Run `bun run format` when formatting needs to be applied. CSS formatting is disabled in `biome.json` to preserve the existing stylesheet.
 
 ## Contribution rights
 
