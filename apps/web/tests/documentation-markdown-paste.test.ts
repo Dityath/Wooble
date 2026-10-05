@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { act } from "@testing-library/react";
 import type { Editor, JSONContent } from "@tiptap/core";
+import { Fragment, Slice } from "@tiptap/pm/model";
 import { CellSelection } from "@tiptap/pm/tables";
 import { looksLikeMarkdown } from "../src/features/inspector/documentation/markdown-paste";
 import { renderDocumentationEditor } from "./support/editor";
@@ -488,6 +489,106 @@ describe("pasting Markdown into documentation", () => {
       await paste(editor, { "text/html": "<table><tr><td>Core</td></tr><tr><td>Finance</td></tr></table>" });
       expect(tableCount(editor)).toBe(1);
       expect(cellTexts(editor)).toEqual(["Service", "Owner", "Gateway", "Core", "Ledger", "Finance"]);
+    });
+
+    it("pastes inline rich text into a cell as it is", async () => {
+      const samples: Array<[string, JSONContent[]]> = [
+        // Part of a sentence copied from a web page has no block around it.
+        [
+          '<meta charset="utf-8"><span style="color: #1f1f1f;">primary region</span>',
+          [{ type: "text", text: "Platformprimary region" }],
+        ],
+        [
+          '<strong>Core</strong> and <a href="https://example.com/runbook">runbook</a>',
+          [
+            { type: "text", text: "Platform" },
+            { type: "text", text: "Core", marks: [{ type: "bold" }] },
+            { type: "text", text: " and " },
+            { type: "text", text: "runbook", marks: [{ type: "link" }] },
+          ],
+        ],
+      ];
+      for (const [html, content] of samples) {
+        const { editor } = renderDocumentationEditor(table);
+        editor.commands.setTextSelection(rangeOf(editor, "Platform").to);
+        await paste(editor, { "text/html": html, "text/plain": "pasted" });
+        expect(tableCount(editor)).toBe(1);
+        expect(platformCell(editor)?.content).toMatchObject([{ type: "paragraph", content }]);
+      }
+    });
+
+    it("pastes a table that also holds other blocks into a cell as text, without splitting the table", async () => {
+      const samples = [
+        "<p>Intro</p><table><tr><td>Core</td></tr></table>",
+        "<table><tr><td><ul><li>Risk</li><li>Fraud</li></ul></td></tr></table>",
+      ];
+      for (const html of samples) {
+        const { editor } = renderDocumentationEditor(table);
+        editor.commands.setTextSelection(rangeOf(editor, "Platform").to);
+        await paste(editor, { "text/html": html, "text/plain": "pasted" });
+        expect(tableCount(editor)).toBe(1);
+        expect(cellTexts(editor).slice(-2)).toEqual(["Ledger", "Payments"]);
+      }
+    });
+
+    describe("dropping", () => {
+      /** Drops `slice` with the pointer at `pos`, as ProseMirror's drop handling passes it to the editor. */
+      function drop(editor: Editor, pos: number, slice: Slice, moved = false) {
+        const { view } = editor;
+        const posAtCoords = view.posAtCoords;
+        // happy-dom has no layout to turn the pointer into a position.
+        view.posAtCoords = () => ({ pos, inside: -1 });
+        try {
+          return view.someProp("handleDrop", (handleDrop) =>
+            handleDrop(view, new DragEvent("drop", { clientX: 10, clientY: 10 }), slice, moved),
+          );
+        } finally {
+          view.posAtCoords = posAtCoords;
+        }
+      }
+      const list = (editor: Editor) =>
+        new Slice(
+          Fragment.from(
+            editor.schema.nodeFromJSON({
+              type: "bulletList",
+              content: [
+                { type: "listItem", content: [paragraph("Risk")] },
+                { type: "listItem", content: [paragraph("Fraud")] },
+              ],
+            }),
+          ),
+          0,
+          0,
+        );
+
+      it("drops blocks into a cell as lines of text, without splitting the table", () => {
+        const { editor } = renderDocumentationEditor(table);
+        expect(drop(editor, rangeOf(editor, "Platform").to, list(editor))).toBe(true);
+        expect(tableCount(editor)).toBe(1);
+        expect(platformCell(editor)?.content).toEqual([paragraph("PlatformRisk"), paragraph("Fraud")]);
+      });
+
+      it("moves dragged text into a cell", () => {
+        const { editor } = renderDocumentationEditor(`${table}\n\nEscalate to the on-call engineer`);
+        const { from, to } = rangeOf(editor, "on-call");
+        editor.commands.setTextSelection({ from, to });
+        const dragged = editor.state.selection.content();
+        expect(drop(editor, rangeOf(editor, "Platform").to, dragged, true)).toBe(true);
+        expect(platformCell(editor)?.content).toEqual([paragraph("Platformon-call")]);
+        expect(blocksOf(editor)[1]).toEqual(paragraph("Escalate to the  engineer"));
+      });
+
+      it("drops nothing that is not text into a cell, and keeps what was dragged", () => {
+        const { editor } = renderDocumentationEditor(`${table}\n\n---`);
+        const divider = new Slice(Fragment.from(editor.schema.nodes.horizontalRule.create()), 0, 0);
+        expect(drop(editor, rangeOf(editor, "Platform").to, divider, true)).toBe(true);
+        expect(blocksOf(editor).map((block) => block.type)).toEqual(["table", "horizontalRule"]);
+      });
+
+      it("leaves a drop outside a table to the editor", () => {
+        const { editor } = renderDocumentationEditor(`${table}\n\nNotes`);
+        expect(drop(editor, rangeOf(editor, "Notes").to, list(editor))).toBeFalsy();
+      });
     });
 
     it("leaves a paste over selected cells to the table", async () => {

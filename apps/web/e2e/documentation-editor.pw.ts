@@ -171,6 +171,37 @@ test("pasted Markdown becomes blocks that persist", async ({ page }) => {
   await expect(editor.getByRole("table")).toContainText("Platform");
 });
 
+test("blocks dropped into a table cell stay in the table as text", async ({ page }) => {
+  await openCanvas(page);
+  await openNodeDocumentation(page, seeded.betaId);
+  const editor = documentationEditor(page);
+  await editor.click();
+  await pastePlainText(page, "| Region | Owner |\n| --- | --- |\n| EU | Platform |");
+  const cell = editor.getByRole("cell", { name: "Platform" });
+  const box = await cell.boundingBox();
+  if (!box) throw new Error("The table cell has no layout.");
+
+  // A list dragged in from another page, dropped at the end of "Platform".
+  await editor.evaluate(
+    (element, point) => {
+      const dataTransfer = new DataTransfer();
+      dataTransfer.setData("text/html", "<ul><li>Risk</li><li>Fraud</li></ul>");
+      dataTransfer.setData("text/plain", "Risk\nFraud");
+      const init = { dataTransfer, clientX: point.x, clientY: point.y, bubbles: true, cancelable: true };
+      element.dispatchEvent(new DragEvent("drop", init));
+    },
+    { x: box.x + box.width - 3, y: box.y + box.height / 2 },
+  );
+  await expect(editor.getByRole("table")).toHaveCount(1);
+  await expect(editor.getByRole("list")).toHaveCount(0);
+  await expect(cell).toContainText("Fraud");
+  await expect(saveState(page)).toHaveText("Saved");
+  await expect
+    .poll(() => storedDocumentation(page, `/api/entities/${seeded.betaId}`))
+    // Dropped inside or just after the cell's text, depending on where the pointer resolves.
+    .toMatch(/\| EU +\| Platform(<br>)?Risk<br>Fraud \|/);
+});
+
 test("typing in the documentation editor never switches tools or deletes the node", async ({ page }) => {
   await openCanvas(page);
   await openNodeDocumentation(page, seeded.alphaId);

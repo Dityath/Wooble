@@ -2,8 +2,8 @@ import { Extension, InputRule } from "@tiptap/core";
 import { HorizontalRule } from "@tiptap/extension-horizontal-rule";
 import { TableCell, TableHeader } from "@tiptap/extension-table";
 import { Fragment, type Node as ProseMirrorNode, type ResolvedPos, Slice } from "@tiptap/pm/model";
-import { type EditorState, Plugin, PluginKey } from "@tiptap/pm/state";
-import { CellSelection } from "@tiptap/pm/tables";
+import { type EditorState, Plugin, PluginKey, TextSelection } from "@tiptap/pm/state";
+import { __pastedCells as pastedCells, CellSelection } from "@tiptap/pm/tables";
 
 // A Markdown table cell holds one line of inline content, so a cell takes paragraphs only (saved joined by <br>).
 // Lists, headings, quotes, code, dividers, and nested tables in a cell could not be saved.
@@ -24,40 +24,53 @@ export function isTypingInTableCell(state: EditorState): boolean {
   return !(state.selection instanceof CellSelection) && isInTableCell(state.selection.$from);
 }
 
-/** Whether `content` holds table structure, which the table extension pastes into the cells itself. */
-function hasTableStructure(content: Fragment): boolean {
-  let found = false;
-  content.descendants((node) => {
-    if (node.type.spec.tableRole) found = true;
-    return !found;
-  });
-  return found;
-}
-
 /**
- * Returns the text of `slice` as paragraphs, one for each paragraph, heading, list item, or code line, keeping its
- * inline formatting. A block that a cell cannot hold would otherwise make ProseMirror close the table, insert the block
- * after it, and open a new table for the rest of the row.
+ * Returns the text of `slice` as paragraphs, one for each paragraph, heading, list item, table cell, or code line,
+ * keeping its inline formatting. A block that a cell cannot hold would otherwise make ProseMirror close the table,
+ * insert the block after it, and open a new table for the rest of the row. Inline content, such as part of a sentence
+ * copied from a web page, fits in a cell as it is.
  */
 export function asCellText(slice: Slice, paragraph: ProseMirrorNode["type"]): Slice {
-  const paragraphs: ProseMirrorNode[] = [];
-  slice.content.descendants((node) => {
-    if (!node.isTextblock) return true;
-    if (node.type.spec.code) {
-      for (const line of node.textContent.split("\n"))
-        paragraphs.push(paragraph.create(null, line ? node.type.schema.text(line) : null));
-    } else {
-      paragraphs.push(paragraph.create(null, node.content));
-    }
-    return false;
+  let inlineOnly = true;
+  slice.content.forEach((node) => {
+    if (!node.isInline) inlineOnly = false;
   });
+  if (inlineOnly) return slice;
+
+  const paragraphs: ProseMirrorNode[] = [];
+  let inline: ProseMirrorNode[] = [];
+  const endLine = () => {
+    if (inline.length) paragraphs.push(paragraph.create(null, inline));
+    inline = [];
+  };
+  const collect = (content: Fragment) =>
+    content.forEach((node) => {
+      if (node.isInline) {
+        inline.push(node);
+        return;
+      }
+      endLine();
+      if (node.type.spec.code) {
+        for (const line of node.textContent.split("\n"))
+          paragraphs.push(paragraph.create(null, line ? node.type.schema.text(line) : null));
+      } else if (node.isTextblock) {
+        paragraphs.push(paragraph.create(null, node.content));
+      } else {
+        collect(node.content);
+      }
+    });
+  collect(slice.content);
+  endLine();
   // Open at both ends, so the first and last lines join the text around the caret.
   return paragraphs.length ? new Slice(Fragment.from(paragraphs), 1, 1) : Slice.empty;
 }
 
+/** Whether `slice` is table rows or cells, which the table extension pastes into the cells they cover. */
+const isTableCells = (slice: Slice) => pastedCells(slice) !== null;
+
 /**
  * Keeps content pasted or dropped into a table cell to text, so that it cannot split the table (see `asCellText`).
- * Pasted table cells are left to the table extension, which fills the cells they cover.
+ * Pasted rows and cells are left to the table extension.
  */
 export const TableCellText = Extension.create({
   name: "tableCellText",
@@ -67,10 +80,29 @@ export const TableCellText = Extension.create({
       new Plugin({
         key: new PluginKey("tableCellText"),
         props: {
+          // A paste goes to the selection.
           transformPasted: (slice, view) =>
-            isTypingInTableCell(view.state) && !hasTableStructure(slice.content)
+            isTypingInTableCell(view.state) && !isTableCells(slice)
               ? asCellText(slice, view.state.schema.nodes.paragraph)
               : slice,
+          // A drop goes to the pointer, which may be in a cell while the selection (what is dragged) is not.
+          handleDrop: (view, event, slice, moved) => {
+            const target = view.posAtCoords({ left: event.clientX, top: event.clientY });
+            if (!target || !isInTableCell(view.state.doc.resolve(target.pos)) || isTableCells(slice)) return false;
+            const text = asCellText(slice, view.state.schema.nodes.paragraph);
+            // Nothing in it is text, such as a dragged divider: drop nothing, and keep what was dragged.
+            if (!text.size) return true;
+            const tr = view.state.tr;
+            if (moved) tr.deleteSelection();
+            const pos = tr.mapping.map(target.pos);
+            tr.replaceRange(pos, pos, text);
+            const end = tr.mapping.maps[tr.mapping.maps.length - 1].map(pos, 1);
+            tr.setSelection(TextSelection.near(tr.doc.resolve(end), -1));
+            view.dispatch(tr.scrollIntoView().setMeta("uiEvent", "drop"));
+            // After dispatching: TipTap answers focus with a transaction of its own.
+            view.focus();
+            return true;
+          },
         },
       }),
     ];
