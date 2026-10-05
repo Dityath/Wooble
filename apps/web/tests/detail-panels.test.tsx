@@ -452,6 +452,17 @@ describe("rich documentation", () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 
+  it("does not show an update that was undone elsewhere before the editor was left", async () => {
+    const onSave = mock(async (_value: string) => {});
+    const { rerender } = renderWithQuery(<RichDocumentation value="Old notes" onSave={onSave} />);
+    await focusDocumentation();
+    rerender(<RichDocumentation value="Remote notes" onSave={onSave} />);
+    rerender(<RichDocumentation value="Old notes" onSave={onSave} />);
+    await blurDocumentation();
+    expect(documentation().textContent).toBe("Old notes");
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
   it("saves an edit over documentation updated elsewhere while the editor had focus", async () => {
     const onSave = mock(async (_value: string) => {});
     const { rerender } = renderWithQuery(<RichDocumentation value="Old notes" onSave={onSave} />);

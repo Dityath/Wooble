@@ -130,7 +130,11 @@ export function RichDocumentation({ value, onSave }: { value: string; onSave: (v
   // that arrives while the editor has focus is shown when the user leaves it without an edit. Otherwise the editor keeps
   // its document, and the next save writes over the update.
   useEffect(() => {
-    if (value === loaded.current) return;
+    if (value === loaded.current) {
+      // Changed back to the documentation the editor shows, such as by an undo elsewhere: nothing is left to show.
+      pending.current = undefined;
+      return;
+    }
     const incoming = value.trim();
     // This editor's own save coming back, possibly before the save has finished.
     if (incoming === lastSaved.current || incoming === lastSubmitted.current) {
