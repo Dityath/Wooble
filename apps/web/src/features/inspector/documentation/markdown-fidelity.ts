@@ -4,7 +4,7 @@ import { Paragraph } from "@tiptap/extension-paragraph";
 import { Markdown } from "@tiptap/markdown";
 import { Fragment, type Node as ProseMirrorNode, type Schema } from "@tiptap/pm/model";
 import { decodeNamedCharacterReference } from "decode-named-character-reference";
-import { Tokenizer } from "marked";
+import { Marked, type marked, Tokenizer } from "marked";
 
 /**
  * Returns `content` with the least change that makes it valid for `schema`. TipTap's Markdown parser can produce
@@ -135,7 +135,9 @@ export function decodeNamedReferences(text: string): string {
   return text.replace(/&([A-Za-z][A-Za-z0-9]{0,31});/g, (reference, name: string) => {
     if (referencesDecodedByTipTap.has(name)) return reference;
     const decoded = decodeNamedCharacterReference(name);
-    return decoded === false ? reference : decoded;
+    if (decoded === false) return reference;
+    // TipTap decodes `&amp;` afterwards, so a decoded `&` (from `&AMP;`) is written as `&amp;` to stay one `&`.
+    return decoded.replaceAll("&", "&amp;");
   });
 }
 
@@ -149,13 +151,23 @@ class DocumentationTokenizer extends Tokenizer {
 }
 
 /**
- * The Markdown extension, with named references in text decoded (see `decodeNamedReferences`) and everything it parses
- * fitted to the editor's schema (see `fitToSchema`).
+ * Returns a Markdown parser for one editor, which decodes named references in text (see `decodeNamedReferences`).
+ * TipTap registers its Markdown tokenizers with the parser each time an editor is created, so a parser shared by every
+ * editor, such as marked's default, would collect them again for each documentation opened.
+ */
+export function createDocumentationMarked(): typeof marked {
+  const parser = new Marked();
+  parser.setOptions({ tokenizer: new DocumentationTokenizer() });
+  // TipTap types the parser as marked's default export, but only uses what every Marked instance has: Lexer,
+  // defaults, lexer, setOptions, and use.
+  return parser as unknown as typeof marked;
+}
+
+/**
+ * The Markdown extension, with everything it parses fitted to the editor's schema (see `fitToSchema`). Configure it with
+ * `marked: createDocumentationMarked()`.
  */
 export const DocumentationMarkdown = Markdown.extend({
-  addOptions() {
-    return { ...this.parent?.(), markedOptions: { tokenizer: new DocumentationTokenizer() } };
-  },
   onBeforeCreate(event) {
     this.parent?.(event);
     const { editor } = this;

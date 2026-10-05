@@ -5,9 +5,7 @@ import { ReactRenderer } from "@tiptap/react";
 import { exitSuggestion, Suggestion, type SuggestionProps } from "@tiptap/suggestion";
 import { filterSlashCommands, type SlashCommandItem } from "./slash-commands";
 import { SlashMenuList, type SlashMenuListProps } from "./slash-menu-list";
-
-/** Node types whose content a slash command cannot change: a table cell takes paragraphs only. */
-const tableCells = new Set(["tableCell", "tableHeader"]);
+import { isInTableCell } from "./table-cells";
 
 /**
  * Whether a `/` typed at `range` starts a slash command: only at the start of a block or after whitespace, and never
@@ -16,7 +14,7 @@ const tableCells = new Set(["tableCell", "tableHeader"]);
 function canOpenAt(state: EditorState, range: Range) {
   const $from = state.doc.resolve(range.from);
   if ($from.parent.type.spec.code) return false;
-  for (let depth = $from.depth; depth > 0; depth -= 1) if (tableCells.has($from.node(depth).type.name)) return false;
+  if (isInTableCell($from)) return false;
   const code = state.schema.marks.code;
   if (code && state.doc.rangeHasMark(range.from, range.to, code)) return false;
   // Inline leaves such as hard breaks start a new line, so they count as whitespace.

@@ -339,6 +339,13 @@ describe("documentation Markdown", () => {
       expect(editor.state.selection.$from.parent.type.name).toBe("paragraph");
       expect(editor.state.selection.$from.node(-1).type.name).toBe("tableCell");
     }
+    // A divider shortcut stays text too: a divider would split the table in two.
+    selectNotes();
+    await typeInEditor(element, "---");
+    expect(blocksOf(editor).filter((block) => block.type === "table")).toHaveLength(1);
+    expect(editor.state.selection.$from.parent.textContent).toBe("---");
+    selectNotes();
+    await typeInEditor(element, "[ ] Edge");
     // A new line in a cell is saved as <br> and reopens as a line break.
     await user.keyboard("{Enter}");
     await typeInEditor(element, "Retries");
@@ -352,18 +359,16 @@ describe("documentation Markdown", () => {
   });
 
   it("decodes named character references in text, but not in code or escaped text", () => {
-    const { editor, saved } = (() => {
-      const rendered = renderDocumentationEditor(
-        "Copyright &copy; 2026 &mdash; see &rarr; next, write &amp;copy; or \\&copy;, and keep &unknownref;\n\nRun `&copy;` here",
-      );
-      return { editor: rendered.editor, saved: rendered.editor.getMarkdown() };
-    })();
+    const { editor } = renderDocumentationEditor(
+      "Copyright &copy; 2026 &mdash; see &rarr; next, write &amp;copy;, \\&copy;, or &AMP;lt;, and keep &unknownref;\n\nRun `&copy;` here",
+    );
+    const saved = editor.getMarkdown();
     expect(editor.getText()).toBe(
-      "Copyright © 2026 — see → next, write &copy; or &copy;, and keep &unknownref;\n\nRun &copy; here",
+      "Copyright © 2026 — see → next, write &copy;, &copy;, or &lt;, and keep &unknownref;\n\nRun &copy; here",
     );
     // Saved again, each character reads the same: decoded symbols as themselves, literal text with its & encoded.
     expect(saved).toBe(
-      "Copyright © 2026 — see → next, write &amp;copy; or &amp;copy;, and keep &amp;unknownref;\n\nRun `&copy;` here",
+      "Copyright © 2026 — see → next, write &amp;copy;, &amp;copy;, or &amp;lt;, and keep &amp;unknownref;\n\nRun `&copy;` here",
     );
     expect(renderDocumentationEditor(saved).editor.getMarkdown()).toBe(saved);
   });

@@ -1,12 +1,23 @@
 import type { AnyExtension, EditorOptions } from "@tiptap/core";
 import { TaskItem, TaskList } from "@tiptap/extension-list";
-import { TableCell, TableHeader, TableKit } from "@tiptap/extension-table";
+import { TableKit } from "@tiptap/extension-table";
 import { Placeholder } from "@tiptap/extensions";
 import { StarterKit } from "@tiptap/starter-kit";
-import { DocumentationCodeBlock, DocumentationMarkdown, DocumentationParagraph } from "./markdown-fidelity";
+import {
+  createDocumentationMarked,
+  DocumentationCodeBlock,
+  DocumentationMarkdown,
+  DocumentationParagraph,
+} from "./markdown-fidelity";
 import { MarkdownPaste } from "./markdown-paste";
 import { PreventedEscape } from "./prevented-escape";
 import { SlashCommand } from "./slash-menu";
+import {
+  DocumentationHorizontalRule,
+  DocumentationTableCell,
+  DocumentationTableHeader,
+  TableCellText,
+} from "./table-cells";
 
 /** Editor options for the documentation editor, used together with `documentationExtensions`. */
 export const documentationEditorOptions = {
@@ -40,17 +51,21 @@ export function documentationExtensions({ placeholder = "" }: DocumentationExten
       // Replaced below by versions that write Markdown which reopens as the same blocks.
       paragraph: false,
       codeBlock: false,
+      // Replaced below by a divider whose `---` shortcut does nothing in a table cell.
+      horizontalRule: false,
     }),
     DocumentationParagraph,
     DocumentationCodeBlock,
+    DocumentationHorizontalRule,
     TaskList,
     TaskItem.configure({ nested: true }),
+    // Table cells hold text only, as in Markdown (see table-cells.ts).
     TableKit.configure({ table: { resizable: false }, tableCell: false, tableHeader: false }),
-    // A Markdown table cell holds one line of inline content, so a cell takes paragraphs only (saved joined by <br>).
-    // Lists, headings, quotes, code, and nested tables in a cell could not be saved.
-    TableCell.extend({ content: "paragraph+" }),
-    TableHeader.extend({ content: "paragraph+" }),
-    DocumentationMarkdown,
+    DocumentationTableCell,
+    DocumentationTableHeader,
+    TableCellText,
+    // Each editor gets its own Markdown parser, so editors opened one after another do not add to a shared one.
+    DocumentationMarkdown.configure({ marked: createDocumentationMarked() }),
     Placeholder.configure({ placeholder: ({ editor }) => (editor.isEmpty ? placeholder : "") }),
     SlashCommand,
     MarkdownPaste,

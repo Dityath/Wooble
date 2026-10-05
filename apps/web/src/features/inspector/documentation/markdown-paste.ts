@@ -1,6 +1,7 @@
 import { type Editor, Extension } from "@tiptap/core";
 import { type EditorState, Plugin, PluginKey } from "@tiptap/pm/state";
 import { CellSelection, isInTable } from "@tiptap/pm/tables";
+import { isTypingInTableCell } from "./table-cells";
 
 /** Markdown blocks that a line can start: each needs its marker at the start of the line, as Markdown does. */
 const blockSyntax = [
@@ -131,9 +132,14 @@ export const MarkdownPaste = Extension.create({
       new Plugin({
         key: new PluginKey("markdownPaste"),
         props: {
-          handlePaste: (view, event) => {
+          handlePaste: (view, event, slice) => {
             const markdown = markdownToPaste(view.state, event.clipboardData);
-            return markdown !== null && pasteMarkdown(editor, markdown);
+            if (markdown !== null && pasteMarkdown(editor, markdown)) return true;
+            // The code block would turn code copied from VS Code into a code block, which a table cell cannot hold.
+            // The slice is already the text of the paste (see TableCellText), so it is pasted as it is.
+            if (!event.clipboardData?.getData("vscode-editor-data") || !isTypingInTableCell(view.state)) return false;
+            view.dispatch(view.state.tr.replaceSelection(slice).scrollIntoView().setMeta("uiEvent", "paste"));
+            return true;
           },
         },
       }),

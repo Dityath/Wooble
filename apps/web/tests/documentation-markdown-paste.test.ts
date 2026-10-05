@@ -449,6 +449,47 @@ describe("pasting Markdown into documentation", () => {
       ]);
     });
 
+    const tableCount = (editor: Editor) => blocksOf(editor).filter((block) => block.type === "table").length;
+
+    it("pastes rich text with blocks into a cell as lines of text, without splitting the table", async () => {
+      const { editor } = renderDocumentationEditor(table);
+      editor.commands.setTextSelection(rangeOf(editor, "Platform").to);
+      await paste(editor, {
+        "text/html":
+          "<ul><li>Risk</li><li><strong>Fraud</strong></li></ul><h2>Escalation</h2><pre><code>page oncall\nopen incident</code></pre>",
+        "text/plain": "Risk\nFraud\nEscalation\npage oncall\nopen incident",
+      });
+      expect(tableCount(editor)).toBe(1);
+      expect(platformCell(editor)?.content).toEqual([
+        paragraph("PlatformRisk"),
+        { type: "paragraph", content: [{ type: "text", text: "Fraud", marks: [{ type: "bold" }] }] },
+        paragraph("Escalation"),
+        paragraph("page oncall"),
+        paragraph("open incident"),
+      ]);
+      expect(cellTexts(editor).slice(-2)).toEqual(["Ledger", "Payments"]);
+    });
+
+    it("pastes code copied from VS Code into a cell as text, without splitting the table", async () => {
+      const { editor } = renderDocumentationEditor(table);
+      editor.commands.setTextSelection(rangeOf(editor, "Platform").to);
+      await paste(editor, {
+        "text/html": highlighted(["retries: 3", "timeout: 2s"]),
+        "text/plain": "retries: 3\ntimeout: 2s",
+        "vscode-editor-data": vscodeData("yaml"),
+      });
+      expect(tableCount(editor)).toBe(1);
+      expect(platformCell(editor)?.content).toEqual([paragraph("Platformretries: 3"), paragraph("timeout: 2s")]);
+    });
+
+    it("still fills cells from a pasted table", async () => {
+      const { editor } = renderDocumentationEditor(table);
+      editor.commands.setTextSelection(rangeOf(editor, "Platform").from);
+      await paste(editor, { "text/html": "<table><tr><td>Core</td></tr><tr><td>Finance</td></tr></table>" });
+      expect(tableCount(editor)).toBe(1);
+      expect(cellTexts(editor)).toEqual(["Service", "Owner", "Gateway", "Core", "Ledger", "Finance"]);
+    });
+
     it("leaves a paste over selected cells to the table", async () => {
       const { editor } = renderDocumentationEditor(table);
       const cellBefore = (text: string) => editor.state.doc.resolve(rangeOf(editor, text).from).before(-1);
