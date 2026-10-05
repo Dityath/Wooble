@@ -5,6 +5,7 @@ import { Placeholder } from "@tiptap/extensions";
 import { StarterKit } from "@tiptap/starter-kit";
 import { DocumentationCodeBlock, DocumentationMarkdown, DocumentationParagraph } from "./markdown-fidelity";
 import { MarkdownPaste } from "./markdown-paste";
+import { PreventedEscape } from "./prevented-escape";
 import { SlashCommand } from "./slash-menu";
 
 /** Editor options for the documentation editor, used together with `documentationExtensions`. */
@@ -43,5 +44,6 @@ export function documentationExtensions({ placeholder = "" }: DocumentationExten
     Placeholder.configure({ placeholder: ({ editor }) => (editor.isEmpty ? placeholder : "") }),
     SlashCommand,
     MarkdownPaste,
+    PreventedEscape,
   ];
 }

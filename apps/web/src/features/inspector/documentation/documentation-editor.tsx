@@ -8,7 +8,8 @@ import { documentationEditorOptions, documentationExtensions } from "./extension
  * element has `data-inline-editing`; the next Escape closes the dialog.
  *
  * It is a low-priority keyboard shortcut so that extensions with the default priority, such as the slash menu, claim
- * Escape first. `editorProps.handleKeyDown` would run before every plugin, so the slash menu could not close first.
+ * Escape first. `editorProps.handleKeyDown` would run before every plugin, so the slash menu could not close first. The
+ * dialog prevents that Escape before the editor sees it; `PreventedEscape` passes it on.
  */
 const BlurOnEscape = Extension.create({
   name: "documentationBlurOnEscape",
@@ -80,20 +81,5 @@ export function DocumentationEditor({ initialMarkdown, onChange, onBlur, ref }: 
     }),
     [editor],
   );
-  return (
-    <EditorContent
-      editor={editor}
-      className="documentation-surface"
-      onKeyDownCapture={(event) => {
-        // ProseMirror ignores a key event whose default action is already prevented. The details dialog prevents
-        // Escape, on the document before the editor sees it, to stay open while the editor has focus. Pass that
-        // Escape to the editor's key handlers in their usual order, so the slash menu closes first and BlurOnEscape
-        // runs otherwise.
-        const { nativeEvent } = event;
-        if (nativeEvent.key !== "Escape" || !nativeEvent.defaultPrevented || nativeEvent.isComposing) return;
-        const { view } = editor;
-        view.someProp("handleKeyDown", (handleKeyDown) => handleKeyDown(view, nativeEvent));
-      }}
-    />
-  );
+  return <EditorContent editor={editor} className="documentation-surface" />;
 }

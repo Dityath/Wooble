@@ -65,17 +65,6 @@ function slashMenuRenderer(editor: Editor, pluginKey: PluginKey) {
     activeIndex = 0;
   };
   const close = () => exitSuggestion(editor.view, pluginKey);
-  // A modal dialog listens for Escape on the document in the capture phase, before the editor, and keeps itself open
-  // by calling preventDefault. ProseMirror ignores key events that are already default-prevented, so the plugin's own
-  // Escape handling never runs there. Claiming Escape on the window, first, closes only the menu: neither the dialog
-  // nor the editor's own Escape shortcut sees the key.
-  const claimEscape = (event: KeyboardEvent) => {
-    if (event.key !== "Escape" || event.isComposing) return;
-    if (!(event.target instanceof Node && editor.view.dom.contains(event.target))) return;
-    event.preventDefault();
-    event.stopPropagation();
-    close();
-  };
 
   return {
     onStart(next: SuggestionProps<SlashCommandItem, SlashCommandItem>) {
@@ -94,7 +83,6 @@ function slashMenuRenderer(editor: Editor, pluginKey: PluginKey) {
       (editor.view.dom.closest('[role="dialog"]') ?? document.body).append(element);
       unmount = next.mount(element);
       editor.on("blur", close);
-      window.addEventListener("keydown", claimEscape, true);
       update();
     },
     onUpdate(next: SuggestionProps<SlashCommandItem, SlashCommandItem>) {
@@ -117,7 +105,6 @@ function slashMenuRenderer(editor: Editor, pluginKey: PluginKey) {
       return false;
     },
     onExit() {
-      window.removeEventListener("keydown", claimEscape, true);
       editor.off("blur", close);
       unmount?.();
       renderer?.destroy();
@@ -136,8 +123,8 @@ function slashMenuRenderer(editor: Editor, pluginKey: PluginKey) {
  * and Enter choose a block, and Escape closes it.
  *
  * It keeps the default priority: extensions with a higher priority handle keys first, so the menu claims Enter, the
- * arrow keys, and Escape before the editor's own lower-priority shortcuts, such as Escape to leave the editor. While
- * the menu is open it also claims Escape on the window, before a dialog around the editor sees it (see `claimEscape`).
+ * arrow keys, and Escape before the editor's own lower-priority shortcuts, such as Escape to leave the editor. Inside a
+ * dialog that prevents Escape, `PreventedEscape` passes the key to them in the same order.
  */
 export const SlashCommand = Extension.create({
   name: "slashCommand",
