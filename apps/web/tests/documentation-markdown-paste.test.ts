@@ -585,6 +585,42 @@ describe("pasting Markdown into documentation", () => {
         expect(blocksOf(editor).map((block) => block.type)).toEqual(["table", "horizontalRule"]);
       });
 
+      /** Drops `html` from another page with the pointer at `pos`, through ProseMirror's own drop handling. */
+      async function dropHtml(editor: Editor, pos: number, html: string) {
+        const { view } = editor;
+        const posAtCoords = view.posAtCoords;
+        view.posAtCoords = () => ({ pos, inside: -1 });
+        const dataTransfer = new DataTransfer();
+        dataTransfer.setData("text/html", html);
+        const event = new DragEvent("drop", { clientX: 10, clientY: 10, bubbles: true, cancelable: true });
+        // happy-dom ignores dataTransfer in the event's init.
+        Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+        try {
+          await act(async () => {
+            view.dom.dispatchEvent(event);
+          });
+        } finally {
+          view.posAtCoords = posAtCoords;
+        }
+        expect(event.defaultPrevented).toBe(true);
+      }
+      const listHtml = "<ul><li>Risk</li><li>Fraud</li></ul>";
+
+      it("drops a list from another page into a cell as lines of text", async () => {
+        const { editor } = renderDocumentationEditor(`${table}\n\nNotes`);
+        await dropHtml(editor, rangeOf(editor, "Platform").to, listHtml);
+        expect(tableCount(editor)).toBe(1);
+        expect(platformCell(editor)?.content).toEqual([paragraph("PlatformRisk"), paragraph("Fraud")]);
+      });
+
+      it("keeps a list dropped outside the table a list, even with the caret in a cell", async () => {
+        const { editor } = renderDocumentationEditor(`${table}\n\nNotes`);
+        editor.commands.setTextSelection(rangeOf(editor, "Platform").to);
+        await dropHtml(editor, rangeOf(editor, "Notes").to, listHtml);
+        expect(blocksOf(editor).some((block) => block.type === "bulletList")).toBe(true);
+        expect(tableCount(editor)).toBe(1);
+      });
+
       it("leaves a drop outside a table to the editor", () => {
         const { editor } = renderDocumentationEditor(`${table}\n\nNotes`);
         expect(drop(editor, rangeOf(editor, "Notes").to, list(editor))).toBeFalsy();

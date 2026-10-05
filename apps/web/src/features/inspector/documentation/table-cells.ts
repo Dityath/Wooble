@@ -76,13 +76,26 @@ export const TableCellText = Extension.create({
   name: "tableCellText",
 
   addProseMirrorPlugins() {
+    // ProseMirror also passes dropped content through transformPasted, while the selection is still where the drag
+    // started. Drops are left to handleDrop, which looks at where they land.
+    let dropping = false;
     return [
       new Plugin({
         key: new PluginKey("tableCellText"),
         props: {
+          handleDOMEvents: {
+            // Runs before ProseMirror handles the drop, which it does before the event returns.
+            drop: () => {
+              dropping = true;
+              queueMicrotask(() => {
+                dropping = false;
+              });
+              return false;
+            },
+          },
           // A paste goes to the selection.
           transformPasted: (slice, view) =>
-            isTypingInTableCell(view.state) && !isTableCells(slice)
+            !dropping && isTypingInTableCell(view.state) && !isTableCells(slice)
               ? asCellText(slice, view.state.schema.nodes.paragraph)
               : slice,
           // A drop goes to the pointer, which may be in a cell while the selection (what is dragged) is not.
