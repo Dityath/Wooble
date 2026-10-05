@@ -16,14 +16,17 @@ An architecture entity can appear on more than one canvas. Its identity and meta
 
 ## Current capabilities
 
-The repository contains workspace and canvas access control, password accounts, invitation links, link-shared read-only canvases, live canvas presence, a canvas activity log with undo, architecture editing, technology metadata, basic manual contract fields, and database schema editing. PostgreSQL stores the model and canvas layout. The [README](../README.md) explains the current development setup; [self-hosting](self-hosting.md) covers Docker and Bun.
+The repository contains workspace and canvas access control, password accounts, invitation links, link-shared read-only canvases, live canvas presence, a canvas activity log with undo, architecture editing, technology metadata, basic manual contract fields, database schema editing, and a block documentation editor for nodes and connections. In the documentation editor, typing `/` opens a keyboard-operable menu that inserts headings, lists, task lists, quotes, code blocks, dividers, and tables; pasted Markdown is converted into blocks; and changes save automatically shortly after typing stops, when the editor loses focus, or when the dialog closes. Documentation is still stored as Markdown, which the entity page and read-only viewers display as before. PostgreSQL stores the model and canvas layout. The [README](../README.md) explains the current development setup; [self-hosting](self-hosting.md) covers Docker and Bun.
 
 ## Areas to improve
 
 The initial release sequence, target dates, and criteria of done for the first four directions are in the [product roadmap](roadmap.md). Dates are revisable targets, and these entries do not claim the features already exist:
 
 - **Comments and discussion:** let people discuss an architecture element or connection in its context.
-- **Collaborative documentation:** make documentation more useful and let members contribute, review, and maintain it together. Current documentation fields are basic.
+- **Collaborative documentation:** make documentation more useful and let members contribute, review, and maintain it together. The block editor is the first step. It currently has these known limits:
+  - There is no co-editing or presence yet. If two people edit the same documentation, the last save wins.
+  - Images and raw HTML in existing Markdown may be lost when that document is edited: an image keeps only its alt text, and HTML keeps its text but loses its tags and comments. Other Markdown the editor does not support, such as footnotes, may be rewritten.
+  - A Markdown file cannot be imported yet; paste its contents instead.
 - **Consistent interface:** tighten visual patterns and interaction behavior across the canvas, inspector, dialogs, and supporting pages; the first focused stability and usability pass is planned for `v0.6.0`.
 - **API and protobuf contracts:** go beyond basic manual fields to represent, edit, and inspect contracts properly; consider OpenAPI and protobuf import or synchronization.
 - **Database diagrams:** provide a dedicated view of schemas and relationships, building on the existing schema fields.
