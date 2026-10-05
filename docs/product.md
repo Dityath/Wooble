@@ -27,6 +27,8 @@ The initial release sequence, target dates, and criteria of done for the first f
   - There is no co-editing or presence yet. If two people edit the same documentation, the last save wins.
   - Images and raw HTML in existing Markdown may be lost when that document is edited: an image keeps only its alt text, and HTML keeps its text but loses its tags and comments. Other Markdown the editor does not support, such as footnotes, may be rewritten.
   - A Markdown file cannot be imported yet; paste its contents instead.
+  - Documentation is limited to 20,000 characters of Markdown. Longer documentation is not saved, and text over the limit is lost if the dialog is closed before it is shortened.
+  - A table cell holds text only, as in Markdown: lists, headings, and other blocks cannot be placed in a cell.
 - **Consistent interface:** tighten visual patterns and interaction behavior across the canvas, inspector, dialogs, and supporting pages; the first focused stability and usability pass is planned for `v0.6.0`.
 - **API and protobuf contracts:** go beyond basic manual fields to represent, edit, and inspect contracts properly; consider OpenAPI and protobuf import or synchronization.
 - **Database diagrams:** provide a dedicated view of schemas and relationships, building on the existing schema fields.

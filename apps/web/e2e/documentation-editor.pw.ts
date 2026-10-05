@@ -175,9 +175,9 @@ test("typing in the documentation editor never switches tools or deletes the nod
   await openCanvas(page);
   await openNodeDocumentation(page, seeded.alphaId);
   const editor = documentationEditor(page);
-  const saves: string[] = [];
+  const deletions: string[] = [];
   page.on("request", (request) => {
-    if (request.method() === "PATCH") saves.push(request.url());
+    if (request.method() === "DELETE") deletions.push(request.url());
   });
 
   await editor.click();
@@ -192,13 +192,14 @@ test("typing in the documentation editor never switches tools or deletes the nod
   await expect(toolButton(page, "Select")).toHaveAttribute("aria-pressed", "true");
   await expect(toolButton(page, "Add node")).toHaveAttribute("aria-pressed", "false");
 
-  // The document ends as it started, so leaving the editor and closing the dialog saves nothing.
+  // The document ends as it started, and nothing was deleted.
   await page.keyboard.press("Escape");
   await expect(editor).not.toBeFocused();
   await page.keyboard.press("Escape");
   await expect(detailsDialog(page)).toBeHidden();
   await expect(node(page, seeded.alphaId)).toBeVisible();
-  expect(saves).toEqual([]);
+  await expect.poll(() => storedDocumentation(page, `/api/entities/${seeded.alphaId}`)).toBeNull();
+  expect(deletions).toEqual([]);
 });
 
 test("connector documentation saves and persists", async ({ page }) => {
