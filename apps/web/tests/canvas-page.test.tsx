@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import type { CanvasGraph } from "../src/lib/api";
 import { useEditorStore } from "../src/stores/editor-store";
 import { FakeApi, failWith } from "./support/fake-api";
@@ -510,8 +510,11 @@ describe("panels and collaboration", () => {
     const dialog = await screen.findByRole("dialog", { name: "Canvas details" });
     expect(within(dialog).getByText("About this service")).toBeTruthy();
     await actor.click(within(dialog).getByRole("button", { name: "Documentation" }));
-    await actor.click(within(dialog).getByRole("button", { name: "Edit" }));
+    const documentation = within(dialog).getByRole("textbox", { name: "Documentation" });
+    await act(async () => documentation.focus());
+    // Escape leaves the documentation editor and keeps the dialog open.
     await actor.keyboard("{Escape}");
+    await waitFor(() => expect(document.activeElement).not.toBe(documentation));
     expect(screen.getByRole("dialog", { name: "Canvas details" })).toBeTruthy();
     fireEvent.keyDown(window, { key: "Backspace" });
     await actor.click(within(dialog).getAllByRole("button", { name: "Close" }).at(-1) as HTMLElement);

@@ -1,7 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Button } from "../../components/ui";
+import { DocumentationEditor, type DocumentationEditorHandle } from "./documentation/documentation-editor";
+
+const AUTOSAVE_DELAY_MS = 900;
+// Mirrors `documentation: z.string().trim().max(20000)` in the API contracts, which do not export the limit.
+const MAX_DOCUMENTATION_LENGTH = 20_000;
+const TOO_LONG_MESSAGE = "Documentation is limited to 20,000 characters of Markdown. Shorten it to save.";
 
 export function MarkdownContent({ value }: { value: string }) {
   return value ? (
@@ -9,142 +14,139 @@ export function MarkdownContent({ value }: { value: string }) {
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{value}</ReactMarkdown>
     </article>
   ) : (
-    <p className="rich-empty">No documentation yet. Select Edit to start writing.</p>
+    <p className="rich-empty">No documentation yet.</p>
   );
 }
 
+/**
+ * Documentation that is always editable and saves itself: 900 ms after the last edit, when the editor loses focus, and
+ * when it closes. Saves run one at a time.
+ *
+ * Markdown is compared and saved trimmed, because the API trims what it stores. Trimming also ignores the blank lines
+ * the editor writes around a table and after the empty paragraph it keeps at the end of the document. Edits are
+ * compared with the Markdown the editor writes for the loaded documentation, never with `value`, because the editor
+ * writes equivalent syntax in one canonical form. Opening or leaving documentation without an edit never saves it.
+ */
 export function RichDocumentation({ value, onSave }: { value: string; onSave: (value: string) => Promise<void> }) {
-  const [draft, setDraft] = useState(value);
-  const [editing, setEditing] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const lastSubmitted = useRef(value);
-  const lastSaved = useRef(value);
+  const editor = useRef<DocumentationEditorHandle>(null);
+  const save = useRef(onSave);
+  useLayoutEffect(() => {
+    save.current = onSave;
+  });
+  // Trimmed Markdown: the editor's document after its latest change, the document as last loaded or saved, and the
+  // document most recently queued for saving. The latest document is kept here because the editor may already be
+  // destroyed when unmounting saves it.
+  const latest = useRef("");
+  const lastSaved = useRef("");
+  const lastSubmitted = useRef("");
+  // The `value` the editor last loaded.
+  const loaded = useRef(value);
+  const edited = useRef(false);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => {
-    if (!editing) {
-      setDraft(value);
-      lastSubmitted.current = value;
-      lastSaved.current = value;
+  // The latest document once the user has edited it; undefined before the first edit.
+  const [draft, setDraft] = useState<string>();
+  const [saved, setSaved] = useState("");
+  const [savesInFlight, setSavesInFlight] = useState(0);
+  const [error, setError] = useState("");
+
+  const commit = useCallback((next: string) => {
+    if (next === lastSubmitted.current) {
+      // Nothing new to save, and a document that matches the saved one has no failed save to report.
+      if (next === lastSaved.current) setError("");
+      return;
     }
-  }, [value, editing]);
-  useEffect(() => {
-    if (editing) textareaRef.current?.focus();
-  }, [editing]);
-  const commit = useCallback(
-    (next: string) => {
-      if (next === lastSubmitted.current) return saveQueue.current;
-      lastSubmitted.current = next;
-      setSaving(true);
-      setError("");
-      saveQueue.current = saveQueue.current
-        .catch(() => undefined)
-        .then(async () => {
-          try {
-            await onSave(next);
-            lastSaved.current = next;
-            setError("");
-          } catch (cause) {
-            lastSubmitted.current = lastSaved.current;
-            setError(cause instanceof Error ? cause.message : "Could not save documentation");
-            throw cause;
-          } finally {
-            setSaving(false);
-          }
-        });
-      return saveQueue.current;
-    },
-    [onSave],
-  );
-  useEffect(() => {
-    if (!editing || draft === lastSubmitted.current) return;
-    const timer = setTimeout(() => {
-      void commit(draft).catch(() => undefined);
-    }, 900);
-    return () => clearTimeout(timer);
-  }, [draft, editing, commit]);
-  const cancel = () => {
-    setDraft(lastSaved.current);
-    setEditing(false);
+    if (next.length > MAX_DOCUMENTATION_LENGTH) {
+      setError(TOO_LONG_MESSAGE);
+      return;
+    }
+    lastSubmitted.current = next;
+    setSavesInFlight((count) => count + 1);
     setError("");
-  };
+    saveQueue.current = saveQueue.current.then(async () => {
+      try {
+        await save.current(next);
+        lastSaved.current = next;
+        setSaved(next);
+        setError("");
+      } catch (cause) {
+        // Submit it again on the next attempt, unless a newer document is already queued.
+        if (lastSubmitted.current === next) lastSubmitted.current = lastSaved.current;
+        setError(cause instanceof Error ? cause.message : "Could not save documentation");
+      } finally {
+        setSavesInFlight((count) => count - 1);
+      }
+    });
+  }, []);
+
+  const handleChange = useCallback((markdown: string) => {
+    const next = markdown.trim();
+    latest.current = next;
+    // The editor can change its document without an edit, such as adding an empty paragraph after a final table or
+    // code block when it is first focused. That writes the same trimmed Markdown, so it is not an edit.
+    if (!edited.current && next === lastSaved.current) return;
+    edited.current = true;
+    setDraft(next);
+    if (next.length <= MAX_DOCUMENTATION_LENGTH) setError((current) => (current === TOO_LONG_MESSAGE ? "" : current));
+  }, []);
+
+  const handleBlur = useCallback(() => commit(latest.current), [commit]);
+
+  useEffect(() => {
+    const loadedMarkdown = editor.current?.getMarkdown().trim() ?? "";
+    latest.current = loadedMarkdown;
+    lastSaved.current = loadedMarkdown;
+    lastSubmitted.current = loadedMarkdown;
+    setSaved(loadedMarkdown);
+    // Closing the editor before the autosave saves the pending edit. Under StrictMode's extra unmount nothing has
+    // changed, so nothing is saved.
+    return () => commit(latest.current);
+  }, [commit]);
+
+  useEffect(() => {
+    if (draft === undefined) return;
+    const timer = setTimeout(() => commit(draft), AUTOSAVE_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [draft, commit]);
+
+  // Documentation changed elsewhere replaces the editor's document only while the user is not working on it.
+  // Otherwise the editor keeps its document, and the next save writes over the update.
+  useEffect(() => {
+    if (value === loaded.current) return;
+    const incoming = value.trim();
+    if (incoming === lastSaved.current) {
+      // This editor's own save coming back.
+      loaded.current = value;
+      return;
+    }
+    const handle = editor.current;
+    if (!handle || handle.hasFocus() || latest.current !== lastSaved.current) return;
+    const replaced = handle.replace(value).trim();
+    loaded.current = value;
+    latest.current = replaced;
+    lastSaved.current = replaced;
+    lastSubmitted.current = replaced;
+    setSaved(replaced);
+    setDraft((current) => (current === undefined ? undefined : replaced));
+  }, [value]);
+
+  const saveState =
+    draft === undefined ? "" : savesInFlight > 0 ? "Saving…" : draft !== saved ? "Unsaved changes" : "Saved";
   return (
     <section className="rich-detail-card documentation-card">
       <div className="rich-detail-heading">
         <div>
           <h3>Documentation</h3>
-          <p>Markdown with a live reading view.</p>
+          <p>Type / to insert blocks. Paste Markdown to convert it.</p>
         </div>
-        <div className="rich-detail-actions">
-          {editing ? (
-            <>
-              <span className="documentation-save-state" role="status">
-                {saving ? "Saving…" : draft !== lastSaved.current ? "Unsaved changes" : "Saved"}
-              </span>
-              <Button size="sm" variant="ghost" onPointerDown={(event) => event.preventDefault()} onClick={cancel}>
-                Cancel
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => {
-                  void commit(draft)
-                    .then(() => setEditing(false))
-                    .catch(() => undefined);
-                }}
-              >
-                Done
-              </Button>
-            </>
-          ) : (
-            <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
-              Edit
-            </Button>
-          )}
-        </div>
+        <span className="documentation-save-state" role="status">
+          {saveState}
+        </span>
       </div>
-      {editing ? (
-        <div className="documentation-workspace">
-          <div className="documentation-source">
-            <span>MARKDOWN</span>
-            <textarea
-              ref={textareaRef}
-              data-inline-editing="true"
-              aria-label="Documentation Markdown"
-              className="rich-source-editor"
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              onBlur={() => void commit(draft).catch(() => undefined)}
-              maxLength={20000}
-              placeholder={"# Overview\n\nDescribe this component…"}
-              spellCheck={false}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  cancel();
-                }
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                  event.preventDefault();
-                  void commit(draft)
-                    .then(() => setEditing(false))
-                    .catch(() => undefined);
-                }
-              }}
-            />
-          </div>
-          <div className="documentation-preview">
-            <span>PREVIEW</span>
-            <MarkdownContent value={draft} />
-          </div>
-        </div>
-      ) : (
-        <MarkdownContent value={value} />
-      )}
+      <DocumentationEditor ref={editor} initialMarkdown={value} onChange={handleChange} onBlur={handleBlur} />
       {error && (
         <p className="form-error" role="alert">
           {error}{" "}
-          <button type="button" onClick={() => void commit(draft).catch(() => undefined)}>
+          <button type="button" onClick={() => commit(latest.current)}>
             Retry
           </button>
         </p>

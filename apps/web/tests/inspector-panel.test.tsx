@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import type { ArchitectureEntity } from "@wooble/domain";
 import { useState } from "react";
 import { InspectorPanel } from "../src/features/inspector/inspector-panel";
 import type { CanvasGraph } from "../src/lib/api";
 import { useEditorStore } from "../src/stores/editor-store";
+import { editorFromElement, typeInEditor } from "./support/editor";
 import { FakeApi, failWith } from "./support/fake-api";
 import { entity, graph, ids } from "./support/fixtures";
 import { renderWithQuery } from "./support/render";
@@ -502,11 +503,12 @@ describe("inspector details", () => {
     await waitFor(() => expect(server.calls).toHaveLength(1));
 
     await user.click(screen.getByRole("button", { name: "Documentation" }));
-    await user.click(screen.getByRole("button", { name: "Edit" }));
-    await user.type(screen.getByLabelText("Documentation Markdown"), "# Backups");
-    await user.click(screen.getByRole("button", { name: "Done" }));
+    const documentation = screen.getByRole("textbox", { name: "Documentation" });
+    // A heading shortcut, then leaving the editor, which saves.
+    await typeInEditor(documentation, "# Backups");
+    await act(async () => documentation.blur());
     await waitFor(() => expect(server.calls).toHaveLength(2));
-    expect(server.calls.map((call) => call.body)).toEqual([
+    expect(server.requests("PATCH", `/api/entities/${ids.database}`).map((call) => call.body)).toEqual([
       { metadata: { schemaSql: "CREATE TABLE t (id INT);" } },
       { metadata: { documentation: "# Backups" } },
     ]);
@@ -522,7 +524,10 @@ describe("inspector details", () => {
   it("shows connection facts and saves the contract and documentation", async () => {
     server.on("PATCH /api/connections/:id", {});
     const data = graph();
-    data.connections[0] = { ...data.connections[0], metadata: { contract: "orders.v1" } };
+    data.connections[0] = {
+      ...data.connections[0],
+      metadata: { contract: "orders.v1", documentation: "* Primary\n* Replica" },
+    };
     selectConnection(ids.connection);
     const { user } = renderWithQuery(<Details data={data} />);
     expect(screen.getByText("Orders API → Orders DB")).toBeTruthy();
@@ -536,13 +541,26 @@ describe("inspector details", () => {
     await waitFor(() => expect(server.calls).toHaveLength(1));
 
     await user.click(screen.getByRole("button", { name: "Documentation" }));
-    await user.click(screen.getByRole("button", { name: "Edit" }));
-    await user.type(screen.getByLabelText("Documentation Markdown"), "Read replica");
-    await user.click(screen.getByRole("button", { name: "Done" }));
+    const documentation = screen.getByRole("textbox", { name: "Documentation" });
+    const items = within(documentation).getAllByRole("listitem");
+    expect(items.map((item) => item.textContent)).toEqual(["Primary", "Replica"]);
+    // Opening and leaving the documentation does not save it, although the editor writes `*` bullets as `-`.
+    await act(async () => editorFromElement(documentation).view.focus());
+    await act(async () => documentation.blur());
+    expect(server.calls).toHaveLength(1);
+
+    const editor = editorFromElement(documentation);
+    let endOfReplica = 0;
+    editor.state.doc.descendants((node, position) => {
+      if (node.text === "Replica") endOfReplica = position + node.nodeSize;
+    });
+    editor.commands.setTextSelection(endOfReplica);
+    await typeInEditor(documentation, " (read only)");
+    await act(async () => documentation.blur());
     await waitFor(() => expect(server.calls).toHaveLength(2));
-    expect(server.calls.map((call) => call.body)).toEqual([
+    expect(server.requests("PATCH", `/api/connections/${ids.connection}`).map((call) => call.body)).toEqual([
       { metadata: { contractBody: "SELECT 1" } },
-      { metadata: { documentation: "Read replica" } },
+      { metadata: { documentation: "- Primary\n- Replica (read only)" } },
     ]);
   });
 

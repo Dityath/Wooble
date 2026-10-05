@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { useState } from "react";
+import { StrictMode, useState } from "react";
 import { CanvasActivityLog } from "../src/features/canvas/canvas-activity-log";
 import { canvasShortcutLabel, isApplePlatform } from "../src/features/canvas/canvas-shortcuts";
 import { DatabaseSchema } from "../src/features/inspector/database-schema";
 import { RichDocumentation } from "../src/features/inspector/rich-documentation";
 import { CanvasShareDialog } from "../src/features/workspace/canvas-share-dialog";
+import { editorFromElement, typeInEditor } from "./support/editor";
 import { FakeApi, failWith } from "./support/fake-api";
 import { canvasEvent, entity, graph, ids, user, workspace } from "./support/fixtures";
 import { renderRoute, renderWithQuery } from "./support/render";
@@ -74,7 +75,7 @@ describe("entity detail page", () => {
     expect(screen.getByLabelText<HTMLTextAreaElement>("SQL schema").readOnly).toBe(true);
     expect(screen.getByText("2 tables · 1 relationships")).toBeTruthy();
     expect(screen.getByRole("link", { name: /Back to library/ }).getAttribute("href")).toBe("/canvases");
-    expect(screen.getByText("No documentation yet. Select Edit to start writing.")).toBeTruthy();
+    expect(screen.getByText("No documentation yet.")).toBeTruthy();
   });
 
   it("labels unfamiliar entity types and reports load errors", async () => {
@@ -247,79 +248,298 @@ describe("canvas activity log", () => {
 });
 
 describe("rich documentation", () => {
-  it("renders Markdown, edits with a live preview, and saves on Done", async () => {
-    const onSave = mock(async (_value: string) => {});
-    const { user: actor } = renderWithQuery(<RichDocumentation value={"# Runbook"} onSave={onSave} />);
-    expect(screen.getByRole("heading", { name: "Runbook" })).toBeTruthy();
+  const documentation = () => screen.getByRole("textbox", { name: "Documentation" });
+  const saveState = () => screen.getByRole("status").textContent;
+  const focusDocumentation = () => act(async () => editorFromElement(documentation()).view.focus());
+  const blurDocumentation = () => act(async () => documentation().blur());
+  /** Places the caret at the end of the last block, as clicking after the text does. */
+  const caretToEnd = () =>
+    act(() => {
+      const editor = editorFromElement(documentation());
+      editor.commands.setTextSelection(editor.state.doc.content.size);
+    });
+  /** Saves that stay in flight until the test finishes them, in order. */
+  function pendingSaves() {
+    const finish: Array<() => void> = [];
+    const onSave = mock((_value: string) => new Promise<void>((resolve) => finish.push(resolve)));
+    return { onSave, finish };
+  }
+  /**
+   * Runs `edit` and returns the autosave it schedules, so a test can run the autosave without waiting out the pause.
+   * Each edit replaces the previous timer, so the last one counts. Timers are recorded with a plain wrapper: with a mock
+   * `setTimeout`, Testing Library would expect Jest fake timers.
+   */
+  async function autosaveAfter(edit: () => Promise<void>) {
+    const realSetTimeout = globalThis.setTimeout;
+    let autosave: (() => void) | undefined;
+    globalThis.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+      if (delay === 900 && typeof handler === "function") autosave = handler as () => void;
+      return realSetTimeout(handler, delay, ...args);
+    }) as unknown as typeof setTimeout;
+    try {
+      await edit();
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+    if (!autosave) throw new Error("No autosave was scheduled 900 ms after the edit.");
+    const run = autosave;
+    return () => act(async () => run());
+  }
 
-    await actor.click(screen.getByRole("button", { name: "Edit" }));
-    const source = screen.getByLabelText("Documentation Markdown");
-    expect(document.activeElement).toBe(source);
-    expect(screen.getByRole("status").textContent).toBe("Saved");
-    await actor.type(source, "\n\n- restart the worker");
-    expect(screen.getByRole("status").textContent).toBe("Unsaved changes");
-    expect(screen.getByRole("listitem").textContent).toBe("restart the worker");
-
-    await actor.click(screen.getByRole("button", { name: "Done" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy());
-    expect(onSave).toHaveBeenLastCalledWith("# Runbook\n\n- restart the worker");
+  it("opens existing Markdown as editable blocks", () => {
+    const value = [
+      "# Runbook",
+      "Restart the **worker** after a deploy.",
+      "- [x] Drain the queue\n- [ ] Deploy the release",
+      "| Step | Owner |\n| --- | --- |\n| Drain | Platform |",
+    ].join("\n\n");
+    renderWithQuery(<RichDocumentation value={value} onSave={mock(async () => {})} />);
+    const editor = documentation();
+    expect(editor.getAttribute("contenteditable")).toBe("true");
+    expect(within(editor).getByRole("heading", { level: 1, name: "Runbook" })).toBeTruthy();
+    expect(within(editor).getByText("worker").tagName).toBe("STRONG");
+    expect(
+      within(editor)
+        .getAllByRole<HTMLInputElement>("checkbox")
+        .map((box) => box.checked),
+    ).toEqual([true, false]);
+    expect(within(within(editor).getByRole("table")).getByText("Platform")).toBeTruthy();
+    expect(screen.getByText("Type / to insert blocks. Paste Markdown to convert it.")).toBeTruthy();
+    expect(saveState()).toBe("");
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
   });
 
-  it("autosaves after a pause and saves with Cmd/Ctrl+Enter", async () => {
-    const onSave = mock(async (_value: string) => {});
-    const { user: actor } = renderWithQuery(<RichDocumentation value="" onSave={onSave} />);
-    expect(screen.getByText("No documentation yet. Select Edit to start writing.")).toBeTruthy();
-    await actor.click(screen.getByRole("button", { name: "Edit" }));
-    await actor.type(screen.getByLabelText("Documentation Markdown"), "Draft");
-    await waitFor(() => expect(onSave).toHaveBeenCalledWith("Draft"), { timeout: 2000 });
-
-    await actor.type(screen.getByLabelText("Documentation Markdown"), " two{Control>}{Enter}{/Control}");
-    await waitFor(() => expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy());
-    expect(onSave).toHaveBeenLastCalledWith("Draft two");
+  it("invites writing in an empty document", () => {
+    renderWithQuery(<RichDocumentation value="" onSave={mock(async () => {})} />);
+    const paragraph = documentation().querySelector("p.is-editor-empty");
+    expect(paragraph?.getAttribute("data-placeholder")).toBe('Type "/" for blocks, or paste Markdown');
   });
 
-  it("restores the saved text on Escape or Cancel", async () => {
-    const onSave = mock(async (_value: string) => {});
-    const { user: actor } = renderWithQuery(<RichDocumentation value="Stable" onSave={onSave} />);
-    await actor.click(screen.getByRole("button", { name: "Edit" }));
-    await actor.type(screen.getByLabelText("Documentation Markdown"), " change");
-    await actor.keyboard("{Escape}");
-    expect(screen.getByText("Stable")).toBeTruthy();
+  it("never saves documentation that is opened, focused, or left without an edit", async () => {
+    const documents = [
+      // The editor adds an empty paragraph after a final code block or table on the first transaction, such as a focus.
+      { value: "```ts\nexport const retries = 3;\n```", afterFocus: "```ts\nexport const retries = 3;\n```\n\n" },
+      {
+        value: "| Service | Owner |\n| --- | --- |\n| Ledger | Payments |",
+        afterFocus: "\n| Service | Owner    |\n| ------- | -------- |\n| Ledger  | Payments |\n\n\n",
+      },
+      // Equivalent syntax is written in one canonical form.
+      {
+        value: "* Gateway\n* Ledger\n\n__Owned__ by _Platform_",
+        afterFocus: "- Gateway\n- Ledger\n\n**Owned** by *Platform*",
+      },
+    ];
+    for (const { value, afterFocus } of documents) {
+      const onSave = mock(async (_value: string) => {});
+      const { unmount, user: actor } = renderWithQuery(
+        <StrictMode>
+          <RichDocumentation value={value} onSave={onSave} />
+        </StrictMode>,
+      );
+      await focusDocumentation();
+      expect(editorFromElement(documentation()).getMarkdown()).toBe(afterFocus);
+      await actor.click(documentation());
+      await blurDocumentation();
+      expect(saveState()).toBe("");
+      unmount();
+      expect(onSave).not.toHaveBeenCalled();
+    }
+  });
 
-    await actor.click(screen.getByRole("button", { name: "Edit" }));
-    await actor.type(screen.getByLabelText("Documentation Markdown"), " again");
-    await actor.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(screen.queryByLabelText("Documentation Markdown")).toBeNull();
+  it("autosaves trimmed Markdown 900 ms after the last edit", async () => {
+    const onSave = mock(async (_value: string) => {});
+    const { user: actor } = renderWithQuery(<RichDocumentation value="Gateway" onSave={onSave} />);
+    const autosave = await autosaveAfter(async () => {
+      await caretToEnd();
+      await typeInEditor(documentation(), " API");
+      // A new empty paragraph writes trailing blank lines, which the API would trim.
+      await actor.keyboard("{Enter}");
+    });
+    expect(editorFromElement(documentation()).getMarkdown()).toBe("Gateway API\n\n");
+    expect(saveState()).toBe("Unsaved changes");
     expect(onSave).not.toHaveBeenCalled();
+
+    await autosave();
+    expect(onSave.mock.calls).toEqual([["Gateway API"]]);
+    await waitFor(() => expect(saveState()).toBe("Saved"));
   });
 
-  it("keeps editing after a failed save and retries", async () => {
+  it("saves as soon as the editor loses focus", async () => {
+    const { onSave, finish } = pendingSaves();
+    renderWithQuery(<RichDocumentation value="# Runbook" onSave={onSave} />);
+    await caretToEnd();
+    await typeInEditor(documentation(), " v2");
+    await blurDocumentation();
+    expect(onSave.mock.calls).toEqual([["# Runbook v2"]]);
+    expect(saveState()).toBe("Saving…");
+
+    await act(async () => finish[0]());
+    expect(saveState()).toBe("Saved");
+  });
+
+  it("keeps the content of a failed save and retries it", async () => {
     let fail = true;
     const onSave = mock(async (_value: string) => {
-      if (fail) throw new Error("Documentation is too long");
+      if (fail) throw new Error("Documentation could not be saved");
     });
     const { user: actor } = renderWithQuery(<RichDocumentation value="" onSave={onSave} />);
-    await actor.click(screen.getByRole("button", { name: "Edit" }));
-    await actor.type(screen.getByLabelText("Documentation Markdown"), "Notes");
-    await actor.click(screen.getByRole("button", { name: "Done" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("Documentation is too long");
-    expect(screen.getByLabelText("Documentation Markdown")).toBeTruthy();
+    await typeInEditor(documentation(), "Rotate the keys");
+    await blurDocumentation();
+    expect((await screen.findByRole("alert")).textContent).toContain("Documentation could not be saved");
+    expect(documentation().textContent).toBe("Rotate the keys");
+    expect(saveState()).toBe("Unsaved changes");
 
     fail = false;
     await actor.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
-    expect(onSave).toHaveBeenLastCalledWith("Notes");
+    expect(onSave.mock.calls).toEqual([["Rotate the keys"], ["Rotate the keys"]]);
+    expect(saveState()).toBe("Saved");
   });
 
-  it("saves when the editor loses focus and skips unchanged text", async () => {
+  it("sends one save at a time and saves edits made during a save after it", async () => {
+    const { onSave, finish } = pendingSaves();
+    renderWithQuery(<RichDocumentation value="" onSave={onSave} />);
+    await typeInEditor(documentation(), "First");
+    await blurDocumentation();
+    await caretToEnd();
+    await typeInEditor(documentation(), " draft");
+    await blurDocumentation();
+    expect(onSave.mock.calls).toEqual([["First"]]);
+
+    await act(async () => finish[0]());
+    expect(onSave.mock.calls).toEqual([["First"], ["First draft"]]);
+    expect(saveState()).toBe("Saving…");
+    await act(async () => finish[1]());
+    expect(saveState()).toBe("Saved");
+  });
+
+  it("shows documentation updated elsewhere while the editor is idle", async () => {
     const onSave = mock(async (_value: string) => {});
-    const { user: actor } = renderWithQuery(<RichDocumentation value="Same" onSave={onSave} />);
-    await actor.click(screen.getByRole("button", { name: "Edit" }));
-    fireEvent.blur(screen.getByLabelText("Documentation Markdown"));
+    const { rerender } = renderWithQuery(<RichDocumentation value="Old notes" onSave={onSave} />);
+    rerender(<RichDocumentation value={"* Updated notes"} onSave={onSave} />);
+    expect(within(documentation()).getByRole("listitem").textContent).toBe("Updated notes");
+
+    // The update becomes the saved document, so leaving the editor does not save its canonical form.
+    await focusDocumentation();
+    await blurDocumentation();
     expect(onSave).not.toHaveBeenCalled();
-    await actor.type(screen.getByLabelText("Documentation Markdown"), "!");
-    fireEvent.blur(screen.getByLabelText("Documentation Markdown"));
-    await waitFor(() => expect(onSave).toHaveBeenCalledWith("Same!"));
+    // The editor keeps an empty paragraph after the list to type in.
+    await caretToEnd();
+    await typeInEditor(documentation(), "Reviewed");
+    await blurDocumentation();
+    expect(onSave.mock.calls).toEqual([["- Updated notes\n\nReviewed"]]);
+  });
+
+  it("keeps the editor's content when documentation is updated elsewhere while it has focus", async () => {
+    const onSave = mock(async (_value: string) => {});
+    const { rerender } = renderWithQuery(<RichDocumentation value="Old notes" onSave={onSave} />);
+    await focusDocumentation();
+    rerender(<RichDocumentation value="Remote notes" onSave={onSave} />);
+    expect(documentation().textContent).toBe("Old notes");
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("keeps unsaved changes when documentation is updated elsewhere", async () => {
+    const onSave = mock(async (_value: string) => {
+      throw new Error("Network unavailable");
+    });
+    const { rerender } = renderWithQuery(<RichDocumentation value="Old notes" onSave={onSave} />);
+    await caretToEnd();
+    await typeInEditor(documentation(), " and local edits");
+    await blurDocumentation();
+    expect((await screen.findByRole("alert")).textContent).toContain("Network unavailable");
+
+    rerender(<RichDocumentation value="Remote notes" onSave={onSave} />);
+    expect(documentation().textContent).toBe("Old notes and local edits");
+    expect(saveState()).toBe("Unsaved changes");
+  });
+
+  it("keeps its undo history when its own save comes back as the documentation", async () => {
+    const onSave = mock(async (_value: string) => {});
+    const { rerender } = renderWithQuery(<RichDocumentation value="Notes" onSave={onSave} />);
+    await caretToEnd();
+    await typeInEditor(documentation(), " v2");
+    await blurDocumentation();
+    expect(onSave.mock.calls).toEqual([["Notes v2"]]);
+    rerender(<RichDocumentation value="Notes v2" onSave={onSave} />);
+
+    act(() => {
+      editorFromElement(documentation()).commands.undo();
+    });
+    expect(documentation().textContent).toBe("Notes");
+    expect(saveState()).toBe("Unsaved changes");
+  });
+
+  it("saves a pending edit when the editor closes before the autosave", async () => {
+    const onSave = mock(async (_value: string) => {});
+    const { unmount } = renderWithQuery(<RichDocumentation value="" onSave={onSave} />);
+    await typeInEditor(documentation(), "Closing soon");
+    expect(onSave).not.toHaveBeenCalled();
+    unmount();
+    await waitFor(() => expect(onSave.mock.calls).toEqual([["Closing soon"]]));
+  });
+
+  it("saves a pending edit once on close under StrictMode", async () => {
+    const onSave = mock(async (_value: string) => {});
+    const { unmount } = renderWithQuery(
+      <StrictMode>
+        <RichDocumentation value="Notes" onSave={onSave} />
+      </StrictMode>,
+    );
+    await caretToEnd();
+    await typeInEditor(documentation(), " v2");
+    unmount();
+    await waitFor(() => expect(onSave.mock.calls).toEqual([["Notes v2"]]));
+  });
+
+  it("leaves the editor on Escape and saves", async () => {
+    const onSave = mock(async (_value: string) => {});
+    const { user: actor } = renderWithQuery(<RichDocumentation value="" onSave={onSave} />);
+    await typeInEditor(documentation(), "Escape hatch");
+    await actor.keyboard("{Escape}");
+    await waitFor(() => expect(document.activeElement).not.toBe(documentation()));
+    await waitFor(() => expect(onSave.mock.calls).toEqual([["Escape hatch"]]));
+  });
+
+  it("leaves the editor on an Escape that a dialog has already prevented", async () => {
+    // The details dialog prevents Escape on the document, before the editor sees it, to stay open while editing.
+    const preventEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") event.preventDefault();
+    };
+    document.addEventListener("keydown", preventEscape, { capture: true });
+    try {
+      const onSave = mock(async (_value: string) => {});
+      const { user: actor } = renderWithQuery(<RichDocumentation value="" onSave={onSave} />);
+      await typeInEditor(documentation(), "Inside a dialog");
+      await actor.keyboard("{Escape}");
+      await waitFor(() => expect(document.activeElement).not.toBe(documentation()));
+      await waitFor(() => expect(onSave.mock.calls).toEqual([["Inside a dialog"]]));
+    } finally {
+      document.removeEventListener("keydown", preventEscape, { capture: true });
+    }
+  });
+
+  it("does not send documentation over 20,000 characters of Markdown", async () => {
+    const limitMessage = "Documentation is limited to 20,000 characters of Markdown. Shorten it to save.";
+    const onSave = mock(async (_value: string) => {});
+    const { user: actor } = renderWithQuery(<RichDocumentation value={"a".repeat(19_999)} onSave={onSave} />);
+    await caretToEnd();
+    await typeInEditor(documentation(), "bc");
+    await blurDocumentation();
+    expect(screen.getByRole("alert").textContent).toContain(limitMessage);
+    expect(saveState()).toBe("Unsaved changes");
+    expect(documentation().textContent).toHaveLength(20_001);
+
+    await actor.click(screen.getByRole("button", { name: "Retry" }));
+    expect(screen.getByRole("alert").textContent).toContain(limitMessage);
+    expect(onSave).not.toHaveBeenCalled();
+
+    await caretToEnd();
+    await focusDocumentation();
+    await actor.keyboard("{Backspace}");
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    await blurDocumentation();
+    expect(onSave.mock.calls).toEqual([[`${"a".repeat(19_999)}b`]]);
   });
 });
 
