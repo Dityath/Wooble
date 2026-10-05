@@ -17,8 +17,8 @@ const blockSyntax = [
 ];
 
 /**
- * Inline Markdown that prose rarely contains by accident. Single `*` and `_` emphasis is left out because ordinary text
- * such as `2 * 3 * 4` or `snake_case_name` uses those characters.
+ * Inline Markdown that ordinary writing rarely contains by accident. Single `*` and `_` emphasis is left out because
+ * ordinary text such as `2 * 3 * 4` or `snake_case_name` uses those characters.
  */
 const inlineSyntax = [
   // **bold**, but not `2 ** 3`.
@@ -50,7 +50,7 @@ function cellCount(row: string): number {
 /**
  * Returns whether pasted plain text looks like Markdown: a line starts a Markdown block (a heading, list item, task
  * item, quote, code fence, thematic break, or table), or the text uses unambiguous inline syntax (`**bold**`,
- * `__bold__`, `` `code` ``, `[text](url)`, `~~struck~~`). Plain prose, a bare URL, and a single sentence do not.
+ * `__bold__`, `` `code` ``, `[text](url)`, `~~struck~~`). Plain sentences and a bare URL do not.
  */
 export function looksLikeMarkdown(text: string): boolean {
   const lines = text.split(/\r\n?|\n/);

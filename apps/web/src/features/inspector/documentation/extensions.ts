@@ -10,7 +10,7 @@ import { SlashCommand } from "./slash-menu";
 
 /** Editor options for the documentation editor, used together with `documentationExtensions`. */
 export const documentationEditorOptions = {
-  // Markdown pasted as plain text is converted by MarkdownPaste, which leaves prose such as `2 * 3 * 4` or `snake_case`
+  // Markdown pasted as plain text is converted by MarkdownPaste, which leaves text such as `2 * 3 * 4` or `snake_case`
   // alone. The mark paste rules would still turn `* 3 *` or `_word_` in any pasted text into italics, so pasted text is
   // only scanned for links.
   enablePasteRules: ["link"],
