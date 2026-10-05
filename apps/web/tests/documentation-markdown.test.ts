@@ -2,6 +2,7 @@ import { describe, expect, it, spyOn } from "bun:test";
 import { within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Editor, JSONContent } from "@tiptap/core";
+import { fitToSchema } from "../src/features/inspector/documentation/markdown-fidelity";
 import { renderDocumentationEditor, typeInEditor } from "./support/editor";
 
 const paragraph = (text: string) => ({ type: "paragraph", content: [{ type: "text", text }] });
@@ -260,6 +261,88 @@ describe("documentation Markdown", () => {
     });
   }
 
+  /** Saves `content`, then reopens the saved Markdown, which must give back the same blocks. */
+  function roundTripBlocks(content: JSONContent[]) {
+    const { editor } = renderDocumentationEditor("");
+    editor.commands.setContent({ type: "doc", content });
+    const saved = editor.getMarkdown();
+    expect(blocksOf(renderDocumentationEditor(saved).editor)).toEqual(blocksOf(editor));
+    return saved;
+  }
+
+  it("keeps paragraph text that looks like the start of another block", () => {
+    const lookalikes = ["# Not a heading", "- Not a bullet", "+ Not a bullet", "1. Not a list", "2) Not a list", "---"];
+    const saved = roundTripBlocks(lookalikes.map(paragraph));
+    expect(saved).toBe(
+      "\\# Not a heading\n\n\\- Not a bullet\n\n\\+ Not a bullet\n\n1\\. Not a list\n\n2\\) Not a list\n\n\\---",
+    );
+  });
+
+  it("keeps lookalike block syntax after a line break and inside list items", () => {
+    const breakThen = (first: string, second: string) => ({
+      type: "paragraph",
+      content: [{ type: "text", text: first }, { type: "hardBreak" }, { type: "text", text: second }],
+    });
+    const saved = roundTripBlocks([
+      breakThen("Release title", "==="),
+      breakThen("Steps", "## Not a heading"),
+      { type: "bulletList", content: [{ type: "listItem", content: [paragraph("2026. A planning year")] }] },
+    ]);
+    // The trailing empty paragraph after the list keeps a line to type on.
+    expect(saved).toBe("Release title  \n\\===\n\nSteps  \n\\## Not a heading\n\n- 2026\\. A planning year\n\n");
+  });
+
+  it("drops leading spaces instead of turning a paragraph into indented code", () => {
+    const { editor } = renderDocumentationEditor("");
+    editor.commands.setContent({ type: "doc", content: [paragraph("    Indented note")] });
+    expect(editor.getMarkdown()).toBe("Indented note");
+  });
+
+  it("keeps code that contains a Markdown fence inside its block", () => {
+    const sample = "Install it:\n\n```sh\nbun add wooble\n```";
+    const saved = roundTripBlocks([
+      { type: "codeBlock", attrs: { language: "md" }, content: [{ type: "text", text: sample }] },
+    ]);
+    // The trailing empty paragraph after the block keeps a line to type on.
+    expect(saved).toBe(`\`\`\`\`md\n${sample}\n\`\`\`\`\n\n`);
+  });
+
+  it("reopens an empty numbered item as an editable item", () => {
+    const { editor } = renderDocumentationEditor("1. Provision the database\n2. ");
+    expect(() => editor.state.doc.check()).not.toThrow();
+    expect(blocksOf(editor)).toMatchObject([
+      {
+        type: "orderedList",
+        content: [
+          { type: "listItem", content: [paragraph("Provision the database")] },
+          { type: "listItem", content: [{ type: "paragraph" }] },
+        ],
+      },
+    ]);
+  });
+
+  // Images and raw HTML are not supported yet. These tests record what editing such a document keeps.
+  it("keeps only the alt text of an image", () => {
+    const { editor } = renderDocumentationEditor(
+      "Before\n\n![Architecture diagram](diagram.png)\n\nSee ![the logo](logo.svg) here",
+    );
+    expect(() => editor.state.doc.check()).not.toThrow();
+    expect(blocksOf(editor)).toEqual([
+      paragraph("Before"),
+      paragraph("Architecture diagram"),
+      paragraph("See the logo here"),
+    ]);
+    expect(editor.getMarkdown()).toBe("Before\n\nArchitecture diagram\n\nSee the logo here");
+  });
+
+  it("keeps the text of raw HTML but not its tags or comments", () => {
+    const { editor } = renderDocumentationEditor(
+      "Intro\n\n<details>\n<summary>Rollback</summary>\n\nRestore the snapshot.\n\n</details>\n\nPress <kbd>Ctrl</kbd> now\n\n<!-- reviewer note -->\n\nOutro",
+    );
+    expect(() => editor.state.doc.check()).not.toThrow();
+    expect(editor.getMarkdown()).toBe("Intro\n\nRollback\n\nRestore the snapshot.\n\n\n\nPress Ctrl now\n\n\n\nOutro");
+  });
+
   it("saves blocks created with Markdown shortcuts", async () => {
     const { editor, element } = renderDocumentationEditor("");
     const user = userEvent.setup({ delay: null });
@@ -274,6 +357,26 @@ describe("documentation Markdown", () => {
     const { editor } = renderDocumentationEditor("Rotate <u>every</u> key");
     expect(editor.schema.marks.underline).toBeUndefined();
     expect(editor.getMarkdown()).toBe("Rotate every key");
+  });
+});
+
+describe("fitting parsed Markdown to the editor schema", () => {
+  it("wraps a block that only fits inside another, such as a paragraph directly in a list", () => {
+    const { editor } = renderDocumentationEditor("");
+    const fitted = fitToSchema(
+      { type: "doc", content: [{ type: "bulletList", content: [paragraph("Gateway")] }] },
+      editor.schema,
+    );
+    expect(fitted.content).toMatchObject([
+      { type: "bulletList", content: [{ type: "listItem", content: [paragraph("Gateway")] }] },
+    ]);
+    expect(() => editor.schema.nodeFromJSON(fitted).check()).not.toThrow();
+  });
+
+  it("leaves content with unknown node types for TipTap to report", () => {
+    const { editor } = renderDocumentationEditor("");
+    const unknown = { type: "doc", content: [{ type: "mermaidDiagram" }] };
+    expect(fitToSchema(unknown, editor.schema)).toBe(unknown);
   });
 });
 

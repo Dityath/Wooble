@@ -2,8 +2,8 @@ import type { AnyExtension } from "@tiptap/core";
 import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { TableKit } from "@tiptap/extension-table";
 import { Placeholder } from "@tiptap/extensions";
-import { Markdown } from "@tiptap/markdown";
 import { StarterKit } from "@tiptap/starter-kit";
+import { DocumentationCodeBlock, DocumentationMarkdown, DocumentationParagraph } from "./markdown-fidelity";
 import { MarkdownPaste } from "./markdown-paste";
 import { SlashCommand } from "./slash-menu";
 
@@ -22,11 +22,16 @@ export function documentationExtensions({ placeholder = "" }: DocumentationExten
       underline: false,
       // A plain click places the caret; opening the link would take the user away while they edit.
       link: { openOnClick: false },
+      // Replaced below by versions that write Markdown which reopens as the same blocks.
+      paragraph: false,
+      codeBlock: false,
     }),
+    DocumentationParagraph,
+    DocumentationCodeBlock,
     TaskList,
     TaskItem.configure({ nested: true }),
     TableKit.configure({ table: { resizable: false } }),
-    Markdown,
+    DocumentationMarkdown,
     Placeholder.configure({ placeholder: ({ editor }) => (editor.isEmpty ? placeholder : "") }),
     SlashCommand,
     MarkdownPaste,
