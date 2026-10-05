@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { DocumentationEditor, type DocumentationEditorHandle } from "./documentation/documentation-editor";
 
 const AUTOSAVE_DELAY_MS = 900;
@@ -8,15 +6,8 @@ const AUTOSAVE_DELAY_MS = 900;
 const MAX_DOCUMENTATION_LENGTH = 20_000;
 const TOO_LONG_MESSAGE = "Documentation is limited to 20,000 characters of Markdown. Shorten it to save.";
 
-export function MarkdownContent({ value }: { value: string }) {
-  return value ? (
-    <article className="rich-markdown">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{value}</ReactMarkdown>
-    </article>
-  ) : (
-    <p className="rich-empty">No documentation yet.</p>
-  );
-}
+// Pages that only read documentation import it from its own module, which does not load the editor.
+export { MarkdownContent } from "./documentation/markdown-content";
 
 /**
  * Documentation that is always editable and saves itself: 900 ms after the last edit, when the editor loses focus, and

@@ -4,7 +4,7 @@ import { ArrowLeft, Box, Cpu, Database, ExternalLink, GitBranch, Layers3, Server
 import { AppShell } from "../../components/app-shell";
 import { Badge, Card, CardTitle } from "../../components/ui";
 import { api } from "../../lib/api";
-import { MarkdownContent } from "../inspector/rich-documentation";
+import { MarkdownContent } from "../inspector/documentation/markdown-content";
 import { DatabaseSchema } from "../inspector/database-schema";
 
 const iconMap: Record<string, typeof Server> = {
