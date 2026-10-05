@@ -439,6 +439,51 @@ describe("rich documentation", () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 
+  it("shows documentation updated elsewhere once the editor is left without an edit", async () => {
+    const onSave = mock(async (_value: string) => {});
+    const { rerender } = renderWithQuery(<RichDocumentation value="Old notes" onSave={onSave} />);
+    await focusDocumentation();
+    rerender(<RichDocumentation value="Remote notes" onSave={onSave} />);
+    expect(documentation().textContent).toBe("Old notes");
+
+    await blurDocumentation();
+    expect(documentation().textContent).toBe("Remote notes");
+    expect(saveState()).toBe("");
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("saves an edit over documentation updated elsewhere while the editor had focus", async () => {
+    const onSave = mock(async (_value: string) => {});
+    const { rerender } = renderWithQuery(<RichDocumentation value="Old notes" onSave={onSave} />);
+    await focusDocumentation();
+    rerender(<RichDocumentation value="Remote notes" onSave={onSave} />);
+    await caretToEnd();
+    await typeInEditor(documentation(), " and local edits");
+    await blurDocumentation();
+    // The last write wins: the update is not shown after the user's edit.
+    expect(onSave.mock.calls).toEqual([["Old notes and local edits"]]);
+    await waitFor(() => expect(saveState()).toBe("Saved"));
+    await focusDocumentation();
+    await blurDocumentation();
+    expect(documentation().textContent).toBe("Old notes and local edits");
+  });
+
+  it("recognizes its own save coming back before the save finishes", async () => {
+    const { onSave, finish } = pendingSaves();
+    const { rerender } = renderWithQuery(<RichDocumentation value="Notes" onSave={onSave} />);
+    await caretToEnd();
+    await typeInEditor(documentation(), " v2");
+    await blurDocumentation();
+    rerender(<RichDocumentation value="Notes v2" onSave={onSave} />);
+    await act(async () => finish[0]());
+    expect(saveState()).toBe("Saved");
+
+    // A later change elsewhere, back to the old documentation, is still shown.
+    rerender(<RichDocumentation value="Notes" onSave={onSave} />);
+    expect(documentation().textContent).toBe("Notes");
+    expect(onSave.mock.calls).toEqual([["Notes v2"]]);
+  });
+
   it("keeps unsaved changes when documentation is updated elsewhere", async () => {
     const onSave = mock(async (_value: string) => {
       throw new Error("Network unavailable");

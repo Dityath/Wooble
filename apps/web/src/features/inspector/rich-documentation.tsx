@@ -30,8 +30,9 @@ export function RichDocumentation({ value, onSave }: { value: string; onSave: (v
   const latest = useRef("");
   const lastSaved = useRef("");
   const lastSubmitted = useRef("");
-  // The `value` the editor last loaded.
+  // The `value` the editor last loaded, and a newer one it has not shown yet because the user was in the editor.
   const loaded = useRef(value);
+  const pending = useRef<string | undefined>(undefined);
   const edited = useRef(false);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
   // The latest document once the user has edited it; undefined before the first edit.
@@ -51,6 +52,8 @@ export function RichDocumentation({ value, onSave }: { value: string; onSave: (v
       return;
     }
     lastSubmitted.current = next;
+    // This save replaces documentation that changed elsewhere in the meantime (the last write wins).
+    pending.current = undefined;
     setSavesInFlight((count) => count + 1);
     setError("");
     saveQueue.current = saveQueue.current.then(async () => {
@@ -76,11 +79,35 @@ export function RichDocumentation({ value, onSave }: { value: string; onSave: (v
     // code block when it is first focused. That writes the same trimmed Markdown, so it is not an edit.
     if (!edited.current && next === lastSaved.current) return;
     edited.current = true;
+    // The user's edit replaces documentation that changed elsewhere and was not shown (the last write wins).
+    pending.current = undefined;
     setDraft(next);
     if (next.length <= MAX_DOCUMENTATION_LENGTH) setError((current) => (current === TOO_LONG_MESSAGE ? "" : current));
   }, []);
 
-  const handleBlur = useCallback(() => commit(latest.current), [commit]);
+  /**
+   * Shows documentation that changed elsewhere, unless the user is working on it: the editor has focus, unsaved changes,
+   * or a save in progress. Returns whether it was shown.
+   */
+  const show = useCallback((next: string) => {
+    const handle = editor.current;
+    if (!handle || handle.hasFocus() || latest.current !== lastSaved.current) return false;
+    const replaced = handle.replace(next).trim();
+    loaded.current = next;
+    pending.current = undefined;
+    latest.current = replaced;
+    lastSaved.current = replaced;
+    lastSubmitted.current = replaced;
+    setSaved(replaced);
+    setDraft((current) => (current === undefined ? undefined : replaced));
+    return true;
+  }, []);
+
+  const handleBlur = useCallback(() => {
+    commit(latest.current);
+    // An update that arrived while the user was only reading the documentation is shown once they leave it.
+    if (pending.current !== undefined) show(pending.current);
+  }, [commit, show]);
 
   useEffect(() => {
     const loadedMarkdown = editor.current?.getMarkdown().trim() ?? "";
@@ -99,26 +126,20 @@ export function RichDocumentation({ value, onSave }: { value: string; onSave: (v
     return () => clearTimeout(timer);
   }, [draft, commit]);
 
-  // Documentation changed elsewhere replaces the editor's document only while the user is not working on it.
-  // Otherwise the editor keeps its document, and the next save writes over the update.
+  // Documentation changed elsewhere replaces the editor's document only while the user is not working on it. An update
+  // that arrives while the editor has focus is shown when the user leaves it without an edit. Otherwise the editor keeps
+  // its document, and the next save writes over the update.
   useEffect(() => {
     if (value === loaded.current) return;
     const incoming = value.trim();
-    if (incoming === lastSaved.current) {
-      // This editor's own save coming back.
+    // This editor's own save coming back, possibly before the save has finished.
+    if (incoming === lastSaved.current || incoming === lastSubmitted.current) {
       loaded.current = value;
+      pending.current = undefined;
       return;
     }
-    const handle = editor.current;
-    if (!handle || handle.hasFocus() || latest.current !== lastSaved.current) return;
-    const replaced = handle.replace(value).trim();
-    loaded.current = value;
-    latest.current = replaced;
-    lastSaved.current = replaced;
-    lastSubmitted.current = replaced;
-    setSaved(replaced);
-    setDraft((current) => (current === undefined ? undefined : replaced));
-  }, [value]);
+    if (!show(value)) pending.current = value;
+  }, [value, show]);
 
   const saveState =
     draft === undefined ? "" : savesInFlight > 0 ? "Saving…" : draft !== saved ? "Unsaved changes" : "Saved";
