@@ -5,6 +5,7 @@ import { EditorContent, useEditor } from "@tiptap/react";
 import { createElement } from "react";
 import {
   type DocumentationExtensionOptions,
+  documentationEditorOptions,
   documentationExtensions,
 } from "../../src/features/inspector/documentation/extensions";
 
@@ -21,6 +22,7 @@ export interface DocumentationEditorOptions extends DocumentationExtensionOption
  */
 export function renderDocumentationEditor(markdown = "", { container, ...options }: DocumentationEditorOptions = {}) {
   const editorOptions = {
+    ...documentationEditorOptions,
     extensions: documentationExtensions(options),
     content: markdown,
     contentType: "markdown" as const,

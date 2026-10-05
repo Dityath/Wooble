@@ -1,7 +1,7 @@
 import { Extension } from "@tiptap/core";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { type Ref, useImperativeHandle, useState } from "react";
-import { documentationExtensions } from "./extensions";
+import { documentationEditorOptions, documentationExtensions } from "./extensions";
 
 /**
  * Escape leaves the editor, and leaving it saves. The details dialog stays open on that Escape because the editor
@@ -43,6 +43,7 @@ export function DocumentationEditor({ initialMarkdown, onChange, onBlur, ref }: 
   // The editor reads these when it is created. Keeping them stable also stops useEditor from reapplying them on every
   // render; it always calls the latest event handlers.
   const [options] = useState(() => ({
+    ...documentationEditorOptions,
     extensions: [...documentationExtensions({ placeholder: 'Type "/" for blocks, or paste Markdown' }), BlurOnEscape],
     content: initialMarkdown,
     contentType: "markdown" as const,

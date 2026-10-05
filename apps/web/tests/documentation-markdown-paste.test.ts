@@ -301,6 +301,26 @@ describe("pasting Markdown into documentation", () => {
     expect(blocksOf(editor)).toEqual(lines.map(paragraph));
   });
 
+  it("keeps asterisks and underscores in pasted prose literal, but links URLs", async () => {
+    const { editor } = renderDocumentationEditor("");
+    const lines = ["Capacity is 2 * 3 * 4 nodes per _zone_ and *region*.", "See https://example.com/capacity first."];
+    await paste(editor, { "text/plain": lines.join("\n") });
+    expect(blocksOf(editor)).toMatchObject([
+      paragraph(lines[0]),
+      {
+        type: "paragraph",
+        content: [
+          { type: "text", text: "See " },
+          { type: "text", text: "https://example.com/capacity", marks: [{ type: "link" }] },
+          { type: "text", text: " first." },
+        ],
+      },
+    ]);
+    expect(editor.getMarkdown()).toBe(
+      "Capacity is 2 \\* 3 \\* 4 nodes per \\_zone\\_ and \\*region\\*.\n\nSee [https://example.com/capacity](https://example.com/capacity) first.",
+    );
+  });
+
   it("leaves a URL pasted over selected text to the link extension", async () => {
     const { editor } = renderDocumentationEditor("Read the runbook first");
     editor.commands.setTextSelection(rangeOf(editor, "runbook"));
