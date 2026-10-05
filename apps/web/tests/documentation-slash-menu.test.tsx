@@ -366,6 +366,18 @@ describe("slash menu", () => {
     expect(editor.getMarkdown()).toBe("Run `npm /build` today");
   });
 
+  it("does not open inside a table cell, which holds text only", async () => {
+    const { editor, element } = renderDocumentationEditor("| Service | Notes |\n| --- | --- |\n| Gateway | x |");
+    let notes = 0;
+    editor.state.doc.descendants((node, pos) => {
+      if (node.isText && node.text === "x") notes = pos;
+    });
+    editor.commands.setTextSelection({ from: notes, to: notes + 1 });
+    await typeInEditor(element, "/");
+    expectMenuClosed(element);
+    expect(editor.getMarkdown()).toContain("| Gateway | /     |");
+  });
+
   it("filters the commands as the query is typed and edited", async () => {
     const { element } = renderDocumentationEditor("");
     await typeInEditor(element, "/hea");

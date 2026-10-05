@@ -321,6 +321,64 @@ describe("documentation Markdown", () => {
     ]);
   });
 
+  it("keeps table cells to text that Markdown can store", async () => {
+    const { editor, element } = renderDocumentationEditor("| Service | Notes |\n| --- | --- |\n| Gateway | x |");
+    const user = userEvent.setup({ delay: null });
+    // Selects the text of the last cell, the Gateway notes.
+    const selectNotes = () => {
+      let notes = { from: 0, to: 0 };
+      editor.state.doc.descendants((node, pos) => {
+        if (node.type.name === "tableCell") notes = { from: pos + 2, to: pos + node.nodeSize - 2 };
+      });
+      editor.commands.setTextSelection(notes);
+    };
+    // Block shortcuts typed at the start of a cell stay text.
+    for (const shortcut of ["- ", "# ", "``` ", "> ", "1. ", "[ ] "]) {
+      selectNotes();
+      await typeInEditor(element, `${shortcut}Edge`);
+      expect(editor.state.selection.$from.parent.type.name).toBe("paragraph");
+      expect(editor.state.selection.$from.node(-1).type.name).toBe("tableCell");
+    }
+    // A new line in a cell is saved as <br> and reopens as a line break.
+    await user.keyboard("{Enter}");
+    await typeInEditor(element, "Retries");
+    // Trimmed, as documentation is saved: the editor keeps an empty paragraph after the table to type on.
+    const saved = editor.getMarkdown().trim();
+    expect(saved).toBe(
+      "| Service | Notes                 |\n| ------- | --------------------- |\n| Gateway | \\[ \\] Edge<br>Retries |",
+    );
+    const reopened = renderDocumentationEditor(saved).editor;
+    expect(reopened.getMarkdown().trim()).toBe(saved);
+  });
+
+  it("decodes named character references in text, but not in code or escaped text", () => {
+    const { editor, saved } = (() => {
+      const rendered = renderDocumentationEditor(
+        "Copyright &copy; 2026 &mdash; see &rarr; next, write &amp;copy; or \\&copy;, and keep &unknownref;\n\nRun `&copy;` here",
+      );
+      return { editor: rendered.editor, saved: rendered.editor.getMarkdown() };
+    })();
+    expect(editor.getText()).toBe(
+      "Copyright © 2026 — see → next, write &copy; or &copy;, and keep &unknownref;\n\nRun &copy; here",
+    );
+    // Saved again, each character reads the same: decoded symbols as themselves, literal text with its & encoded.
+    expect(saved).toBe(
+      "Copyright © 2026 — see → next, write &amp;copy; or &amp;copy;, and keep &amp;unknownref;\n\nRun `&copy;` here",
+    );
+    expect(renderDocumentationEditor(saved).editor.getMarkdown()).toBe(saved);
+  });
+
+  it("links only text that is clearly a link, not file names", async () => {
+    const { editor, element } = renderDocumentationEditor("");
+    await typeInEditor(
+      element,
+      "Edit README.md and deploy.sh or see https://example.com/docs and www.example.com or ops@example.com ",
+    );
+    expect(editor.getMarkdown()).toBe(
+      "Edit README.md and deploy.sh or see [https://example.com/docs](https://example.com/docs) and [www.example.com](http://www.example.com) or [ops@example.com](mailto:ops@example.com) ",
+    );
+  });
+
   // Images and raw HTML are not supported yet. These tests record what editing such a document keeps.
   it("keeps only the alt text of an image", () => {
     const { editor } = renderDocumentationEditor(

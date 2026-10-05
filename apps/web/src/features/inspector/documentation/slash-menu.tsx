@@ -6,13 +6,17 @@ import { exitSuggestion, Suggestion, type SuggestionProps } from "@tiptap/sugges
 import { filterSlashCommands, type SlashCommandItem } from "./slash-commands";
 import { SlashMenuList, type SlashMenuListProps } from "./slash-menu-list";
 
+/** Node types whose content a slash command cannot change: a table cell takes paragraphs only. */
+const tableCells = new Set(["tableCell", "tableHeader"]);
+
 /**
  * Whether a `/` typed at `range` starts a slash command: only at the start of a block or after whitespace, and never
- * in code, where a slash is ordinary text.
+ * in code, where a slash is ordinary text, or in a table cell, which holds text only.
  */
 function canOpenAt(state: EditorState, range: Range) {
   const $from = state.doc.resolve(range.from);
   if ($from.parent.type.spec.code) return false;
+  for (let depth = $from.depth; depth > 0; depth -= 1) if (tableCells.has($from.node(depth).type.name)) return false;
   const code = state.schema.marks.code;
   if (code && state.doc.rangeHasMark(range.from, range.to, code)) return false;
   // Inline leaves such as hard breaks start a new line, so they count as whitespace.

@@ -437,6 +437,16 @@ describe("pasting Markdown into documentation", () => {
       editor.commands.setTextSelection(rangeOf(editor, "Platform").to);
       await paste(editor, { "text/plain": "- Risk\n- Fraud" });
       expect(platformCell(editor)?.content).toEqual([paragraph("Platform- Risk"), paragraph("- Fraud")]);
+      // Saved, the cell's lines are joined by <br>, and reopen as lines of text in the cell.
+      const saved = editor.getMarkdown();
+      expect(saved).toContain("| Gateway | Platform- Risk<br>- Fraud |");
+      const reopened = renderDocumentationEditor(saved).editor;
+      expect(platformCell(reopened)?.content).toEqual([
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "Platform- Risk" }, { type: "hardBreak" }, { type: "text", text: "- Fraud" }],
+        },
+      ]);
     });
 
     it("leaves a paste over selected cells to the table", async () => {

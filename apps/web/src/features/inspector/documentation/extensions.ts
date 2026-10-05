@@ -1,6 +1,6 @@
 import type { AnyExtension, EditorOptions } from "@tiptap/core";
 import { TaskItem, TaskList } from "@tiptap/extension-list";
-import { TableKit } from "@tiptap/extension-table";
+import { TableCell, TableHeader, TableKit } from "@tiptap/extension-table";
 import { Placeholder } from "@tiptap/extensions";
 import { StarterKit } from "@tiptap/starter-kit";
 import { DocumentationCodeBlock, DocumentationMarkdown, DocumentationParagraph } from "./markdown-fidelity";
@@ -29,8 +29,14 @@ export function documentationExtensions({ placeholder = "" }: DocumentationExten
     StarterKit.configure({
       // Markdown has no underline syntax, so underlined text could not be saved.
       underline: false,
-      // A plain click places the caret; opening the link would take the user away while they edit.
-      link: { openOnClick: false },
+      link: {
+        // A plain click places the caret; opening the link would take the user away while they edit.
+        openOnClick: false,
+        // Only text that is clearly a link: a URL with its scheme, a www. address, or an email address. File names such as
+        // README.md or deploy.sh are also valid domain names and would otherwise link to someone else's site.
+        shouldAutoLink: (url) =>
+          /^[a-z][a-z0-9+.-]*:\/\//i.test(url) || /^www\./i.test(url) || /^[^\s@/]+@[^\s@/]+\.[^\s@/]+$/.test(url),
+      },
       // Replaced below by versions that write Markdown which reopens as the same blocks.
       paragraph: false,
       codeBlock: false,
@@ -39,7 +45,11 @@ export function documentationExtensions({ placeholder = "" }: DocumentationExten
     DocumentationCodeBlock,
     TaskList,
     TaskItem.configure({ nested: true }),
-    TableKit.configure({ table: { resizable: false } }),
+    TableKit.configure({ table: { resizable: false }, tableCell: false, tableHeader: false }),
+    // A Markdown table cell holds one line of inline content, so a cell takes paragraphs only (saved joined by <br>).
+    // Lists, headings, quotes, code, and nested tables in a cell could not be saved.
+    TableCell.extend({ content: "paragraph+" }),
+    TableHeader.extend({ content: "paragraph+" }),
     DocumentationMarkdown,
     Placeholder.configure({ placeholder: ({ editor }) => (editor.isEmpty ? placeholder : "") }),
     SlashCommand,

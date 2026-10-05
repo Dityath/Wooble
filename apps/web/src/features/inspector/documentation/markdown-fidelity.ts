@@ -3,6 +3,8 @@ import { CodeBlock } from "@tiptap/extension-code-block";
 import { Paragraph } from "@tiptap/extension-paragraph";
 import { Markdown } from "@tiptap/markdown";
 import { Fragment, type Node as ProseMirrorNode, type Schema } from "@tiptap/pm/model";
+import { decodeNamedCharacterReference } from "decode-named-character-reference";
+import { Tokenizer } from "marked";
 
 /**
  * Returns `content` with the least change that makes it valid for `schema`. TipTap's Markdown parser can produce
@@ -120,8 +122,40 @@ export const DocumentationCodeBlock = CodeBlock.extend({
   },
 });
 
-/** The Markdown extension, with everything it parses fitted to the editor's schema (see `fitToSchema`). */
+// TipTap decodes these named references, and numeric ones, itself. Decoding them here too would decode `&amp;lt;`
+// twice and turn the literal text `&lt;` into `<`.
+const referencesDecodedByTipTap = new Set(["amp", "lt", "gt", "quot"]);
+
+/**
+ * Decodes named character references such as `&copy;`, `&rarr;`, and `&nbsp;`, which Markdown text may use and TipTap's
+ * parser keeps as literal text. Saving that text would then write `&amp;copy;`, so the reading view would show
+ * `&copy;` instead of ©. Unknown names are kept as they are.
+ */
+export function decodeNamedReferences(text: string): string {
+  return text.replace(/&([A-Za-z][A-Za-z0-9]{0,31});/g, (reference, name: string) => {
+    if (referencesDecodedByTipTap.has(name)) return reference;
+    const decoded = decodeNamedCharacterReference(name);
+    return decoded === false ? reference : decoded;
+  });
+}
+
+/** Tokenizes Markdown as marked does, then decodes named references in text (but not in code, which is literal). */
+class DocumentationTokenizer extends Tokenizer {
+  inlineText(src: string) {
+    const token = super.inlineText(src);
+    if (token) token.text = decodeNamedReferences(token.text);
+    return token;
+  }
+}
+
+/**
+ * The Markdown extension, with named references in text decoded (see `decodeNamedReferences`) and everything it parses
+ * fitted to the editor's schema (see `fitToSchema`).
+ */
 export const DocumentationMarkdown = Markdown.extend({
+  addOptions() {
+    return { ...this.parent?.(), markedOptions: { tokenizer: new DocumentationTokenizer() } };
+  },
   onBeforeCreate(event) {
     this.parent?.(event);
     const { editor } = this;
