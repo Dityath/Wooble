@@ -1,6 +1,5 @@
 import { Extension, type JSONContent } from "@tiptap/core";
 import { CodeBlock } from "@tiptap/extension-code-block";
-import { Link } from "@tiptap/extension-link";
 import { Table } from "@tiptap/extension-table";
 import { Paragraph } from "@tiptap/extension-paragraph";
 import { Markdown } from "@tiptap/markdown";
@@ -159,8 +158,6 @@ function isBareUrl(href: unknown): href is string {
   const tokens = urlParser.Lexer.lexInline(href, { gfm: true });
   return tokens.length === 1 && tokens[0].type === "link" && tokens[0].raw === href && tokens[0].href === href;
 }
-
-export const DocumentationLink = Link;
 
 /** Serialization-only node: never inserted into the editor schema or persisted JSON. */
 export const DocumentationBareUrl = Extension.create({

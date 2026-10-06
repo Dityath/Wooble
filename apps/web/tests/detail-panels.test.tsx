@@ -629,6 +629,67 @@ describe("rich documentation", () => {
     await waitFor(() => expect(onSave.mock.calls).toEqual([[`${value}\n\n![Diagram](diagram.png)`]]));
   });
 
+  it("pastes ordinary text that only mentions tags or footnote markers as literal text", async () => {
+    const onSave = mock(async (_value: string) => {});
+    await renderDocumentation(<RichDocumentation value="" onSave={onSave} />);
+    const text = "Use the <Button> component and see [^1] below";
+    fireEvent.paste(documentation(), {
+      clipboardData: { getData: (type: string) => (type === "text/plain" ? text : "") },
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(documentation().textContent).toBe(text);
+  });
+
+  it("clears a paste warning once the documentation changes", async () => {
+    const onSave = mock(async (_value: string) => {});
+    await renderDocumentation(<RichDocumentation value="Notes" onSave={onSave} />);
+    fireEvent.paste(documentation(), {
+      clipboardData: { getData: (type: string) => (type === "text/plain" ? "# Diagram\n\n![Diagram](d.png)" : "") },
+    });
+    expect(screen.getByRole("alert").textContent).toContain("paste again");
+    await caretToEnd();
+    await typeInEditor(documentation(), "!");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("switches from Markdown source back to blocks once the source is supported", async () => {
+    const onSave = mock(async (_value: string) => {});
+    const { user: actor } = await renderDocumentation(
+      <RichDocumentation value={"Intro\n\n![Diagram](d.png)"} onSave={onSave} />,
+    );
+    expect(screen.queryByRole("button", { name: "Edit as blocks" })).toBeNull();
+    fireEvent.change(documentation(), { target: { value: "Intro\n\n**Ready**" } });
+    // The warning describes the source as it is now, so removing the image clears it.
+    expect(screen.queryByRole("alert")).toBeNull();
+    await actor.click(screen.getByRole("button", { name: "Edit as blocks" }));
+    const blocks = documentation();
+    expect(blocks.tagName).not.toBe("TEXTAREA");
+    expect(blocks.querySelector("strong")?.textContent).toBe("Ready");
+    fireEvent.blur(blocks);
+    await waitFor(() => expect(onSave.mock.calls).toEqual([["Intro\n\n**Ready**"]]));
+
+    // Choosing source mode for a supported document does not report unsupported content.
+    await actor.click(screen.getByRole("button", { name: "Edit Markdown source" }));
+    expect((documentation() as HTMLTextAreaElement).value).toBe("Intro\n\n**Ready**");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("never saves when switching to source and back without an edit", async () => {
+    const onSave = mock(async (_value: string) => {});
+    // Not in canonical form, and ending with a table, which gains a trailing paragraph when focused.
+    const value = "* Gateway\n* Ledger\n\n| Service | Owner |\n|---|---|\n| Ledger | Core |";
+    const { user: actor } = await renderDocumentation(<RichDocumentation value={value} onSave={onSave} />);
+    await actor.click(screen.getByRole("button", { name: "Edit Markdown source" }));
+    expect((documentation() as HTMLTextAreaElement).value).toBe(value);
+    await actor.click(screen.getByRole("button", { name: "Edit as blocks" }));
+    await focusDocumentation();
+    await caretToEnd();
+    await blurDocumentation();
+    expect(onSave).not.toHaveBeenCalled();
+    expect(saveState()).toBe("");
+  });
+
+  // Rendering and editing 20,000 characters under happy-dom takes several seconds when the editor modules are cold.
   it("does not send documentation over 20,000 characters of Markdown", async () => {
     const limitMessage = "Documentation is limited to 20,000 characters of Markdown. Shorten it to save.";
     const onSave = mock(async (_value: string) => {});
@@ -653,7 +714,7 @@ describe("rich documentation", () => {
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     await blurDocumentation();
     await waitFor(() => expect(onSave.mock.calls).toEqual([[`${initial}b`]]));
-  });
+  }, 30_000);
 });
 
 describe("editable database schema", () => {

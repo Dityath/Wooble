@@ -1,8 +1,9 @@
 import { Extension } from "@tiptap/core";
 import { EditorContent, useEditor } from "@tiptap/react";
-import { type Ref, useImperativeHandle, useRef, useState, useLayoutEffect } from "react";
-import { unsupportedMarkdown } from "./unsupported-markdown";
+import { type Ref, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { documentationEditorOptions, documentationExtensions } from "./extensions";
+import { looksLikeMarkdown } from "./markdown-paste";
+import { unsupportedMarkdown } from "./unsupported-markdown";
 
 /**
  * Escape leaves the editor, and leaving it saves. The details dialog stays open on that Escape because the editor
@@ -90,16 +91,21 @@ export function DocumentationEditor({ initialMarkdown, onChange, onBlur, ref }: 
   const [source, setSource] = useState(() =>
     unsupportedMarkdown(initialMarkdown).length ? initialMarkdown : undefined,
   );
+  // The Markdown the block editor opens: the documentation, or the source when switching back from source mode.
+  const [blockMarkdown, setBlockMarkdown] = useState(initialMarkdown);
   const sourceValue = useRef(source);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const blocks = useRef<DocumentationEditorHandle>(null);
   const original = useRef(initialMarkdown);
   const baseline = useRef("");
   const edited = useRef(false);
+  const inSource = source !== undefined;
   useLayoutEffect(() => {
-    baseline.current = blocks.current?.getMarkdown().trim() ?? initialMarkdown.trim();
-  }, [initialMarkdown]);
-  const [warning, setWarning] = useState(() => unsupportedMarkdown(initialMarkdown).join(", "));
+    if (!inSource) baseline.current = blocks.current?.getMarkdown().trim() ?? blockMarkdown.trim();
+  }, [blockMarkdown, inSource]);
+  // Describes the source as it is now, so removing the unsupported content clears it.
+  const sourceWarning = useMemo(() => (source === undefined ? "" : unsupportedMarkdown(source).join(", ")), [source]);
+  const [pasteWarning, setPasteWarning] = useState("");
   useImperativeHandle(
     ref,
     () => ({
@@ -115,7 +121,7 @@ export function DocumentationEditor({ initialMarkdown, onChange, onBlur, ref }: 
         if (sourceValue.current !== undefined || unsupported.length) {
           sourceValue.current = markdown;
           setSource(markdown);
-          setWarning(unsupported.join(", "));
+          setPasteWarning("");
           return markdown;
         }
         const replaced = blocks.current?.replace(markdown) ?? markdown;
@@ -128,37 +134,55 @@ export function DocumentationEditor({ initialMarkdown, onChange, onBlur, ref }: 
   const useSource = () => {
     const markdown = edited.current ? (blocks.current?.getMarkdown() ?? original.current) : original.current;
     sourceValue.current = markdown;
+    setPasteWarning("");
     setSource(markdown);
   };
+  // Reopens the source in the block editor. Only offered while the source has nothing the blocks would lose.
+  const useBlocks = () => {
+    if (source === undefined) return;
+    original.current = source;
+    edited.current = false;
+    sourceValue.current = undefined;
+    setBlockMarkdown(source);
+    setSource(undefined);
+  };
+  const warning = inSource ? sourceWarning : pasteWarning;
   return (
     <>
       {warning && (
         <p className="form-error" role="alert">
-          {source !== undefined
+          {inSource
             ? `This document contains ${warning}, which the block editor does not support. Edit Markdown source to preserve this content.`
             : `This paste contains ${warning}, which the block editor does not support. Switch to Markdown source, then paste again to preserve it.`}
         </p>
       )}
-      {source !== undefined ? (
-        <textarea
-          ref={textarea}
-          aria-label="Documentation"
-          data-inline-editing="true"
-          className="documentation-surface documentation-source"
-          value={source}
-          onChange={(event) => {
-            sourceValue.current = event.target.value;
-            setSource(event.target.value);
-            onChange(event.target.value);
-          }}
-          onBlur={onBlur}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              event.currentTarget.blur();
-            }
-          }}
-        />
+      {inSource ? (
+        <>
+          {!sourceWarning && (
+            <button type="button" className="documentation-source-toggle" onClick={useBlocks}>
+              Edit as blocks
+            </button>
+          )}
+          <textarea
+            ref={textarea}
+            aria-label="Documentation"
+            data-inline-editing="true"
+            className="documentation-surface documentation-source"
+            value={source}
+            onChange={(event) => {
+              sourceValue.current = event.target.value;
+              setSource(event.target.value);
+              onChange(event.target.value);
+            }}
+            onBlur={onBlur}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                event.currentTarget.blur();
+              }
+            }}
+          />
+        </>
       ) : (
         <>
           <button type="button" className="documentation-source-toggle" onClick={useSource}>
@@ -171,19 +195,28 @@ export function DocumentationEditor({ initialMarkdown, onChange, onBlur, ref }: 
               const selectedElement =
                 selection?.anchorNode instanceof Element ? selection.anchorNode : selection?.anchorNode?.parentElement;
               if (selectedElement?.closest("pre")) return;
-              const plain = event.clipboardData.getData("text/plain");
-              const unsupported = unsupportedMarkdown(plain || event.clipboardData.getData("text/html"));
+              // Only text that MarkdownPaste reads as Markdown can lose unsupported syntax. Rich HTML keeps the default
+              // paste, and ordinary text that merely mentions `<Button>` or `[^1]` is pasted literally.
+              const clipboard = event.clipboardData;
+              if (clipboard.getData("text/html") && !clipboard.getData("vscode-editor-data")) return;
+              const plain = clipboard.getData("text/plain");
+              if (!looksLikeMarkdown(plain)) return;
+              const unsupported = unsupportedMarkdown(plain);
               if (!unsupported.length) return;
               event.preventDefault();
               event.stopPropagation();
-              setWarning(unsupported.join(", "));
+              setPasteWarning(unsupported.join(", "));
             }}
           >
             <BlockDocumentationEditor
               ref={blocks}
-              initialMarkdown={initialMarkdown}
+              initialMarkdown={blockMarkdown}
               onChange={(markdown) => {
-                if (markdown.trim() !== baseline.current) edited.current = true;
+                // Not an edit, such as the empty paragraph added after a final table when the editor is first focused.
+                // After switching back from source, forwarding it would save the source rewritten in canonical form.
+                if (!edited.current && markdown.trim() === baseline.current) return;
+                edited.current = true;
+                setPasteWarning("");
                 onChange(markdown);
               }}
               onBlur={onBlur}
