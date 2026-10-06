@@ -625,7 +625,7 @@ code, kbd, .sidebar-shortcut > span:first-child, .flow-watermark, .architecture-
 .technology-dialog-footer > span:first-child { margin-right: auto; }
 .canvas-details-dialog .inspector-scroll.detail-mode { display: block; padding: 34px 42px 46px; }
 .detail-page { width: min(100%, 900px); margin: 0 auto; }
-.detail-page-intro { padding-bottom: 28px; border-bottom: 1px solid var(--wooble-neutral); }
+.detail-page-intro { padding-bottom: 28px; }
 .detail-page-intro h2 { margin: 13px 0 7px; color: var(--wooble-ink); font-size: 27px; }
 .detail-page-intro p, .detail-feature-card p { margin: 0; color: var(--wooble-muted); font-size: 13px; line-height: 1.6; }
 .detail-feature-card { display: flex; align-items: flex-start; gap: 18px; margin-top: 28px; padding: 24px; border: 1px solid var(--wooble-neutral); border-radius: 14px; color: var(--wooble-primary); background: #faf7ef; }
@@ -673,7 +673,7 @@ code, kbd, .sidebar-shortcut > span:first-child, .flow-watermark, .architecture-
 
 .canvas-details-dialog .inspector-title { max-width: calc(100% - 44px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .canvas-details-dialog .inspector-scroll.detail-mode { padding: 32px 38px 42px; }
-.detail-page-intro { padding-bottom: 22px; }
+.detail-page-intro { padding-bottom: 8px; }
 .detail-page-intro h2 { margin-top: 9px; font-size: 25px; }
 .detail-page-grid { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); align-items: start; gap: 38px; padding-top: 28px; }
 .detail-page-secondary { display: flex; min-width: 0; flex-direction: column; gap: 20px; }
@@ -700,7 +700,7 @@ code, kbd, .sidebar-shortcut > span:first-child, .flow-watermark, .architecture-
 .inspector-header-actions { position: absolute; top: 15px; right: 15px; z-index: 2; }
 .inspector-scroll:not(.detail-mode) { padding-top: 66px; }
 .inspector-edit { width: 32px !important; height: 32px !important; color: var(--wooble-primary) !important; }
-.canvas-details-dialog .inspector-scroll.detail-mode { padding-top: 38px; }
+.canvas-details-dialog .inspector-scroll.detail-mode { --detail-scroll-top: 38px; padding-top: var(--detail-scroll-top); }
 .canvas-details-dialog .detail-page { width: min(100%, 850px); }
 .canvas-details-dialog .detail-page-grid { display: block; }
 .technology-dialog-header { padding: 26px 34px 18px; border-bottom: 0; }

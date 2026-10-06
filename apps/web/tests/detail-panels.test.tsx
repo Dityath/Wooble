@@ -254,7 +254,8 @@ describe("rich documentation", () => {
     return rendered;
   }
   const documentation = () => screen.getByRole("textbox", { name: "Documentation" });
-  const saveState = () => screen.getByRole("status").textContent;
+  const saveStatus = () => screen.getByRole("status");
+  const saveState = () => saveStatus().textContent;
   const focusDocumentation = () => act(async () => editorFromElement(documentation()).view.focus());
   const blurDocumentation = () => act(async () => documentation().blur());
   /** Places the caret at the end of the last block, as clicking after the text does. */
@@ -309,7 +310,9 @@ describe("rich documentation", () => {
         .map((box) => box.checked),
     ).toEqual([true, false]);
     expect(within(within(editor).getByRole("table")).getByText("Platform")).toBeTruthy();
-    expect(screen.getByText("Type / to insert blocks. Paste Markdown to convert it.")).toBeTruthy();
+    expect(document.querySelector(".documentation-hint")?.textContent).toBe(
+      "Type / to insert a block. Paste Markdown to convert it.",
+    );
     expect(saveState()).toBe("");
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
   });
@@ -392,13 +395,41 @@ describe("rich documentation", () => {
     await blurDocumentation();
     expect((await screen.findByRole("alert")).textContent).toContain("Documentation could not be saved");
     expect(documentation().textContent).toBe("Rotate the keys");
-    expect(saveState()).toBe("Unsaved changes");
+    expect(saveStatus().getAttribute("data-state")).toBe("error");
+    expect(saveState()).toBe("Save failed");
 
     fail = false;
     await actor.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     expect(onSave.mock.calls).toEqual([["Rotate the keys"], ["Rotate the keys"]]);
     expect(saveState()).toBe("Saved");
+  });
+
+  it("keeps the save state and its notices inside the sticky toolbar", async () => {
+    const onSave = mock(async (_value: string) => {
+      throw new Error("Documentation could not be saved");
+    });
+    await renderDocumentation(<RichDocumentation value="Runbook" onSave={onSave} />);
+    const chrome = document.querySelector(".documentation-chrome");
+    expect(chrome).toBeTruthy();
+    await caretToEnd();
+    await typeInEditor(documentation(), " v2");
+    expect(chrome?.contains(saveStatus())).toBe(true);
+
+    // A blocked paste is reported with the toolbar, so it stays in view wherever the editor is scrolled to.
+    fireEvent.paste(documentation(), {
+      clipboardData: { getData: (type: string) => (type === "text/plain" ? "![Diagram](diagram.png)" : "") },
+    });
+    expect(chrome?.contains(screen.getByRole("alert"))).toBe(true);
+
+    await blurDocumentation();
+    // The failed save and the blocked paste are reported side by side, both with the toolbar.
+    const notices = await screen.findAllByRole("alert");
+    expect(notices.length).toBe(2);
+    expect(notices.every((notice) => chrome?.contains(notice))).toBe(true);
+    expect(notices.some((notice) => notice.textContent?.includes("Documentation could not be saved"))).toBe(true);
+    expect(notices.some((notice) => notice.textContent?.includes("paste again"))).toBe(true);
+    expect(saveStatus().getAttribute("data-state")).toBe("error");
   });
 
   it("sends one save at a time and saves edits made during a save after it", async () => {
@@ -512,7 +543,7 @@ describe("rich documentation", () => {
 
     rerender(<RichDocumentation value="Remote notes" onSave={onSave} />);
     expect(documentation().textContent).toBe("Old notes and local edits");
-    expect(saveState()).toBe("Unsaved changes");
+    expect(saveState()).toBe("Save failed");
   });
 
   it("keeps its undo history when its own save comes back as the documentation", async () => {

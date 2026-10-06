@@ -1,5 +1,5 @@
 /* Product interface direction: architecture as a calm, readable working model. */
-:root { --focus-ring: 0 0 0 3px rgb(107 127 110 / 24%); }
+:root { --focus-ring: 0 0 0 3px rgb(107 127 110 / 24%); --wooble-danger: #a9453e; --wooble-warning: #9a6b2e; }
 html, body, #root { min-width: 0; }
 body { color: var(--wooble-ink); background: var(--wooble-surface); }
 button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }
@@ -229,7 +229,7 @@ p { text-wrap: pretty; }
 }
 .page-intro { margin: 0 0 32px; }
 .back-link + .page-intro { margin-top: 28px; }
-.account-menu-error { margin: 8px; color: var(--wooble-danger, #a9453e); font-size: 12px; line-height: 1.45; }
+.account-menu-error { margin: 8px; color: var(--wooble-danger); font-size: 12px; line-height: 1.45; }
 
 /* Zen mode clears navigation while the selected item's inspector remains available. */
 .canvas-zen-mode .app-topbar,
@@ -307,16 +307,22 @@ p { text-wrap: pretty; }
 .rich-detail-heading h3 { margin: 0 0 4px; color: var(--wooble-ink); font-size: 16px; }
 .rich-detail-heading p { margin: 0; color: var(--wooble-muted); font-size: 12px; line-height: 1.5; }
 .rich-detail-actions, .rich-editor-footer { display: flex; justify-content: flex-end; gap: 8px; }
-.rich-markdown { max-width: 74ch; color: var(--wooble-ink-soft); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
-.rich-markdown h1, .rich-markdown h2, .rich-markdown h3 { margin: 1.4em 0 .4em; color: var(--wooble-ink); line-height: 1.3; }
-.rich-markdown h1 { font-size: 22px; }.rich-markdown h2 { font-size: 18px; }.rich-markdown h3 { font-size: 15px; }
-.rich-markdown p, .rich-markdown ul, .rich-markdown ol { margin: .65em 0; }.rich-markdown ul, .rich-markdown ol { padding-left: 24px; }
-.rich-markdown a { color: var(--wooble-primary-strong); text-decoration: underline; }
-.rich-markdown blockquote { margin: 12px 0; padding: 4px 14px; border-left: 3px solid var(--wooble-accent); color: var(--wooble-muted); background: var(--wooble-inset); }
-.rich-markdown code, .rich-markdown pre, .contract-raw-preview { font-family: var(--font-mono); font-size: 11px; }
-.rich-markdown code { padding: 2px 4px; border-radius: 4px; background: var(--wooble-inset); }
-.rich-markdown pre, .contract-raw-preview { max-height: 350px; overflow: auto; padding: 14px; border-radius: 8px; background: var(--wooble-inset); line-height: 1.6; }
-.rich-markdown table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }.rich-markdown th, .rich-markdown td { padding: 7px 10px; border: 1px solid var(--wooble-neutral); text-align: left; }
+.rich-markdown { max-width: 70ch; color: var(--wooble-ink-soft); font-size: 15px; line-height: 1.7; overflow-wrap: anywhere; }
+.rich-markdown ::selection { background: color-mix(in srgb, var(--wooble-primary) 26%, transparent); }
+.rich-markdown h1, .rich-markdown h2, .rich-markdown h3 { margin: 1.75em 0 .5em; color: var(--wooble-ink); font-weight: 600; line-height: 1.25; letter-spacing: -.012em; text-wrap: balance; }
+.rich-markdown h1 { font-size: 24px; }.rich-markdown h2 { font-size: 20px; }.rich-markdown h3 { font-size: 17px; }
+.rich-markdown > :first-child { margin-top: 0; }.rich-markdown > :last-child { margin-bottom: 0; }
+.rich-markdown p, .rich-markdown ul, .rich-markdown ol { margin: .75em 0; }.rich-markdown ul, .rich-markdown ol { padding-left: 1.5em; }.rich-markdown li + li, .rich-markdown li > :is(ul, ol) { margin-top: .3em; }.rich-markdown li > :is(ul, ol) { margin-bottom: 0; }.rich-markdown li::marker { color: var(--wooble-muted); }
+.rich-markdown a { color: var(--wooble-primary-strong); text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); text-underline-offset: 3px; }.rich-markdown a:hover { text-decoration-color: currentColor; }
+.rich-markdown blockquote { margin: 1.25em 0; padding: 2px 0 2px 18px; border-left: 2px solid var(--wooble-neutral); color: var(--wooble-ink-soft); }.rich-markdown blockquote > :first-child { margin-top: 0; }.rich-markdown blockquote > :last-child { margin-bottom: 0; }
+.rich-markdown code, .rich-markdown pre, .contract-raw-preview { font-family: var(--font-mono); }
+.rich-markdown code { padding: .12em .38em; border-radius: 5px; color: var(--wooble-ink); background: var(--wooble-inset); font-size: .86em; }
+.rich-markdown pre { max-height: 420px; overflow: auto; margin: 1.25em 0; padding: 16px 18px; border: 1px solid var(--wooble-border-soft); border-radius: 10px; color: var(--wooble-ink); background: var(--wooble-inset); font-size: 13px; line-height: 1.65; }
+/* Code in a fenced block is block text, not an inline chip, so it keeps the block's own size and padding. */
+.rich-markdown pre code { padding: 0; border-radius: 0; color: inherit; background: none; font-size: 1em; }
+.contract-raw-preview { max-height: 350px; overflow: auto; padding: 14px; border-radius: 8px; background: var(--wooble-inset); font-size: 11px; line-height: 1.6; }
+.rich-markdown hr { margin: 2em 0; border: 0; border-top: 1px solid var(--wooble-neutral); }
+.rich-markdown table { display: block; max-width: 100%; margin: 1.25em 0; overflow-x: auto; border-collapse: collapse; font-size: 14px; line-height: 1.55; }.rich-markdown th, .rich-markdown td { padding: 9px 12px; border: 1px solid var(--wooble-neutral); text-align: left; }.rich-markdown th { color: var(--wooble-ink); background: var(--wooble-inset); font-weight: 600; }
 .rich-empty { color: var(--wooble-muted); font-size: 12px; line-height: 1.6; }
 .rich-source-editor { width: 100%; min-height: 280px; resize: vertical; padding: 14px; border: 1px solid var(--wooble-neutral); border-radius: 8px; outline: none; color: var(--wooble-ink); background: var(--wooble-inset); font-family: var(--font-mono); font-size: 12px; line-height: 1.6; tab-size: 2; }
 .rich-source-editor:focus { border-color: var(--wooble-primary); box-shadow: var(--focus-ring); }
@@ -369,7 +375,7 @@ p { text-wrap: pretty; }
 .appearance-options { display: flex; gap: 10px; margin: 20px 0 0; padding: 0; border: 0; }
 
 :root { --canvas-grid: #dadecf; --minimap-mask: rgb(250 247 239 / 76%); }
-:root[data-theme="dark"] { --wooble-surface: #202a24; --wooble-panel: #303d34; --wooble-canvas: #1d2721; --wooble-inset: #27342b; --wooble-neutral: #536657; --wooble-border-soft: rgb(196 222 196 / 18%); --wooble-ink: #f6f6ee; --wooble-muted: #c0cbbf; --canvas-grid: #617567; --minimap-mask: rgb(28 39 32 / 75%); }
+:root[data-theme="dark"] { --wooble-surface: #202a24; --wooble-panel: #303d34; --wooble-canvas: #1d2721; --wooble-inset: #27342b; --wooble-neutral: #536657; --wooble-border-soft: rgb(196 222 196 / 18%); --wooble-ink: #f6f6ee; --wooble-muted: #c0cbbf; --wooble-danger: #e5958b; --wooble-warning: #d7b47c; --canvas-grid: #617567; --minimap-mask: rgb(28 39 32 / 75%); }
 [data-theme="dark"] .flow-surface .react-flow__background { opacity: .18; }
 [data-theme="dark"] .architecture-node { background: #344138; border-color: #617463; box-shadow: 0 3px 12px rgb(0 0 0 / 20%); }
 [data-theme="dark"] .system-boundary { background: #344138; border-color: #68806b; }
@@ -389,16 +395,49 @@ p { text-wrap: pretty; }
 .detail-overview-description { max-width: 70ch; color: var(--wooble-ink-soft); font-size: 13px; line-height: 1.7; }
 .detail-facts { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; margin-top: 24px; }
 .detail-facts div { min-width: 0; border-top: 1px solid var(--wooble-border-soft); padding-top: 12px; }.detail-facts dt { color: var(--wooble-muted); font-size: 11px; }.detail-facts dd { margin: 5px 0 0; color: var(--wooble-ink); font-size: 13px; overflow-wrap: anywhere; }
-.documentation-save-state { align-self: center; flex: 0 0 auto; color: var(--wooble-muted); font-size: 11px; white-space: nowrap; }
-.documentation-surface { border: 1px solid var(--wooble-neutral); border-radius: 9px; background: var(--wooble-panel); cursor: text; transition: border-color .15s, box-shadow .15s; }.documentation-surface:focus-within { border-color: var(--wooble-primary); box-shadow: var(--focus-ring); }
-.documentation-editor { max-width: none; min-height: 320px; padding: 12px 18px 20px; outline: none; caret-color: var(--wooble-ink); }.documentation-editor > :first-child { margin-top: 0; }.documentation-editor > :last-child { margin-bottom: 0; }.documentation-editor ul { list-style: disc; }.documentation-editor ul ul { list-style: circle; }.documentation-editor ol { list-style: decimal; }.documentation-editor li > p { margin: .2em 0; }
+/* Documentation reads as a page: no frame around the document, one quiet toolbar above it. */
+/* Sticks to the top edge of the details scroll area, above its top padding, so the save state and notices stay in view. */
+.documentation-chrome { position: sticky; z-index: 3; top: calc(-1 * var(--detail-scroll-top, 0px)); display: flex; flex-direction: column; background: var(--wooble-panel); }
+.documentation-chrome::after { content: ""; position: absolute; top: 100%; right: 0; left: 0; height: 8px; pointer-events: none; background: linear-gradient(var(--wooble-panel), transparent); }
+.documentation-toolbar { display: flex; min-height: 48px; align-items: center; gap: 16px; padding: 8px 0; }
+.documentation-toolbar-status { flex: 1 1 auto; min-width: 0; }
+.documentation-save-state { display: inline-flex; align-items: center; gap: 7px; color: var(--wooble-muted); font-size: 12px; font-weight: 500; white-space: nowrap; }
+.documentation-save-state:not(:empty)::before { content: ""; width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--wooble-primary); }
+.documentation-save-state[data-state="unsaved"]::before { background: var(--wooble-accent); }
+.documentation-save-state[data-state="saving"]::before { background: var(--wooble-muted); animation: documentation-saving 1s ease-in-out infinite alternate; }
+.documentation-save-state[data-state="error"]::before { background: var(--wooble-danger); }
+@keyframes documentation-saving { from { opacity: 1; } to { opacity: .3; } }
+.documentation-hint { color: var(--wooble-muted); font-size: 12px; white-space: nowrap; }
+/* An empty document's placeholder already gives this hint. */
+.documentation-card:has(.documentation-editor > p.is-editor-empty:only-child) .documentation-hint { visibility: hidden; }
+.documentation-hint kbd { display: inline-grid; min-width: 19px; height: 19px; margin: 0 2px; padding: 0 5px; place-items: center; border: 1px solid var(--wooble-neutral); border-radius: 5px; color: var(--wooble-ink-soft); background: var(--wooble-surface); font: 500 11px/1 var(--font-mono); }
+.documentation-mode-toggle { display: inline-flex; height: 32px; flex: 0 0 auto; align-items: center; gap: 7px; padding: 0 11px; border: 1px solid var(--wooble-neutral); border-radius: 8px; outline: none; color: var(--wooble-ink-soft); background: transparent; font-size: 12px; font-weight: 550; transition: background-color .15s, border-color .15s, color .15s; }
+.documentation-mode-toggle svg { color: var(--wooble-muted); transition: color .15s; }
+.documentation-mode-toggle:hover { border-color: var(--wooble-primary); color: var(--wooble-ink); background: var(--wooble-inset); }.documentation-mode-toggle:hover svg { color: var(--wooble-primary-strong); }
+.documentation-mode-toggle:focus-visible { border-color: var(--wooble-primary); box-shadow: var(--focus-ring); }
+.documentation-notice { --tone: var(--wooble-warning); display: flex; align-items: flex-start; gap: 10px; margin: 0 0 8px; padding: 11px 14px; border: 1px solid color-mix(in srgb, var(--tone) 32%, transparent); border-radius: 10px; color: var(--wooble-ink); background: color-mix(in srgb, var(--tone) 8%, var(--wooble-panel)); font-size: 13px; line-height: 1.5; }
+.documentation-notice.is-error { --tone: var(--wooble-danger); align-items: center; }
+.documentation-notice > svg { flex: 0 0 auto; margin-top: 2px; color: var(--tone); }.documentation-notice.is-error > svg { margin-top: 0; }
+.documentation-notice > span { flex: 1 1 auto; min-width: 0; }
+.documentation-notice button { flex: 0 0 auto; height: 28px; padding: 0 11px; border: 1px solid color-mix(in srgb, var(--tone) 40%, transparent); border-radius: 7px; outline: none; color: var(--wooble-ink); background: var(--wooble-panel); font-size: 12px; font-weight: 600; transition: background-color .15s; }
+.documentation-notice button:hover { background: color-mix(in srgb, var(--tone) 12%, var(--wooble-panel)); }.documentation-notice button:focus-visible { box-shadow: var(--focus-ring); }
+/* The document itself stays frameless, so this ring is the only thing that says the editor is focused. An outline
+   rather than a shadow, because its offset keeps it off the text, which has no inline padding of its own. */
+.documentation-surface { cursor: text; border-radius: 10px; transition: outline-color .15s; }
+.documentation-surface:focus-within { outline: 2px solid var(--wooble-primary-strong); outline-offset: 3px; }
+.documentation-editor { max-width: none; min-height: 360px; padding: 12px 0 72px; outline: none; caret-color: var(--wooble-primary-strong); }
+.documentation-editor > :is(p, h1, h2, h3, h4, ul, ol, blockquote, hr) { max-width: 70ch; }
+.documentation-editor ul { list-style: disc; }.documentation-editor ul ul { list-style: circle; }.documentation-editor ol { list-style: decimal; }.documentation-editor li > p { margin: 0; }
 .documentation-editor p.is-editor-empty:first-child::before { content: attr(data-placeholder); float: left; height: 0; color: var(--wooble-muted); pointer-events: none; }
-.documentation-editor ul[data-type="taskList"] { padding-left: 2px; list-style: none; }.documentation-editor ul[data-type="taskList"] li { display: flex; align-items: flex-start; gap: 8px; }.documentation-editor ul[data-type="taskList"] li > label { display: flex; flex: 0 0 auto; align-items: center; height: 1.7em; user-select: none; }.documentation-editor ul[data-type="taskList"] li > div { flex: 1 1 auto; min-width: 0; }.documentation-editor ul[data-type="taskList"] li > div > p { margin: 0; }.documentation-editor ul[data-type="taskList"] input[type="checkbox"] { width: 14px; height: 14px; margin: 0; accent-color: var(--wooble-primary); cursor: pointer; }.documentation-editor li[data-checked="true"] > div > p { color: var(--wooble-muted); }
-.documentation-editor table { margin: 12px 0; }.documentation-editor th, .documentation-editor td { position: relative; min-width: 72px; vertical-align: top; }.documentation-editor th { color: var(--wooble-ink); background: var(--wooble-inset); font-weight: 650; }.documentation-editor th > p, .documentation-editor td > p { margin: 0; }.documentation-editor .selectedCell::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: var(--wooble-primary); opacity: .18; }
-.documentation-editor pre { max-height: none; }.documentation-editor pre code { padding: 0; background: none; font-size: inherit; }.documentation-editor hr { margin: 18px 0; border: 0; border-top: 1px solid var(--wooble-neutral); }.documentation-editor hr.ProseMirror-selectednode { border-top-color: var(--wooble-primary); outline: 2px solid var(--wooble-primary); outline-offset: 4px; }.documentation-editor .ProseMirror-gapcursor::after { border-top-color: var(--wooble-ink); }
+.documentation-editor ul[data-type="taskList"] { padding-left: 2px; list-style: none; }.documentation-editor ul[data-type="taskList"] li { display: flex; align-items: flex-start; gap: 10px; }.documentation-editor ul[data-type="taskList"] li > label { display: flex; flex: 0 0 auto; align-items: center; height: 1.7em; user-select: none; }.documentation-editor ul[data-type="taskList"] li > div { flex: 1 1 auto; min-width: 0; }.documentation-editor ul[data-type="taskList"] li > div > p { margin: 0; }.documentation-editor ul[data-type="taskList"] input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var(--wooble-primary); cursor: pointer; }.documentation-editor li[data-checked="true"] > div > p { color: var(--wooble-muted); text-decoration: line-through; text-decoration-color: color-mix(in srgb, currentColor 50%, transparent); }
+.documentation-editor th, .documentation-editor td { position: relative; min-width: 80px; vertical-align: top; }.documentation-editor th > p, .documentation-editor td > p { margin: 0; }.documentation-editor .selectedCell::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: var(--wooble-primary); opacity: .18; }
+.documentation-editor pre { max-height: none; }.documentation-editor hr.ProseMirror-selectednode { border-top-color: var(--wooble-primary); outline: 2px solid var(--wooble-primary); outline-offset: 4px; }.documentation-editor .ProseMirror-gapcursor::after { border-top-color: var(--wooble-ink); }
 .schema-editor-grid { grid-template-columns: minmax(280px,.8fr) minmax(0,1.2fr); }
 .schema-source .rich-source-editor { min-height: 360px; }
-@media (max-width: 760px) { .schema-editor-grid { grid-template-columns: 1fr; }.documentation-editor { min-height: 220px; padding: 10px 14px 16px; }.detail-facts { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { .schema-editor-grid { grid-template-columns: 1fr; }.documentation-editor { min-height: 260px; padding-bottom: 48px; }.documentation-hint { display: none; }.detail-facts { grid-template-columns: 1fr; } }
+/* The details dialog's close button floats over the top right of its scroll area, so the sticky toolbar and its notices keep clear of it. */
+@media (max-width: 900px) { .canvas-details-dialog .documentation-toolbar, .canvas-details-dialog .documentation-notice { padding-right: 28px; } }
 
-.documentation-source { display: block; width: 100%; min-height: 240px; padding: 14px; resize: vertical; color: var(--wooble-ink); font: 13px/1.6 var(--font-mono); }
-.documentation-source-toggle { margin-bottom: 10px; color: var(--wooble-ink); text-decoration: underline; text-underline-offset: 3px; }
+.documentation-source { display: block; width: 100%; min-height: 360px; field-sizing: content; margin-top: 8px; padding: 16px 18px; resize: vertical; border: 1px solid var(--wooble-border-soft); border-radius: 12px; outline: none; color: var(--wooble-ink); background: var(--wooble-inset); font: 13px/1.7 var(--font-mono); tab-size: 2; transition: border-color .15s, box-shadow .15s; }
+.documentation-source:focus { border-color: var(--wooble-primary); box-shadow: var(--focus-ring); }
+@media (prefers-reduced-motion: reduce) { .documentation-save-state[data-state="saving"]::before { animation: none; opacity: .6; } }

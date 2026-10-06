@@ -1,3 +1,4 @@
+import { CircleAlert } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { DocumentationEditor, type DocumentationEditorHandle } from "./documentation/documentation-editor";
 
@@ -142,28 +143,43 @@ export function RichDocumentation({ value, onSave }: { value: string; onSave: (v
     if (!show(value)) pending.current = value;
   }, [value, show]);
 
+  // The dot's colour and the text a screen reader reads come from one value, so they cannot disagree. Documentation that
+  // is too long has not been sent and so is only unsaved; a failed save is what the error state is for.
   const saveState =
-    draft === undefined ? "" : savesInFlight > 0 ? "Saving…" : draft !== saved ? "Unsaved changes" : "Saved";
+    draft === undefined
+      ? undefined
+      : error && error !== TOO_LONG_MESSAGE
+        ? { state: "error", label: "Save failed" }
+        : savesInFlight > 0
+          ? { state: "saving", label: "Saving…" }
+          : draft !== saved
+            ? { state: "unsaved", label: "Unsaved changes" }
+            : { state: "saved", label: "Saved" };
   return (
-    <section className="rich-detail-card documentation-card">
-      <div className="rich-detail-heading">
-        <div>
-          <h3>Documentation</h3>
-          <p>Type / to insert blocks. Paste Markdown to convert it.</p>
-        </div>
-        <span className="documentation-save-state" role="status">
-          {saveState}
-        </span>
-      </div>
-      <DocumentationEditor ref={editor} initialMarkdown={value} onChange={handleChange} onBlur={handleBlur} />
-      {error && (
-        <p className="form-error" role="alert">
-          {error}{" "}
-          <button type="button" onClick={() => commit(latest.current)}>
-            Retry
-          </button>
-        </p>
-      )}
+    <section className="documentation-card" aria-label="Documentation">
+      <DocumentationEditor
+        ref={editor}
+        initialMarkdown={value}
+        onChange={handleChange}
+        onBlur={handleBlur}
+        status={
+          // The live region stays mounted while there is nothing to report, so the first save is announced too.
+          <span className="documentation-save-state" data-state={saveState?.state} role="status">
+            {saveState?.label ?? ""}
+          </span>
+        }
+        notice={
+          error && (
+            <p className="documentation-notice is-error" role="alert">
+              <CircleAlert size={15} aria-hidden="true" />
+              <span>{error}</span>
+              <button type="button" onClick={() => commit(latest.current)}>
+                Retry
+              </button>
+            </p>
+          )
+        }
+      />
     </section>
   );
 }
