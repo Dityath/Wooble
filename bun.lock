@@ -42,6 +42,7 @@
         "@tiptap/core": "^3.31.4",
         "@tiptap/extension-code-block": "^3.31.4",
         "@tiptap/extension-horizontal-rule": "^3.31.4",
+        "@tiptap/extension-link": "^3.31.4",
         "@tiptap/extension-list": "^3.31.4",
         "@tiptap/extension-paragraph": "^3.31.4",
         "@tiptap/extension-table": "^3.31.4",

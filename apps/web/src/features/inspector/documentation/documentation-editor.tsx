@@ -1,6 +1,7 @@
 import { Extension } from "@tiptap/core";
 import { EditorContent, useEditor } from "@tiptap/react";
-import { type Ref, useImperativeHandle, useState } from "react";
+import { type Ref, useImperativeHandle, useRef, useState, useLayoutEffect } from "react";
+import { unsupportedMarkdown } from "./unsupported-markdown";
 import { documentationEditorOptions, documentationExtensions } from "./extensions";
 
 /**
@@ -40,7 +41,7 @@ export interface DocumentationEditorProps {
 }
 
 /** An always-editable block editor for Markdown documentation. */
-export function DocumentationEditor({ initialMarkdown, onChange, onBlur, ref }: DocumentationEditorProps) {
+function BlockDocumentationEditor({ initialMarkdown, onChange, onBlur, ref }: DocumentationEditorProps) {
   // The editor reads these when it is created. Keeping them stable also stops useEditor from reapplying them on every
   // render; it always calls the latest event handlers.
   const [options] = useState(() => ({
@@ -82,4 +83,114 @@ export function DocumentationEditor({ initialMarkdown, onChange, onBlur, ref }: 
     [editor],
   );
   return <EditorContent editor={editor} className="documentation-surface" />;
+}
+
+/** Unsupported documents stay in source form, with the same autosave contract as block editing. */
+export function DocumentationEditor({ initialMarkdown, onChange, onBlur, ref }: DocumentationEditorProps) {
+  const [source, setSource] = useState(() =>
+    unsupportedMarkdown(initialMarkdown).length ? initialMarkdown : undefined,
+  );
+  const sourceValue = useRef(source);
+  const textarea = useRef<HTMLTextAreaElement>(null);
+  const blocks = useRef<DocumentationEditorHandle>(null);
+  const original = useRef(initialMarkdown);
+  const baseline = useRef("");
+  const edited = useRef(false);
+  useLayoutEffect(() => {
+    baseline.current = blocks.current?.getMarkdown().trim() ?? initialMarkdown.trim();
+  }, [initialMarkdown]);
+  const [warning, setWarning] = useState(() => unsupportedMarkdown(initialMarkdown).join(", "));
+  useImperativeHandle(
+    ref,
+    () => ({
+      getMarkdown: () => sourceValue.current ?? blocks.current?.getMarkdown() ?? initialMarkdown,
+      hasFocus: () =>
+        sourceValue.current !== undefined
+          ? document.activeElement === textarea.current
+          : (blocks.current?.hasFocus() ?? false),
+      replace(markdown) {
+        original.current = markdown;
+        edited.current = false;
+        const unsupported = unsupportedMarkdown(markdown);
+        if (sourceValue.current !== undefined || unsupported.length) {
+          sourceValue.current = markdown;
+          setSource(markdown);
+          setWarning(unsupported.join(", "));
+          return markdown;
+        }
+        const replaced = blocks.current?.replace(markdown) ?? markdown;
+        baseline.current = replaced.trim();
+        return replaced;
+      },
+    }),
+    [initialMarkdown],
+  );
+  const useSource = () => {
+    const markdown = edited.current ? (blocks.current?.getMarkdown() ?? original.current) : original.current;
+    sourceValue.current = markdown;
+    setSource(markdown);
+  };
+  return (
+    <>
+      {warning && (
+        <p className="form-error" role="alert">
+          {source !== undefined
+            ? `This document contains ${warning}, which the block editor does not support. Edit Markdown source to preserve this content.`
+            : `This paste contains ${warning}, which the block editor does not support. Switch to Markdown source, then paste again to preserve it.`}
+        </p>
+      )}
+      {source !== undefined ? (
+        <textarea
+          ref={textarea}
+          aria-label="Documentation"
+          data-inline-editing="true"
+          className="documentation-surface documentation-source"
+          value={source}
+          onChange={(event) => {
+            sourceValue.current = event.target.value;
+            setSource(event.target.value);
+            onChange(event.target.value);
+          }}
+          onBlur={onBlur}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.currentTarget.blur();
+            }
+          }}
+        />
+      ) : (
+        <>
+          <button type="button" className="documentation-source-toggle" onClick={useSource}>
+            Edit Markdown source
+          </button>
+          <div
+            onPasteCapture={(event) => {
+              // Pasting source inside a code block is literal, even when it contains Markdown or HTML.
+              const selection = window.getSelection();
+              const selectedElement =
+                selection?.anchorNode instanceof Element ? selection.anchorNode : selection?.anchorNode?.parentElement;
+              if (selectedElement?.closest("pre")) return;
+              const plain = event.clipboardData.getData("text/plain");
+              const unsupported = unsupportedMarkdown(plain || event.clipboardData.getData("text/html"));
+              if (!unsupported.length) return;
+              event.preventDefault();
+              event.stopPropagation();
+              setWarning(unsupported.join(", "));
+            }}
+          >
+            <BlockDocumentationEditor
+              ref={blocks}
+              initialMarkdown={initialMarkdown}
+              onChange={(markdown) => {
+                if (markdown.trim() !== baseline.current) edited.current = true;
+                onChange(markdown);
+              }}
+              onBlur={onBlur}
+            />
+          </div>
+        </>
+      )}
+    </>
+  );
 }

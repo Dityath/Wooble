@@ -399,3 +399,6 @@ p { text-wrap: pretty; }
 .schema-editor-grid { grid-template-columns: minmax(280px,.8fr) minmax(0,1.2fr); }
 .schema-source .rich-source-editor { min-height: 360px; }
 @media (max-width: 760px) { .schema-editor-grid { grid-template-columns: 1fr; }.documentation-editor { min-height: 220px; padding: 10px 14px 16px; }.detail-facts { grid-template-columns: 1fr; } }
+
+.documentation-source { display: block; width: 100%; min-height: 240px; padding: 14px; resize: vertical; color: var(--wooble-ink); font: 13px/1.6 var(--font-mono); }
+.documentation-source-toggle { margin-bottom: 10px; color: var(--wooble-ink); text-decoration: underline; text-underline-offset: 3px; }

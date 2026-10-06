@@ -216,7 +216,7 @@ describe("pasting Markdown into documentation", () => {
           ],
         },
       ],
-      saved: "\n| Service | Owner    |\n| ------- | -------- |\n| Gateway | Platform |\n\n\n",
+      saved: "\n| Service | Owner |\n| --- | --- |\n| Gateway | Platform |\n\n\n",
     },
   ];
   for (const { name, markdown, blocks, saved } of blockSamples) {
@@ -318,7 +318,7 @@ describe("pasting Markdown into documentation", () => {
       },
     ]);
     expect(editor.getMarkdown()).toBe(
-      "Capacity is 2 \\* 3 \\* 4 nodes per \\_zone\\_ and \\*region\\*.\n\nSee [https://example.com/capacity](https://example.com/capacity) first.",
+      "Capacity is 2 \\* 3 \\* 4 nodes per \\_zone\\_ and \\*region\\*.\n\nSee https://example.com/capacity first.",
     );
   });
 

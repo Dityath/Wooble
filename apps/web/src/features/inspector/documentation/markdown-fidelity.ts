@@ -1,5 +1,7 @@
-import type { JSONContent } from "@tiptap/core";
+import { Extension, type JSONContent } from "@tiptap/core";
 import { CodeBlock } from "@tiptap/extension-code-block";
+import { Link } from "@tiptap/extension-link";
+import { Table } from "@tiptap/extension-table";
 import { Paragraph } from "@tiptap/extension-paragraph";
 import { Markdown } from "@tiptap/markdown";
 import { Fragment, type Node as ProseMirrorNode, type Schema } from "@tiptap/pm/model";
@@ -122,6 +124,50 @@ export const DocumentationCodeBlock = CodeBlock.extend({
   },
 });
 
+/** Compact GFM tables keep a long cell from padding every other row past the API limit. */
+export const DocumentationTable = Table.extend({
+  renderMarkdown(node, helpers) {
+    const rows = node.content ?? [];
+    if (!rows.length) return "";
+    const renderRow = (cells: string[]) => `| ${cells.join(" | ")} |`;
+    const lines = rows.map((row) =>
+      renderRow(
+        (row.content ?? []).map((cell) =>
+          (cell.content ?? [])
+            .map((child) => helpers.renderChildren(child))
+            .join("\n")
+            .replace(/[ \t]*\r?\n[ \t]*/g, "<br>")
+            .replace(/\s+/g, " ")
+            .trim()
+            .replace(/\\.|\|/g, (match) => (match === "|" ? "\\|" : match)),
+        ),
+      ),
+    );
+    const alignment = (rows[0].content ?? []).map((cell) => {
+      const align = cell.attrs?.align ?? cell.attrs?.textAlign;
+      return align === "left" ? ":---" : align === "right" ? "---:" : align === "center" ? ":---:" : "---";
+    });
+    lines.splice(1, 0, renderRow(alignment));
+    return `\n${lines.join("\n")}\n`;
+  },
+});
+
+const urlParser = new Marked();
+/** Only omit link syntax when GFM reads the entire destination as the same link. */
+function isBareUrl(href: unknown): href is string {
+  if (typeof href !== "string" || !/^https?:\/\//.test(href)) return false;
+  const tokens = urlParser.Lexer.lexInline(href, { gfm: true });
+  return tokens.length === 1 && tokens[0].type === "link" && tokens[0].raw === href && tokens[0].href === href;
+}
+
+export const DocumentationLink = Link;
+
+/** Serialization-only node: never inserted into the editor schema or persisted JSON. */
+export const DocumentationBareUrl = Extension.create({
+  name: "documentationBareUrl",
+  renderMarkdown: (node) => node.attrs?.href ?? "",
+});
+
 // TipTap decodes these named references, and numeric ones, itself. Decoding them here too would decode `&amp;lt;`
 // twice and turn the literal text `&lt;` into `<`.
 const referencesDecodedByTipTap = new Set(["amp", "lt", "gt", "quot"]);
@@ -174,6 +220,24 @@ export const DocumentationMarkdown = Markdown.extend({
     const manager = editor.markdown;
     if (!manager) return;
     // Every Markdown entry point (initial content, setContent, insertContent) parses through the manager.
+    // TipTap escapes link text even when delimiters are omitted. Render a complete plain URL through a temporary
+    // serialization-only node so underscores and query ampersands stay literal. Split/formatted/titled links keep
+    // the ordinary link serializer. The editor document itself is never changed.
+    const renderNodes = manager.renderNodes.bind(manager);
+    manager.renderNodes = (nodes, ...args) => {
+      const plainUrl = (node: JSONContent, index = 0): JSONContent => {
+        const link = node.marks?.length === 1 && node.marks[0].type === "link" ? node.marks[0] : undefined;
+        if (node.type !== "text" || link?.attrs?.title || node.text !== link?.attrs?.href || !isBareUrl(node.text))
+          return node;
+        const next = Array.isArray(nodes) ? nodes[index + 1] : undefined;
+        // Adjacent text such as `/other` must not silently extend an explicitly delimited link's destination.
+        const nextText = next?.type === "text" ? (next.text ?? "") : "";
+        if (nextText && urlParser.Lexer.lexInline(`${node.text}${nextText}`, { gfm: true })[0]?.raw !== node.text)
+          return node;
+        return { type: "documentationBareUrl", attrs: { href: node.text } };
+      };
+      return renderNodes(Array.isArray(nodes) ? nodes.map(plainUrl) : plainUrl(nodes), ...args);
+    };
     const parse = manager.parse.bind(manager);
     manager.parse = (markdown) => fitToSchema(parse(markdown), editor.schema);
     // The parent extension has already parsed the initial content before parse could be wrapped.

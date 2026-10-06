@@ -510,7 +510,7 @@ describe("panels and collaboration", () => {
     const dialog = await screen.findByRole("dialog", { name: "Canvas details" });
     expect(within(dialog).getByText("About this service")).toBeTruthy();
     await actor.click(within(dialog).getByRole("button", { name: "Documentation" }));
-    const documentation = within(dialog).getByRole("textbox", { name: "Documentation" });
+    const documentation = await within(dialog).findByRole("textbox", { name: "Documentation" });
     await act(async () => documentation.focus());
     // Escape leaves the documentation editor and keeps the dialog open.
     await actor.keyboard("{Escape}");

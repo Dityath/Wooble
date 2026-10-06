@@ -175,7 +175,7 @@ describe("documentation Markdown", () => {
   });
 
   it("keeps tables with a header row", () => {
-    const table = "| Service | Owner    |\n| ------- | -------- |\n| Gateway | Platform |\n| Ledger  | Payments |";
+    const table = "| Service | Owner |\n| --- | --- |\n| Gateway | Platform |\n| Ledger | Payments |";
     const { blocks, saved } = roundTrip(table);
     const row = (cellType: string, cells: string[]) => ({
       type: "tableRow",
@@ -191,8 +191,41 @@ describe("documentation Markdown", () => {
         ],
       },
     ]);
-    // Columns are padded to one width, and the table is written with a blank line around it.
+    // Tables use compact cells and a blank line around the block.
     expect(saved).toBe(`\n${table}\n`);
+  });
+
+  it("does not inflate a table with one long cell", () => {
+    const table = [
+      "| Name | Notes |",
+      "| --- | --- |",
+      `| Gateway | ${"x".repeat(1000)} |`,
+      ...Array.from({ length: 8 }, () => "| API | ok |"),
+    ].join("\n");
+    expect(roundTrip(table).saved.trim()).toBe(table);
+  });
+
+  it("keeps 100 plain URLs plain", () => {
+    const urls = Array.from({ length: 100 }, (_, index) => `https://example.com/${index}`).join("\n\n");
+    expect(roundTrip(urls).saved).toBe(urls);
+  });
+
+  it.each(["https://example.com/a_b?q=one&next=two", "https://example.com/a_(b)"])(
+    "keeps a complete bare URL unchanged: %s",
+    (url) => {
+      expect(roundTrip(url).saved).toBe(url);
+    },
+  );
+
+  it("keeps explicit syntax when a destination ends in punctuation or has a title", () => {
+    const source =
+      '[https://example.com/a.](https://example.com/a.) and [https://example.com](https://example.com "Runbook")';
+    expect(roundTrip(source).saved).toBe(source);
+  });
+
+  it("keeps link boundaries when adjacent text could become part of the URL", () => {
+    const source = "[https://example.com](https://example.com)/other";
+    expect(roundTrip(source).saved).toBe(source);
   });
 
   it("saves an empty document as empty Markdown", () => {
@@ -204,9 +237,9 @@ describe("documentation Markdown", () => {
   it("round-trips architecture documentation without loss", () => {
     const dependencies = [
       "| Service | Protocol | Owner |",
-      "| ------- | -------- | ----- |",
-      "| Ledger  | gRPC     | Core  |",
-      "| Fraud   | REST     | Risk  |",
+      "| --- | --- | --- |",
+      "| Ledger | gRPC | Core |",
+      "| Fraud | REST | Risk |",
     ].join("\n");
     const markdown = [
       "# Payments API",
@@ -351,9 +384,7 @@ describe("documentation Markdown", () => {
     await typeInEditor(element, "Retries");
     // Trimmed, as documentation is saved: the editor keeps an empty paragraph after the table to type on.
     const saved = editor.getMarkdown().trim();
-    expect(saved).toBe(
-      "| Service | Notes                 |\n| ------- | --------------------- |\n| Gateway | \\[ \\] Edge<br>Retries |",
-    );
+    expect(saved).toBe("| Service | Notes |\n| --- | --- |\n| Gateway | \\[ \\] Edge<br>Retries |");
     const reopened = renderDocumentationEditor(saved).editor;
     expect(reopened.getMarkdown().trim()).toBe(saved);
   });
@@ -380,12 +411,13 @@ describe("documentation Markdown", () => {
       "Edit README.md and deploy.sh or see https://example.com/docs and www.example.com or ops@example.com ",
     );
     expect(editor.getMarkdown()).toBe(
-      "Edit README.md and deploy.sh or see [https://example.com/docs](https://example.com/docs) and [www.example.com](http://www.example.com) or [ops@example.com](mailto:ops@example.com) ",
+      "Edit README.md and deploy.sh or see https://example.com/docs and [www.example.com](http://www.example.com) or [ops@example.com](mailto:ops@example.com) ",
     );
   });
 
-  // Images and raw HTML are not supported yet. These tests record what editing such a document keeps.
-  it("keeps only the alt text of an image", () => {
+  // Low-level parser limitations: the production editor detects these constructs before calling this parser
+  // and uses source editing instead (see detail-panels and unsupported-markdown tests).
+  it("records the block parser image limitation guarded by source editing", () => {
     const { editor } = renderDocumentationEditor(
       "Before\n\n![Architecture diagram](diagram.png)\n\nSee ![the logo](logo.svg) here",
     );
@@ -398,7 +430,7 @@ describe("documentation Markdown", () => {
     expect(editor.getMarkdown()).toBe("Before\n\nArchitecture diagram\n\nSee the logo here");
   });
 
-  it("keeps the text of raw HTML but not its tags or comments", () => {
+  it("records the block parser HTML limitation guarded by source editing", () => {
     const { editor } = renderDocumentationEditor(
       "Intro\n\n<details>\n<summary>Rollback</summary>\n\nRestore the snapshot.\n\n</details>\n\nPress <kbd>Ctrl</kbd> now\n\n<!-- reviewer note -->\n\nOutro",
     );

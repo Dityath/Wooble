@@ -6,7 +6,10 @@ import { StarterKit } from "@tiptap/starter-kit";
 import {
   createDocumentationMarked,
   DocumentationCodeBlock,
+  DocumentationBareUrl,
   DocumentationMarkdown,
+  DocumentationLink,
+  DocumentationTable,
   DocumentationParagraph,
 } from "./markdown-fidelity";
 import { MarkdownPaste } from "./markdown-paste";
@@ -40,27 +43,30 @@ export function documentationExtensions({ placeholder = "" }: DocumentationExten
     StarterKit.configure({
       // Markdown has no underline syntax, so underlined text could not be saved.
       underline: false,
-      link: {
-        // A plain click places the caret; opening the link would take the user away while they edit.
-        openOnClick: false,
-        // Only text that is clearly a link: a URL with its scheme, a www. address, or an email address. File names such as
-        // README.md or deploy.sh are also valid domain names and would otherwise link to someone else's site.
-        shouldAutoLink: (url) =>
-          /^[a-z][a-z0-9+.-]*:\/\//i.test(url) || /^www\./i.test(url) || /^[^\s@/]+@[^\s@/]+\.[^\s@/]+$/.test(url),
-      },
+      link: false,
       // Replaced below by versions that write Markdown which reopens as the same blocks.
       paragraph: false,
       codeBlock: false,
       // Replaced below by a divider whose `---` shortcut does nothing in a table cell.
       horizontalRule: false,
     }),
+    DocumentationLink.configure({
+      // A plain click places the caret; opening the link would take the user away while they edit.
+      openOnClick: false,
+      // Only text that is clearly a link: a URL with its scheme, a www. address, or an email address. File names such as
+      // README.md or deploy.sh are also valid domain names and would otherwise link to someone else's site.
+      shouldAutoLink: (url) =>
+        /^[a-z][a-z0-9+.-]*:\/\//i.test(url) || /^www\./i.test(url) || /^[^\s@/]+@[^\s@/]+\.[^\s@/]+$/.test(url),
+    }),
+    DocumentationBareUrl,
     DocumentationParagraph,
     DocumentationCodeBlock,
     DocumentationHorizontalRule,
     TaskList,
     TaskItem.configure({ nested: true }),
     // Table cells hold text only, as in Markdown (see table-cells.ts).
-    TableKit.configure({ table: { resizable: false }, tableCell: false, tableHeader: false }),
+    TableKit.configure({ table: false, tableCell: false, tableHeader: false }),
+    DocumentationTable.configure({ resizable: false }),
     DocumentationTableCell,
     DocumentationTableHeader,
     TableCellText,

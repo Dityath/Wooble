@@ -375,7 +375,7 @@ describe("slash menu", () => {
     editor.commands.setTextSelection({ from: notes, to: notes + 1 });
     await typeInEditor(element, "/");
     expectMenuClosed(element);
-    expect(editor.getMarkdown()).toContain("| Gateway | /     |");
+    expect(editor.getMarkdown()).toContain("| Gateway | / |");
   });
 
   it("filters the commands as the query is typed and edited", async () => {

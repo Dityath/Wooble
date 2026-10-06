@@ -158,9 +158,9 @@ test("pasted Markdown becomes blocks that persist", async ({ page }) => {
   await expect(saveState(page)).toHaveText("Saved");
   await expect
     .poll(() => storedDocumentation(page, `/api/entities/${seeded.betaId}`))
-    // The editor writes tables with a blank line around them and pads their columns.
+    // The editor writes tables with a blank line around them without column padding.
     .toBe(
-      "## Rollout\n\n- [ ] Enable the billing flag\n- [x] Notify support\n\n\n| Region | Owner    |\n| ------ | -------- |\n| EU     | Platform |",
+      "## Rollout\n\n- [ ] Enable the billing flag\n- [x] Notify support\n\n\n| Region | Owner |\n| --- | --- |\n| EU | Platform |",
     );
 
   await page.reload();
@@ -251,4 +251,68 @@ test("connector documentation saves and persists", async ({ page }) => {
   await openConnectionDocumentation(page);
   await expect(editor).toHaveText("Retries use exponential backoff.");
   await expect(editor.locator("strong")).toHaveText("exponential");
+});
+
+test("unsupported Markdown is warned about and preserved through source editing and reload", async ({ page }) => {
+  await openCanvas(page);
+  await openNodeDocumentation(page, seeded.alphaId);
+  const source =
+    "---\ntitle: Payments\n---\n\n![Diagram](https://example.com/diagram.png)\n\nClaim[^1]\n\n[^1]: Source.\n\n<details>Notes</details>";
+  const editor = documentationEditor(page);
+  await editor.click();
+  await pastePlainText(page, source);
+  await expect(detailsDialog(page).getByRole("alert")).toContainText("paste again");
+  await expect(editor).toHaveText("");
+  expect(await storedDocumentation(page, `/api/entities/${seeded.alphaId}`)).toBeNull();
+  await detailsDialog(page).getByRole("button", { name: "Edit Markdown source" }).click();
+  await editor.fill(source);
+  await expect(saveState(page)).toHaveText("Saved");
+  await expect.poll(() => storedDocumentation(page, `/api/entities/${seeded.alphaId}`)).toBe(source);
+
+  await page.reload();
+  await expect(node(page, seeded.betaId)).toBeVisible();
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "PATCH" && request.url().includes(`/entities/${seeded.alphaId}`))
+      writes.push(request.url());
+  });
+  await openNodeDocumentation(page, seeded.alphaId);
+  await expect(editor).toHaveValue(source);
+  await expect(detailsDialog(page).getByRole("alert")).toContainText("YAML front matter");
+  await editor.focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Escape");
+  await expect(editor).not.toBeFocused();
+  await expect(detailsDialog(page)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(detailsDialog(page)).toBeHidden();
+  expect(writes).toEqual([]);
+  expect(await storedDocumentation(page, `/api/entities/${seeded.alphaId}`)).toBe(source);
+
+  await openNodeDocumentation(page, seeded.alphaId);
+  await editor.fill(`${source}\n\nUpdated`);
+  await expect(saveState(page)).toHaveText("Saved");
+  await expect.poll(() => storedDocumentation(page, `/api/entities/${seeded.alphaId}`)).toBe(`${source}\n\nUpdated`);
+});
+
+test("a small edit to a long table stays within the Markdown save limit", async ({ page }) => {
+  await openCanvas(page);
+  await openNodeDocumentation(page, seeded.alphaId);
+  const table = [
+    "| Name | Notes |",
+    "| --- | --- |",
+    `| Gateway | ${"x".repeat(1900)} |`,
+    ...Array.from({ length: 12 }, () => "| API | ok |"),
+  ].join("\n");
+  await documentationEditor(page).click();
+  await pastePlainText(page, table);
+  await expect(saveState(page)).toHaveText("Saved");
+  await expect.poll(() => storedDocumentation(page, `/api/entities/${seeded.alphaId}`)).toBe(table);
+  const cell = documentationEditor(page).getByRole("cell", { name: "ok", exact: true }).first();
+  await cell.click();
+  await page.keyboard.type("!");
+  await expect(saveState(page)).toHaveText("Saved");
+  const saved = await storedDocumentation(page, `/api/entities/${seeded.alphaId}`);
+  expect(saved?.length).toBe(table.length + 1);
+  await expect(detailsDialog(page).getByRole("alert")).toHaveCount(0);
 });
