@@ -39,50 +39,6 @@ export function RichDocumentation({ value, onSave }: { value: string; onSave: (v
   const [savesInFlight, setSavesInFlight] = useState(0);
   const [error, setError] = useState("");
 
-  const commit = useCallback((next: string) => {
-    if (next === lastSubmitted.current) {
-      // Nothing new to save, and a document that matches the saved one has no failed save to report.
-      if (next === lastSaved.current) setError("");
-      return;
-    }
-    if (next.length > MAX_DOCUMENTATION_LENGTH) {
-      setError(TOO_LONG_MESSAGE);
-      return;
-    }
-    lastSubmitted.current = next;
-    // This save replaces documentation that changed elsewhere in the meantime (the last write wins).
-    pending.current = undefined;
-    setSavesInFlight((count) => count + 1);
-    setError("");
-    saveQueue.current = saveQueue.current.then(async () => {
-      try {
-        await save.current(next);
-        lastSaved.current = next;
-        setSaved(next);
-        setError("");
-      } catch (cause) {
-        // Submit it again on the next attempt, unless a newer document is already queued.
-        if (lastSubmitted.current === next) lastSubmitted.current = lastSaved.current;
-        setError(cause instanceof Error ? cause.message : "Could not save documentation");
-      } finally {
-        setSavesInFlight((count) => count - 1);
-      }
-    });
-  }, []);
-
-  const handleChange = useCallback((markdown: string) => {
-    const next = markdown.trim();
-    latest.current = next;
-    // The editor can change its document without an edit, such as adding an empty paragraph after a final table or
-    // code block when it is first focused. That writes the same trimmed Markdown, so it is not an edit.
-    if (!edited.current && next === lastSaved.current) return;
-    edited.current = true;
-    // The user's edit replaces documentation that changed elsewhere and was not shown (the last write wins).
-    pending.current = undefined;
-    setDraft(next);
-    if (next.length <= MAX_DOCUMENTATION_LENGTH) setError((current) => (current === TOO_LONG_MESSAGE ? "" : current));
-  }, []);
-
   /**
    * Shows documentation that changed elsewhere, unless the user is working on it: the editor has focus, unsaved changes,
    * or a save in progress. Returns whether it was shown.
@@ -99,6 +55,56 @@ export function RichDocumentation({ value, onSave }: { value: string; onSave: (v
     setSaved(replaced);
     setDraft((current) => (current === undefined ? undefined : replaced));
     return true;
+  }, []);
+
+  const commit = useCallback(
+    (next: string) => {
+      if (next === lastSubmitted.current) {
+        // Nothing new to save, and a document that matches the saved one has no failed save to report.
+        if (next === lastSaved.current) setError("");
+        return;
+      }
+      if (next.length > MAX_DOCUMENTATION_LENGTH) {
+        setError(TOO_LONG_MESSAGE);
+        return;
+      }
+      lastSubmitted.current = next;
+      // This save replaces documentation that changed elsewhere in the meantime (the last write wins).
+      pending.current = undefined;
+      setSavesInFlight((count) => count + 1);
+      setError("");
+      saveQueue.current = saveQueue.current.then(async () => {
+        try {
+          await save.current(next);
+          lastSaved.current = next;
+          setSaved(next);
+          setError("");
+          // An update that arrived during the save, while the user was not in the editor, was held back only because the
+          // save was in progress.
+          if (pending.current !== undefined) show(pending.current);
+        } catch (cause) {
+          // Submit it again on the next attempt, unless a newer document is already queued.
+          if (lastSubmitted.current === next) lastSubmitted.current = lastSaved.current;
+          setError(cause instanceof Error ? cause.message : "Could not save documentation");
+        } finally {
+          setSavesInFlight((count) => count - 1);
+        }
+      });
+    },
+    [show],
+  );
+
+  const handleChange = useCallback((markdown: string) => {
+    const next = markdown.trim();
+    latest.current = next;
+    // The editor can change its document without an edit, such as adding an empty paragraph after a final table or
+    // code block when it is first focused. That writes the same trimmed Markdown, so it is not an edit.
+    if (!edited.current && next === lastSaved.current) return;
+    edited.current = true;
+    // The user's edit replaces documentation that changed elsewhere and was not shown (the last write wins).
+    pending.current = undefined;
+    setDraft(next);
+    if (next.length <= MAX_DOCUMENTATION_LENGTH) setError((current) => (current === TOO_LONG_MESSAGE ? "" : current));
   }, []);
 
   const handleBlur = useCallback(() => {

@@ -531,6 +531,26 @@ describe("rich documentation", () => {
     expect(onSave.mock.calls).toEqual([["Notes v2"]]);
   });
 
+  it("shows documentation updated elsewhere during a save once that save finishes", async () => {
+    const { onSave, finish } = pendingSaves();
+    const { rerender } = await renderDocumentation(<RichDocumentation value="Notes" onSave={onSave} />);
+    await caretToEnd();
+    await typeInEditor(documentation(), " v2");
+    await blurDocumentation();
+    expect(onSave.mock.calls).toEqual([["Notes v2"]]);
+    // Another member's save lands while this one is still in flight, and the editor is not focused.
+    rerender(<RichDocumentation value="Remote notes" onSave={onSave} />);
+    expect(documentation().textContent).toBe("Notes v2");
+
+    await act(async () => finish[0]());
+    expect(documentation().textContent).toBe("Remote notes");
+    expect(saveState()).toBe("Saved");
+    // The update is the saved document now, so leaving the editor without an edit does not write over it.
+    await focusDocumentation();
+    await blurDocumentation();
+    expect(onSave.mock.calls).toEqual([["Notes v2"]]);
+  });
+
   it("keeps unsaved changes when documentation is updated elsewhere", async () => {
     const onSave = mock(async (_value: string) => {
       throw new Error("Network unavailable");
