@@ -3,7 +3,7 @@ import { connectionIdParamsSchema, updateConnectionSchema } from "@wooble/contra
 import { db, connections, entities } from "@wooble/db";
 import { badRequest, notFound } from "../../lib/http-error";
 import type { Api } from "../../lib/auth";
-import { canvasIdsForConnection, recordCanvasEvent } from "../canvas/activity";
+import { lockCanvasesForConnection, recordCanvasEvent } from "../canvas/activity";
 
 export function connectionRoutes(app: Api) {
   app.get("/api/connections/:connectionId", async (context) => {
@@ -36,8 +36,9 @@ export function connectionRoutes(app: Api) {
     const body = updateConnectionSchema.safeParse(context.body);
     if (!params.success) return badRequest(context, "Connection ID must be a UUID");
     if (!body.success) return badRequest(context, body.error.issues[0]?.message ?? "Invalid connection");
-    let previousConnection: typeof connections.$inferSelect | undefined;
     const updated = await db.transaction(async (tx) => {
+      // Same lock order as undo: the canvases showing the connection, then the connection.
+      const canvasIds = await lockCanvasesForConnection(tx, params.data.connectionId);
       const [current] = await tx
         .select()
         .from(connections)
@@ -45,7 +46,6 @@ export function connectionRoutes(app: Api) {
         .for("update")
         .limit(1);
       if (!current) return null;
-      previousConnection = current;
       const metadata = { ...current.metadata };
       for (const [key, value] of Object.entries(body.data.metadata ?? {})) {
         if (value === null || value === "") delete metadata[key as keyof typeof metadata];
@@ -61,28 +61,29 @@ export function connectionRoutes(app: Api) {
         })
         .where(eq(connections.id, params.data.connectionId))
         .returning();
+      // The history row commits or rolls back with the change it describes.
+      for (const canvasId of canvasIds) {
+        await recordCanvasEvent(tx, {
+          canvasId,
+          actor: context.actor,
+          action: "connection.updated",
+          targetType: "connection",
+          targetId: result.id,
+          targetName: result.label || "Connection",
+          metadata: {
+            fields: Object.keys(body.data),
+            previous: {
+              type: current.type,
+              label: current.label,
+              description: current.description,
+              metadata: current.metadata,
+            },
+          },
+        });
+      }
       return result;
     });
     if (!updated) return notFound(context, "Connection not found");
-    for (const canvasId of await canvasIdsForConnection(updated.id)) {
-      await recordCanvasEvent(db, {
-        canvasId,
-        actor: context.actor,
-        action: "connection.updated",
-        targetType: "connection",
-        targetId: updated.id,
-        targetName: updated.label || "Connection",
-        metadata: {
-          fields: Object.keys(body.data),
-          previous: {
-            type: previousConnection?.type ?? updated.type,
-            label: previousConnection?.label ?? "",
-            description: previousConnection?.description ?? null,
-            metadata: previousConnection?.metadata ?? {},
-          },
-        },
-      });
-    }
     return updated;
   });
 }

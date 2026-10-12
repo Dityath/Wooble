@@ -149,30 +149,36 @@ export function canvasRoutes(app: Api) {
       .safeParse(context.body);
     if (!params.success || !body.success || !Object.keys(body.data).length)
       return badRequest(context, "Invalid canvas");
-    const [previous] = await db
-      .select({
-        name: canvases.name,
-        description: canvases.description,
-        shareMode: canvases.shareMode,
-      })
-      .from(canvases)
-      .where(eq(canvases.id, params.data.canvasId))
-      .limit(1);
-    const [row] = await db
-      .update(canvases)
-      .set({ ...body.data, updatedAt: new Date() })
-      .where(eq(canvases.id, params.data.canvasId))
-      .returning();
-    if (!row) return notFound(context, "Canvas not found");
-    await recordCanvasEvent(db, {
-      canvasId: row.id,
-      actor: context.actor,
-      action: "canvas.updated",
-      targetType: "canvas",
-      targetId: row.id,
-      targetName: row.name,
-      metadata: { fields: Object.keys(body.data), previous },
+    const row = await db.transaction(async (tx) => {
+      // Locking the previous row keeps the recorded snapshot exact under concurrent edits.
+      const [previous] = await tx
+        .select({
+          name: canvases.name,
+          description: canvases.description,
+          shareMode: canvases.shareMode,
+        })
+        .from(canvases)
+        .where(eq(canvases.id, params.data.canvasId))
+        .for("update")
+        .limit(1);
+      if (!previous) return null;
+      const [updated] = await tx
+        .update(canvases)
+        .set({ ...body.data, updatedAt: new Date() })
+        .where(eq(canvases.id, params.data.canvasId))
+        .returning();
+      await recordCanvasEvent(tx, {
+        canvasId: updated.id,
+        actor: context.actor,
+        action: "canvas.updated",
+        targetType: "canvas",
+        targetId: updated.id,
+        targetName: updated.name,
+        metadata: { fields: Object.keys(body.data), previous },
+      });
+      return updated;
     });
+    if (!row) return notFound(context, "Canvas not found");
     return { ...row, updatedAt: row.updatedAt.toISOString() };
   });
   app.delete("/api/canvases/:canvasId", async (context) => {

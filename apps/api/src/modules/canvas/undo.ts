@@ -392,7 +392,8 @@ async function applyUndo(tx: Transaction, event: CanvasEventRow): Promise<boolea
       return deleteConnection(tx, event.canvasId, requireTargetId(event));
     case "entity.updated": {
       const entityId = requireTargetId(event);
-      const [current] = await tx.select().from(entities).where(eq(entities.id, entityId)).limit(1);
+      // The canvas row is already locked; lock the entity next, the same order PATCH uses.
+      const [current] = await tx.select().from(entities).where(eq(entities.id, entityId)).for("update").limit(1);
       if (!current) return false;
       const next = {
         type: previousField<EntityType>(metadata, "type", current.type),
@@ -662,7 +663,7 @@ async function undoConnectionUpdated(
     await touchCanvas(tx, canvasId);
     return true;
   }
-  const [current] = await tx.select().from(connections).where(eq(connections.id, connectionId)).limit(1);
+  const [current] = await tx.select().from(connections).where(eq(connections.id, connectionId)).for("update").limit(1);
   if (!current) return false;
   const next = {
     type: previousField<ConnectionType>(metadata, "type", current.type),

@@ -4,7 +4,7 @@ import { db, entities } from "@wooble/db";
 import type { EntityMetadata } from "@wooble/domain";
 import { badRequest, notFound } from "../../lib/http-error";
 import type { Api } from "../../lib/auth";
-import { canvasIdsForEntity, recordCanvasEvent } from "../canvas/activity";
+import { lockCanvasesForEntity, recordCanvasEvent } from "../canvas/activity";
 
 export function entityRoutes(app: Api) {
   app.get("/api/entities/:entityId", async (context) => {
@@ -19,8 +19,9 @@ export function entityRoutes(app: Api) {
     const body = updateEntitySchema.safeParse(context.body);
     if (!params.success) return badRequest(context, "Entity ID must be a UUID");
     if (!body.success) return badRequest(context, body.error.issues[0]?.message ?? "Invalid entity");
-    let previousEntity: typeof entities.$inferSelect | undefined;
     const result = await db.transaction(async (tx) => {
+      // Same lock order as undo: the canvases showing the entity, then the entity.
+      const canvasIds = await lockCanvasesForEntity(tx, params.data.entityId);
       const [current] = await tx
         .select()
         .from(entities)
@@ -28,7 +29,6 @@ export function entityRoutes(app: Api) {
         .for("update")
         .limit(1);
       if (!current) return { kind: "not-found" as const };
-      previousEntity = current;
       if (body.data.type && (current.type === "system") !== (body.data.type === "system"))
         return { kind: "invalid" as const };
       const metadata: Record<string, unknown> = { ...current.metadata };
@@ -47,31 +47,32 @@ export function entityRoutes(app: Api) {
         })
         .where(eq(entities.id, params.data.entityId))
         .returning();
+      // The history row commits or rolls back with the change it describes.
+      for (const canvasId of canvasIds) {
+        await recordCanvasEvent(tx, {
+          canvasId,
+          actor: context.actor,
+          action: "entity.updated",
+          targetType: "entity",
+          targetId: updated.id,
+          targetName: updated.name || "New node",
+          metadata: {
+            fields: Object.keys(body.data),
+            previous: {
+              type: current.type,
+              name: current.name,
+              description: current.description,
+              metadata: current.metadata,
+            },
+          },
+        });
+      }
       return { kind: "updated" as const, entity: updated };
     });
     if (result.kind === "not-found") return notFound(context, "Entity not found");
     if (result.kind === "invalid")
       return badRequest(context, "System boxes cannot be converted to or from another node type");
     const updated = result.entity;
-    for (const canvasId of await canvasIdsForEntity(updated.id)) {
-      await recordCanvasEvent(db, {
-        canvasId,
-        actor: context.actor,
-        action: "entity.updated",
-        targetType: "entity",
-        targetId: updated.id,
-        targetName: updated.name || "New node",
-        metadata: {
-          fields: Object.keys(body.data),
-          previous: {
-            type: previousEntity?.type ?? updated.type,
-            name: previousEntity?.name ?? "",
-            description: previousEntity?.description ?? null,
-            metadata: previousEntity?.metadata ?? {},
-          },
-        },
-      });
-    }
     return { ...updated, createdAt: updated.createdAt.toISOString(), updatedAt: updated.updatedAt.toISOString() };
   });
 }
