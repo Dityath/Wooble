@@ -1,5 +1,6 @@
 import type { ElysiaWS } from "elysia/ws";
 import { and, eq, gt } from "drizzle-orm";
+import { z } from "zod";
 import { canvasIdParamsSchema, connectionIdParamsSchema, entityIdParamsSchema } from "@wooble/contracts";
 import { canvasConnections, canvasNodes, canvases, db, sessions, users } from "@wooble/db";
 import { canvasRole, hashToken, sessionToken, type Actor, type Api } from "./auth";
@@ -30,6 +31,7 @@ type Peer = {
 const peers = new WeakMap<object, Peer>();
 const shutdownClosers = new WeakMap<object, (gracePeriodMs: number) => Promise<void>>();
 const maxQueuedMessages = 16;
+const uuidParam = z.string().uuid();
 function send(peer: Peer, message: object) {
   if (peer.socket.readyState === 1) peer.socket.send(JSON.stringify(message));
 }
@@ -116,6 +118,14 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
     }
   }
   const closeRevokedPeers = (canvasId: string) => revalidatePeers((peer) => peer.canvasId === canvasId);
+  /** Rechecks the user's sockets after a sign-out, a password change, or a system role change. */
+  const revalidateLivePeers = (userId: string) => revalidatePeers((peer) => peer.actor?.id === userId);
+  async function revalidateWorkspacePeers(workspaceId: string) {
+    if (!connected.size) return;
+    const rows = await db.select({ id: canvases.id }).from(canvases).where(eq(canvases.workspaceId, workspaceId));
+    const canvasIds = new Set(rows.map((row) => row.id));
+    await revalidatePeers((peer) => canvasIds.has(peer.canvasId));
+  }
 
   async function join(peer: Peer) {
     let allowed: boolean;
@@ -288,6 +298,27 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
     const status = typeof context.set.status === "number" ? context.set.status : 200;
     if (["GET", "HEAD", "OPTIONS"].includes(method) || status >= 400) return;
     const route = context.route;
+    // Signing out, a password change (which ends every session), a system role change and a
+    // workspace member change can end access outside the canvas routes below. Recheck the affected
+    // sockets now rather than at the next interval.
+    const revokedUserId =
+      route === "/api/auth/logout" || route === "/api/auth/password"
+        ? context.actor?.id
+        : route === "/api/admin/users/:userId"
+          ? context.params.userId
+          : undefined;
+    const workspaceParams = route.startsWith("/api/workspaces/:workspaceId/members")
+      ? uuidParam.safeParse(context.params.workspaceId)
+      : null;
+    if (revokedUserId || workspaceParams?.success) {
+      try {
+        if (revokedUserId) await revalidateLivePeers(revokedUserId);
+        if (workspaceParams?.success) await revalidateWorkspacePeers(workspaceParams.data);
+      } catch (error) {
+        console.error("Could not recheck live canvas access", error);
+      }
+      return;
+    }
     const canvasParams = canvasIdParamsSchema.safeParse(context.params);
     if (route.startsWith("/api/canvases/:canvasId/") || route === "/api/canvases/:canvasId") {
       if (!canvasParams.success) return;

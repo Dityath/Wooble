@@ -5,7 +5,7 @@ import { db } from "@wooble/db";
 import type { Actor } from "../src/lib/auth";
 import { liveRoutes, stopLiveServer } from "../src/lib/live";
 import { resetLoginAttempts } from "../src/modules/auth/routes";
-import { apiClient } from "./support/client";
+import { apiClient, password } from "./support/client";
 
 const webOrigin = "http://localhost:5173";
 // A recheck interval longer than any test, so the periodic recheck never closes a socket here.
@@ -226,5 +226,116 @@ describe("live canvas socket", () => {
     await Bun.sleep(100);
 
     expect(types(ownerLive)).toEqual(["presence"]);
+  });
+});
+
+describe("live canvas revocation", () => {
+  const changed = { code: 1008, reason: "Canvas access changed" };
+
+  async function signIn(person: Person) {
+    const response = await api.request("POST", "/api/auth/login", undefined, { email: person.user.email, password });
+    expect(response.status).toBe(200);
+    return response.headers.get("set-cookie")?.split(";")[0] as string;
+  }
+  async function present(...sessions: Array<[canvasId: string, session: string]>) {
+    const opened = sessions.map(([canvasId, session]) => openLive("guarded", canvasId, session));
+    for (const live of opened) await received(live, "presence");
+    return opened;
+  }
+
+  it("closes the socket of a session that signs out, and every one after a password change", async () => {
+    const { owner, payments } = await liveFixture();
+    const viewer = await api.register("Live Viewer");
+    await joinCanvas(owner, viewer, payments, "viewer");
+    const otherSession = await signIn(viewer);
+    const [first, second, ownerLive] = await present(
+      [payments, viewer.session],
+      [payments, otherSession],
+      [payments, owner.session],
+    );
+
+    expect((await api.request("POST", "/api/auth/logout", viewer.session)).status).toBe(200);
+    expect(await closedWithin(first)).toEqual(changed);
+    expect(await closedWithin(second, 200)).toBeNull();
+
+    const passwordChange = { currentPassword: password, newPassword: "WoobleChangedPassword-2026" };
+    expect((await api.request("PUT", "/api/auth/password", otherSession, passwordChange)).status).toBe(200);
+    expect(await closedWithin(second)).toEqual(changed);
+    expect(await closedWithin(ownerLive, 200)).toBeNull();
+  });
+
+  it("closes an admin's socket when the admin role is removed", async () => {
+    const { owner, payments } = await liveFixture();
+    await api.promoteToAdmin(owner.user.id);
+    const admin = await api.register("Live Admin");
+    await api.promoteToAdmin(admin.user.id);
+    const [adminLive, ownerLive] = await present([payments, admin.session], [payments, owner.session]);
+
+    const demotion = await api.request("PATCH", `/api/admin/users/${admin.user.id}`, owner.session, {
+      systemRole: "user",
+    });
+    expect(demotion.status).toBe(200);
+    expect(await closedWithin(adminLive)).toEqual(changed);
+    expect(await closedWithin(ownerLive, 200)).toBeNull();
+  });
+
+  it("closes sockets when a workspace member change ends access", async () => {
+    const { owner, payments } = await liveFixture();
+    const members = `/api/workspaces/${owner.workspaceId}/members`;
+    const manager = await api.register("Live Manager");
+    const asManager = { email: manager.user.email, role: "manager" };
+    expect((await api.request("POST", members, owner.session, asManager)).status).toBe(201);
+    const viewer = await api.register("Live Viewer");
+    await joinCanvas(owner, viewer, payments, "viewer");
+    const [managerLive, viewerLive, ownerLive] = await present(
+      [payments, manager.session],
+      [payments, viewer.session],
+      [payments, owner.session],
+    );
+
+    // A demoted manager keeps no role on the canvas.
+    expect(
+      (await api.request("PATCH", `${members}/${manager.user.id}`, owner.session, { role: "member" })).status,
+    ).toBe(200);
+    expect(await closedWithin(managerLive)).toEqual(changed);
+    expect(await closedWithin(viewerLive, 200)).toBeNull();
+
+    // Adding someone again with a lower role demotes them too.
+    expect((await api.request("POST", members, owner.session, asManager)).status).toBe(201);
+    const [promotedLive] = await present([payments, manager.session]);
+    expect((await api.request("POST", members, owner.session, { ...asManager, role: "member" })).status).toBe(201);
+    expect(await closedWithin(promotedLive)).toEqual(changed);
+
+    // Removing a member also removes their canvas roles.
+    expect((await api.request("DELETE", `${members}/${viewer.user.id}`, owner.session)).status).toBe(200);
+    expect(await closedWithin(viewerLive)).toEqual(changed);
+    expect(await closedWithin(ownerLive, 200)).toBeNull();
+  });
+
+  it("closes a socket when its canvas role is removed", async () => {
+    const { owner, payments } = await liveFixture();
+    const editor = await api.register("Live Editor");
+    await joinCanvas(owner, editor, payments, "editor");
+    const [editorLive, ownerLive] = await present([payments, editor.session], [payments, owner.session]);
+
+    expect(
+      (await api.request("DELETE", `/api/canvases/${payments}/members/${editor.user.id}`, owner.session)).status,
+    ).toBe(200);
+    expect(await closedWithin(editorLive)).toEqual(changed);
+    expect(await closedWithin(ownerLive, 200)).toBeNull();
+  });
+
+  it("keeps sockets open after a change that leaves access in place", async () => {
+    const { owner, payments } = await liveFixture();
+    const viewer = await api.register("Live Viewer");
+    await joinCanvas(owner, viewer, payments, "viewer");
+    const [viewerLive] = await present([payments, viewer.session]);
+
+    expect((await api.request("PATCH", "/api/auth/profile", viewer.session, { name: "Live Reader" })).status).toBe(200);
+    // Refused requests change nothing, so they recheck nothing.
+    const wrongPassword = { currentPassword: "NotTheRightPassword-2026", newPassword: "WoobleChangedPassword-2026" };
+    expect((await api.request("PUT", "/api/auth/password", viewer.session, wrongPassword)).status).toBe(403);
+    expect((await api.request("PATCH", `/api/admin/users/${viewer.user.id}`, owner.session, {})).status).toBe(403);
+    expect(await closedWithin(viewerLive, 300)).toBeNull();
   });
 });
