@@ -1,5 +1,14 @@
 import { expect, test } from "@playwright/test";
-import { addCanvasMember, MOD, registerUser, seedCanvas, signIn, type SeededCanvas, type TestUser } from "./helpers";
+import {
+  addCanvasMember,
+  authHeaders,
+  MOD,
+  registerUser,
+  seedCanvas,
+  signIn,
+  type SeededCanvas,
+  type TestUser,
+} from "./helpers";
 
 let owner: TestUser;
 let viewer: TestUser;
@@ -10,6 +19,11 @@ test.beforeAll(async ({ request }) => {
   viewer = await registerUser(request, "viewer-guest");
   seeded = await seedCanvas(request, owner.cookieValue);
   await addCanvasMember(request, owner.cookieValue, seeded.canvasId, viewer.email, "viewer");
+  const documented = await request.patch(`/api/connections/${seeded.connectionId}`, {
+    headers: authHeaders(owner.cookieValue),
+    data: { metadata: { documentation: "## Retry policy\n\nRetries **twice** before failing." } },
+  });
+  if (!documented.ok()) throw new Error(`connection documentation failed: ${await documented.text()}`);
 });
 
 function openCanvas(page: import("@playwright/test").Page) {
@@ -45,4 +59,17 @@ test("viewer can inspect but cannot edit, delete, or undo", async ({ page }) => 
 
   await page.reload();
   await expect(alpha).toBeVisible();
+});
+
+test("viewer reads connection documentation without editing it", async ({ page }) => {
+  await signIn(await page.context(), viewer.cookieValue);
+  await openCanvas(page);
+  const edge = page.locator(`.react-flow__edge[data-id="${seeded.connectionId}"]`);
+  await expect(edge).toBeAttached();
+  await edge.click({ force: true });
+  const documentation = page.getByRole("region", { name: "Connection documentation" });
+  await expect(documentation.getByRole("heading", { name: "Retry policy" })).toBeVisible();
+  await expect(documentation.locator("strong")).toHaveText("twice");
+  await expect(documentation.getByRole("textbox")).toHaveCount(0);
+  await expect(documentation.getByRole("button")).toHaveCount(0);
 });

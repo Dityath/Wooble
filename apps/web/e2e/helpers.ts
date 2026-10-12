@@ -18,7 +18,7 @@ export interface SeededCanvas {
   connectionId: string;
 }
 
-function authHeaders(cookieValue: string) {
+export function authHeaders(cookieValue: string) {
   return { cookie: `${SESSION_COOKIE}=${cookieValue}` };
 }
 
