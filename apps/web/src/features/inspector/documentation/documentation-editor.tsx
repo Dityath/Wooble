@@ -1,7 +1,16 @@
 import { Extension } from "@tiptap/core";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { Blocks, FileCode2, TriangleAlert } from "lucide-react";
-import { type ReactNode, type Ref, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type Ref,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { documentationEditorOptions, documentationExtensions } from "./extensions";
 import { looksLikeMarkdown } from "./markdown-paste";
 import { unsupportedMarkdown } from "./unsupported-markdown";
@@ -39,6 +48,8 @@ export interface DocumentationEditorProps {
   /** Called with the editor's Markdown after each change to the document, including ones the editor makes itself. */
   onChange: (markdown: string) => void;
   onBlur: () => void;
+  /** Shows the document without letting it be changed, such as once the user may no longer edit it. */
+  readOnly?: boolean;
   ref?: Ref<DocumentationEditorHandle>;
 }
 
@@ -50,7 +61,14 @@ export interface DocumentationEditorChrome {
 }
 
 /** An always-editable block editor for Markdown documentation. */
-function BlockDocumentationEditor({ initialMarkdown, onChange, onBlur, ref }: DocumentationEditorProps) {
+function BlockDocumentationEditor({
+  initialMarkdown,
+  onChange,
+  onBlur,
+  readOnly = false,
+  ref,
+}: DocumentationEditorProps) {
+  const readOnlyNow = useRef(readOnly);
   // The editor reads these when it is created. Keeping them stable also stops useEditor from reapplying them on every
   // render; it always calls the latest event handlers.
   const [options] = useState(() => ({
@@ -59,14 +77,15 @@ function BlockDocumentationEditor({ initialMarkdown, onChange, onBlur, ref }: Do
     content: initialMarkdown,
     contentType: "markdown" as const,
     editorProps: {
-      // TipTap adds role="textbox".
-      attributes: {
+      // TipTap adds role="textbox". ProseMirror reads these again whenever the editor updates.
+      attributes: () => ({
         "aria-label": "Documentation",
         "aria-multiline": "true",
+        ...(readOnlyNow.current ? { "aria-readonly": "true" } : {}),
         "data-inline-editing": "true",
         // Shares the reading view's typography.
         class: "rich-markdown documentation-editor",
-      },
+      }),
     },
   }));
   const editor = useEditor({
@@ -74,6 +93,11 @@ function BlockDocumentationEditor({ initialMarkdown, onChange, onBlur, ref }: Do
     onUpdate: ({ editor: updated }) => onChange(updated.getMarkdown()),
     onBlur: () => onBlur(),
   });
+  useEffect(() => {
+    readOnlyNow.current = readOnly;
+    // Not an edit, so it reports no change. The text can still be selected and copied.
+    editor.setEditable(!readOnly, false);
+  }, [editor, readOnly]);
   useImperativeHandle(
     ref,
     () => ({
@@ -99,6 +123,7 @@ export function DocumentationEditor({
   initialMarkdown,
   onChange,
   onBlur,
+  readOnly = false,
   ref,
   status,
   notice,
@@ -168,14 +193,16 @@ export function DocumentationEditor({
       <div className="documentation-chrome">
         <div className="documentation-toolbar">
           <div className="documentation-toolbar-status">{status}</div>
-          {inSource ? (
+          {readOnly ? (
+            <span className="documentation-hint">Read only</span>
+          ) : inSource ? (
             <span className="documentation-hint">Markdown source</span>
           ) : (
             <span className="documentation-hint">
               Type <kbd>/</kbd> to insert a block. Paste Markdown to convert it.
             </span>
           )}
-          {inSource ? (
+          {readOnly ? null : inSource ? (
             !sourceWarning && (
               <button type="button" className="documentation-mode-toggle" onClick={useBlocks}>
                 <Blocks size={14} aria-hidden="true" />
@@ -208,6 +235,7 @@ export function DocumentationEditor({
           data-inline-editing="true"
           className="documentation-source"
           spellCheck={false}
+          readOnly={readOnly}
           value={source}
           onChange={(event) => {
             sourceValue.current = event.target.value;
@@ -225,6 +253,8 @@ export function DocumentationEditor({
       ) : (
         <div
           onPasteCapture={(event) => {
+            // Nothing can be pasted into a read-only document, so there is nothing to warn about.
+            if (readOnly) return;
             // Pasting source inside a code block is literal, even when it contains Markdown or HTML.
             const selection = window.getSelection();
             const selectedElement =
@@ -246,6 +276,7 @@ export function DocumentationEditor({
           <BlockDocumentationEditor
             ref={blocks}
             initialMarkdown={blockMarkdown}
+            readOnly={readOnly}
             onChange={(markdown) => {
               // Not an edit, such as the empty paragraph added after a final table when the editor is first focused.
               // After switching back from source, forwarding it would save the source rewritten in canonical form.

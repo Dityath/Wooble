@@ -1,5 +1,6 @@
 import { CircleAlert, History } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ApiError } from "../../lib/api";
 import { DocumentationEditor, type DocumentationEditorHandle } from "./documentation/documentation-editor";
 import {
   type DocumentationDraft,
@@ -76,6 +77,9 @@ export function RichDocumentation({ value, onSave, draftKey }: RichDocumentation
   const [error, setError] = useState("");
   // A draft an earlier editor kept for this documentation, which the user can restore or discard.
   const [kept, setKept] = useState<DocumentationDraft>();
+  // Set once a save is forbidden: the user may not edit this documentation, so nothing more is sent or kept.
+  const [readOnly, setReadOnly] = useState(false);
+  const forbidden = useRef(false);
 
   /**
    * Shows documentation that changed elsewhere, unless the user is working on it: the editor has focus, unsaved changes,
@@ -98,6 +102,7 @@ export function RichDocumentation({ value, onSave, draftKey }: RichDocumentation
 
   const commit = useCallback(
     (next: string) => {
+      if (forbidden.current) return;
       if (next === lastSubmitted.current) {
         // Nothing new to save, and a document that matches the saved one has no failed save to report.
         if (next === lastSaved.current) setError("");
@@ -126,6 +131,15 @@ export function RichDocumentation({ value, onSave, draftKey }: RichDocumentation
           // save was in progress.
           if (pending.current !== undefined) show(pending.current);
         } catch (cause) {
+          if (cause instanceof ApiError && cause.status === 403) {
+            // Retrying cannot help, and changes the user may not save are never offered again, even once the editor
+            // has closed.
+            forbidden.current = true;
+            setReadOnly(true);
+            setError("");
+            if (keepAt.current) removeDocumentationDraft(keepAt.current);
+            return;
+          }
           // Submit it again on the next attempt, unless a newer document is already queued.
           if (lastSubmitted.current === next) lastSubmitted.current = lastSaved.current;
           setError(cause instanceof Error ? cause.message : "Could not save documentation");
@@ -168,7 +182,7 @@ export function RichDocumentation({ value, onSave, draftKey }: RichDocumentation
     // changed, so nothing is kept or saved.
     return () => {
       const key = keepAt.current;
-      if (key && latest.current !== lastSaved.current)
+      if (key && !forbidden.current && latest.current !== lastSaved.current)
         keepDocumentationDraft(key, {
           markdown: latest.current,
           base: persisted.current,
@@ -244,8 +258,9 @@ export function RichDocumentation({ value, onSave, draftKey }: RichDocumentation
 
   // The dot's colour and the text a screen reader reads come from one value, so they cannot disagree. Documentation that
   // is too long has not been sent and so is only unsaved; a failed save is what the error state is for.
-  const saveState =
-    draft === undefined
+  const saveState = readOnly
+    ? { state: "error", label: "Not saved" }
+    : draft === undefined
       ? undefined
       : error && error !== TOO_LONG
         ? { state: "error", label: "Save failed" }
@@ -261,6 +276,7 @@ export function RichDocumentation({ value, onSave, draftKey }: RichDocumentation
         initialMarkdown={value}
         onChange={handleChange}
         onBlur={handleBlur}
+        readOnly={readOnly}
         status={
           // The live region stays mounted while there is nothing to report, so the first save is announced too.
           <span className="documentation-save-state" data-state={saveState?.state} role="status">
@@ -269,7 +285,16 @@ export function RichDocumentation({ value, onSave, draftKey }: RichDocumentation
         }
         notice={
           <>
-            {kept && (
+            {readOnly && (
+              <p className="documentation-notice is-error" role="alert">
+                <CircleAlert size={15} aria-hidden="true" />
+                <span>
+                  You don't have permission to edit this documentation, so these changes were not saved. Copy anything
+                  you want to keep, then ask a workspace manager for edit access.
+                </span>
+              </p>
+            )}
+            {kept && !readOnly && (
               <p className="documentation-notice" role="alert">
                 <History size={15} aria-hidden="true" />
                 <span>

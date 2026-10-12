@@ -11,6 +11,7 @@ import {
 } from "../src/features/inspector/documentation/drafts";
 import { RichDocumentation } from "../src/features/inspector/rich-documentation";
 import { CanvasShareDialog } from "../src/features/workspace/canvas-share-dialog";
+import { ApiError } from "../src/lib/api";
 import { editorFromElement, typeInEditor } from "./support/editor";
 import { FakeApi, failWith } from "./support/fake-api";
 import { canvasEvent, entity, graph, ids, user, workspace } from "./support/fixtures";
@@ -777,6 +778,75 @@ describe("rich documentation", () => {
     await blurDocumentation();
     await waitFor(() => expect(onSave.mock.calls).toEqual([[`${initial}b`]]));
   }, 30_000);
+  describe("a save the user is not allowed to make", () => {
+    const forbidden = () =>
+      mock(async (_value: string) => {
+        throw new ApiError("You do not have access to this resource", 403);
+      });
+    const readOnlyNotice = "You don't have permission to edit this documentation, so these changes were not saved.";
+
+    it("makes the documentation read-only with an explanation instead of offering Retry", async () => {
+      const onSave = forbidden();
+      const { user: actor, unmount } = await renderDocumentation(<RichDocumentation value="Notes" onSave={onSave} />);
+      await caretToEnd();
+      await typeInEditor(documentation(), " v2");
+      await blurDocumentation();
+      await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(readOnlyNotice));
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+      expect(saveStatus().getAttribute("data-state")).toBe("error");
+      expect(saveState()).toBe("Not saved");
+
+      // The changes stay on screen to be copied, but cannot be changed or sent again.
+      const editor = documentation();
+      expect(editor.textContent).toBe("Notes v2");
+      expect(editor.getAttribute("contenteditable")).toBe("false");
+      expect(editor.getAttribute("aria-readonly")).toBe("true");
+      expect(document.querySelector(".documentation-hint")?.textContent).toBe("Read only");
+      expect(screen.queryByRole("button", { name: "Edit Markdown source" })).toBeNull();
+      await actor.keyboard("{Backspace}");
+      expect(editorFromElement(editor).isEditable).toBe(false);
+      unmount();
+      await act(async () => {});
+      expect(onSave.mock.calls).toEqual([["Notes v2"]]);
+    });
+
+    it("keeps the Markdown source read-only too", async () => {
+      const onSave = forbidden();
+      const value = "Claim[^1]\n\n[^1]: Source.";
+      await renderDocumentation(<RichDocumentation value={value} onSave={onSave} />);
+      fireEvent.change(documentation(), { target: { value: `${value} Updated` } });
+      fireEvent.blur(documentation());
+      await waitFor(() =>
+        expect(screen.getAllByRole("alert").some((alert) => alert.textContent?.includes(readOnlyNotice))).toBe(true),
+      );
+      expect((documentation() as HTMLTextAreaElement).readOnly).toBe(true);
+      expect(screen.queryByRole("button", { name: "Edit as blocks" })).toBeNull();
+    });
+
+    it("keeps nothing in this browser for changes the user may not save", async () => {
+      const key = documentationDraftKey("user-ada", "entity", "entity-gateway");
+      const first = await renderDocumentation(<RichDocumentation value="Notes" onSave={forbidden()} draftKey={key} />);
+      await caretToEnd();
+      await typeInEditor(documentation(), " v2");
+      await blurDocumentation();
+      await waitFor(() => expect(saveState()).toBe("Not saved"));
+      first.unmount();
+      expect(readDocumentationDraft(key)).toBeUndefined();
+
+      // Nor when the save is refused only after the editor has closed.
+      const refuse: Array<(cause: Error) => void> = [];
+      const onSave = mock((_value: string) => new Promise<void>((_resolve, reject) => refuse.push(reject)));
+      const second = await renderDocumentation(<RichDocumentation value="Notes" onSave={onSave} draftKey={key} />);
+      await caretToEnd();
+      await typeInEditor(documentation(), " v3");
+      await blurDocumentation();
+      second.unmount();
+      expect(readDocumentationDraft(key)?.markdown).toBe("Notes v3");
+      await act(async () => refuse[0](new ApiError("You do not have access to this resource", 403)));
+      expect(readDocumentationDraft(key)).toBeUndefined();
+    });
+  });
+
   describe("unsaved changes kept in this browser", () => {
     const key = documentationDraftKey("user-ada", "entity", "entity-gateway");
     const keptDraft = () => readDocumentationDraft(key);
