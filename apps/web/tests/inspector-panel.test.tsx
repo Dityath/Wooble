@@ -2,12 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import type { ArchitectureEntity } from "@wooble/domain";
 import { useState } from "react";
+import { documentationDraftKey, readDocumentationDraft } from "../src/features/inspector/documentation/drafts";
 import { InspectorPanel } from "../src/features/inspector/inspector-panel";
 import type { CanvasGraph } from "../src/lib/api";
 import { useEditorStore } from "../src/stores/editor-store";
 import { editorFromElement, typeInEditor } from "./support/editor";
 import { FakeApi, failWith } from "./support/fake-api";
-import { entity, graph, ids } from "./support/fixtures";
+import { entity, graph, ids, user as account } from "./support/fixtures";
 import { renderWithQuery } from "./support/render";
 
 let server: FakeApi;
@@ -513,6 +514,24 @@ describe("inspector details", () => {
       { metadata: { documentation: "# Backups" } },
     ]);
   });
+
+  for (const [kind, id, route] of [
+    ["entity", ids.database, "PATCH /api/entities/:id"],
+    ["connection", ids.connection, "PATCH /api/connections/:id"],
+  ] as const) {
+    it(`keeps ${kind} documentation that could not be saved for the signed-in user when the details close`, async () => {
+      server.on("GET /api/auth/me", account()).on(route, failWith(503, "Service unavailable"));
+      if (kind === "entity") selectEntity(id);
+      else selectConnection(id);
+      const { unmount } = renderWithQuery(<Details initial="documentation" />);
+      const documentation = await screen.findByRole("textbox", { name: "Documentation" });
+      await waitFor(() => expect(server.requests("GET", "/api/auth/me")).toHaveLength(1));
+      await typeInEditor(documentation, "Failover runbook");
+      unmount();
+      await waitFor(() => expect(server.requests("PATCH", /^\/api\/(entities|connections)\//)).toHaveLength(1));
+      expect(readDocumentationDraft(documentationDraftKey(ids.user, kind, id))?.markdown).toBe("Failover runbook");
+    });
+  }
 
   it("counts a system's direct components", () => {
     selectEntity(ids.system);

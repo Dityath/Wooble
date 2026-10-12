@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { screen, waitFor, within } from "@testing-library/react";
+import {
+  documentationDraftKey,
+  keepDocumentationDraft,
+  readDocumentationDraft,
+} from "../src/features/inspector/documentation/drafts";
 import { FakeApi, failWith } from "./support/fake-api";
 import { canvasSummary, ids, user, workspace } from "./support/fixtures";
 import { renderRoute } from "./support/render";
@@ -174,21 +179,29 @@ describe("app shell", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe("/profile"));
   });
 
-  it("signs out and returns to the login page", async () => {
+  const draftKey = documentationDraftKey(ids.user, "entity", ids.gateway);
+  const keepDraft = () =>
+    keepDocumentationDraft(draftKey, { markdown: "Unsaved notes", base: "", keptAt: "2026-10-12T09:30:00.000Z" });
+
+  it("signs out, removes unsaved documentation kept in this browser, and returns to the login page", async () => {
     server.on("POST /api/auth/logout", { ok: true });
+    keepDraft();
     const { user: actor, router } = await renderRoute("/canvases");
     await actor.click(await screen.findByRole("button", { name: "Open account menu" }));
     await actor.click(screen.getByRole("button", { name: /Sign out/ }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/login"));
     expect(server.requests("POST", "/api/auth/logout")).toHaveLength(1);
+    expect(readDocumentationDraft(draftKey)).toBeUndefined();
   });
 
-  it("reports a failed sign-out", async () => {
+  it("reports a failed sign-out and keeps unsaved documentation", async () => {
     server.on("POST /api/auth/logout", failWith(503, "Service unavailable"));
+    keepDraft();
     const { user: actor } = await renderRoute("/canvases");
     await actor.click(await screen.findByRole("button", { name: "Open account menu" }));
     await actor.click(screen.getByRole("button", { name: /Sign out/ }));
     expect((await screen.findByRole("alert")).textContent).toBe("Service unavailable");
+    expect(readDocumentationDraft(draftKey)?.markdown).toBe("Unsaved notes");
   });
 
   it("switches workspaces from the workspace menu", async () => {

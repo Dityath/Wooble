@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowDownLeft,
   ArrowLeft,
@@ -33,6 +33,7 @@ import technologyCatalog from "./technology-catalog.json";
 import { technologyGroupsByType, technologyItemsForGroup } from "./technology-groups";
 import { TechnologyName } from "./technology-icon";
 import { RichDocumentation } from "./rich-documentation";
+import { documentationDraftKey } from "./documentation/drafts";
 import { DatabaseSchema } from "./database-schema";
 import { ContractEditor } from "./contract-editor";
 
@@ -1249,6 +1250,12 @@ function DetailNavigation({
   );
 }
 
+/** Where the signed-in user's unsaved documentation for an object is kept in this browser, once the user is known. */
+function useDocumentationDraftKey(kind: "entity" | "connection", id: string) {
+  const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
+  return me.data ? documentationDraftKey(me.data.id, kind, id) : undefined;
+}
+
 function EntityDetailContent({
   entity,
   graph,
@@ -1263,6 +1270,7 @@ function EntityDetailContent({
   onSelect?: (section: DetailSection) => void;
 }) {
   const queryClient = useQueryClient();
+  const draftKey = useDocumentationDraftKey("entity", entity.id);
   return (
     <div className="detail-page">
       <div className="detail-page-intro">
@@ -1336,6 +1344,7 @@ function EntityDetailContent({
           {section === "documentation" && (
             <RichDocumentation
               value={entity.metadata.documentation ?? ""}
+              draftKey={draftKey}
               onSave={async (value) => {
                 await api.updateEntity(entity.id, { metadata: { documentation: value || null } });
                 await queryClient.invalidateQueries({ queryKey: ["canvas-graph", canvasId] });
@@ -1362,6 +1371,7 @@ function ConnectionDetailContent({
   onSelect?: (section: DetailSection) => void;
 }) {
   const queryClient = useQueryClient();
+  const draftKey = useDocumentationDraftKey("connection", connection.id);
   return (
     <div className="detail-page">
       <div className="detail-page-intro">
@@ -1429,6 +1439,7 @@ function ConnectionDetailContent({
           {section === "documentation" && (
             <RichDocumentation
               value={connection.metadata.documentation ?? ""}
+              draftKey={draftKey}
               onSave={async (value) => {
                 await api.updateConnection(connection.id, { metadata: { documentation: value || null } });
                 await queryClient.invalidateQueries({ queryKey: ["canvas-graph", canvasId] });

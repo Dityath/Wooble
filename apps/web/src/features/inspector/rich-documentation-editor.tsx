@@ -1,6 +1,12 @@
-import { CircleAlert } from "lucide-react";
+import { CircleAlert, History } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { DocumentationEditor, type DocumentationEditorHandle } from "./documentation/documentation-editor";
+import {
+  type DocumentationDraft,
+  keepDocumentationDraft,
+  readDocumentationDraft,
+  removeDocumentationDraft,
+} from "./documentation/drafts";
 
 const AUTOSAVE_DELAY_MS = 900;
 // Mirrors `documentation: z.string().trim().max(20000)` in the API contracts, which do not export the limit.
@@ -14,20 +20,41 @@ function overLimitMessage(length: number) {
   return `Documentation is limited to 20,000 characters of Markdown. This is ${over.toLocaleString("en-US")} ${over === 1 ? "character" : "characters"} over; shorten it to save.`;
 }
 
+/** When a draft was kept, in the viewer's locale. */
+function keptAtLabel(keptAt: string) {
+  const date = new Date(keptAt);
+  return Number.isNaN(date.getTime())
+    ? "earlier"
+    : date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+export interface RichDocumentationProps {
+  value: string;
+  onSave: (value: string) => Promise<void>;
+  /**
+   * Where this documentation's unsaved changes are kept in this browser when the editor closes before they are saved,
+   * from `documentationDraftKey`. Without it, nothing is kept.
+   */
+  draftKey?: string;
+}
+
 /**
  * Documentation that is always editable and saves itself: 900 ms after the last edit, when the editor loses focus, and
- * when it closes. Saves run one at a time.
+ * when it closes. Saves run one at a time. Changes that are not saved by the time it closes are kept in this browser
+ * (see `drafts.ts`) and offered again the next time the documentation opens.
  *
  * Markdown is compared and saved trimmed, because the API trims what it stores. Trimming also ignores the blank lines
  * the editor writes around a table and after the empty paragraph it keeps at the end of the document. Edits are
  * compared with the Markdown the editor writes for the loaded documentation, never with `value`, because the editor
  * writes equivalent syntax in one canonical form. Opening or leaving documentation without an edit never saves it.
  */
-export function RichDocumentation({ value, onSave }: { value: string; onSave: (value: string) => Promise<void> }) {
+export function RichDocumentation({ value, onSave, draftKey }: RichDocumentationProps) {
   const editor = useRef<DocumentationEditorHandle>(null);
   const save = useRef(onSave);
+  const keepAt = useRef(draftKey);
   useLayoutEffect(() => {
     save.current = onSave;
+    keepAt.current = draftKey;
   });
   // Trimmed Markdown: the editor's document after its latest change, the document as last loaded or saved, and the
   // document most recently queued for saving. The latest document is kept here because the editor may already be
@@ -39,12 +66,16 @@ export function RichDocumentation({ value, onSave }: { value: string; onSave: (v
   const loaded = useRef(value);
   const pending = useRef<string | undefined>(undefined);
   const edited = useRef(false);
+  // The documentation as the API last returned or saved it, trimmed: what a draft kept on close was edited from.
+  const persisted = useRef(value.trim());
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
   // The latest document once the user has edited it; undefined before the first edit.
   const [draft, setDraft] = useState<string>();
   const [saved, setSaved] = useState("");
   const [savesInFlight, setSavesInFlight] = useState(0);
   const [error, setError] = useState("");
+  // A draft an earlier editor kept for this documentation, which the user can restore or discard.
+  const [kept, setKept] = useState<DocumentationDraft>();
 
   /**
    * Shows documentation that changed elsewhere, unless the user is working on it: the editor has focus, unsaved changes,
@@ -55,6 +86,7 @@ export function RichDocumentation({ value, onSave }: { value: string; onSave: (v
     if (!handle || handle.hasFocus() || latest.current !== lastSaved.current) return false;
     const replaced = handle.replace(next).trim();
     loaded.current = next;
+    persisted.current = next.trim();
     pending.current = undefined;
     latest.current = replaced;
     lastSaved.current = replaced;
@@ -84,8 +116,12 @@ export function RichDocumentation({ value, onSave }: { value: string; onSave: (v
         try {
           await save.current(next);
           lastSaved.current = next;
+          persisted.current = next;
           setSaved(next);
           setError("");
+          // The draft kept when the editor closed has been saved, even if the editor is gone by now.
+          const key = keepAt.current;
+          if (key && readDocumentationDraft(key)?.markdown === next) removeDocumentationDraft(key);
           // An update that arrived during the save, while the user was not in the editor, was held back only because the
           // save was in progress.
           if (pending.current !== undefined) show(pending.current);
@@ -126,10 +162,59 @@ export function RichDocumentation({ value, onSave }: { value: string; onSave: (v
     lastSaved.current = loadedMarkdown;
     lastSubmitted.current = loadedMarkdown;
     setSaved(loadedMarkdown);
-    // Closing the editor before the autosave saves the pending edit. Under StrictMode's extra unmount nothing has
-    // changed, so nothing is saved.
-    return () => commit(latest.current);
+    // Closing the editor before the autosave saves the pending edit. Unsaved documentation is also kept in this
+    // browser until it saves, because the save can fail once nothing is left to report it, documentation over the
+    // limit is not sent at all, and a save in flight can still fail. Under StrictMode's extra unmount nothing has
+    // changed, so nothing is kept or saved.
+    return () => {
+      const key = keepAt.current;
+      if (key && latest.current !== lastSaved.current)
+        keepDocumentationDraft(key, {
+          markdown: latest.current,
+          base: persisted.current,
+          keptAt: new Date().toISOString(),
+        });
+      commit(latest.current);
+    };
   }, [commit]);
+
+  // Offers a draft kept by an earlier editor, unless it is already the saved documentation.
+  useEffect(() => {
+    if (!draftKey) return;
+    const earlier = readDocumentationDraft(draftKey);
+    if (!earlier) return;
+    if (earlier.markdown === persisted.current || earlier.markdown === lastSaved.current) {
+      removeDocumentationDraft(draftKey);
+      return;
+    }
+    setKept(earlier);
+  }, [draftKey]);
+
+  // The kept draft's own save, finishing after it was offered, makes it the saved documentation.
+  useEffect(() => {
+    if (!kept || value.trim() !== kept.markdown) return;
+    setKept(undefined);
+    if (keepAt.current) removeDocumentationDraft(keepAt.current);
+  }, [kept, value]);
+
+  const restoreKept = () => {
+    const handle = editor.current;
+    if (!handle || !kept) return;
+    const restored = handle.replace(kept.markdown).trim();
+    // The restored draft is an unsaved edit now, which is kept again if the editor closes before it saves.
+    if (draftKey) removeDocumentationDraft(draftKey);
+    setKept(undefined);
+    latest.current = restored;
+    edited.current = true;
+    pending.current = undefined;
+    setDraft(restored);
+    commit(restored);
+  };
+
+  const discardKept = () => {
+    if (draftKey) removeDocumentationDraft(draftKey);
+    setKept(undefined);
+  };
 
   useEffect(() => {
     if (draft === undefined) return;
@@ -150,6 +235,7 @@ export function RichDocumentation({ value, onSave }: { value: string; onSave: (v
     // This editor's own save coming back, possibly before the save has finished.
     if (incoming === lastSaved.current || incoming === lastSubmitted.current) {
       loaded.current = value;
+      persisted.current = incoming;
       pending.current = undefined;
       return;
     }
@@ -182,23 +268,40 @@ export function RichDocumentation({ value, onSave }: { value: string; onSave: (v
           </span>
         }
         notice={
-          error === TOO_LONG ? (
-            // Retrying cannot help until the documentation is shorter, so the notice says by how much instead.
-            <p className="documentation-notice is-error" role="alert">
-              <CircleAlert size={15} aria-hidden="true" />
-              <span>{overLimitMessage(draft?.length ?? 0)}</span>
-            </p>
-          ) : (
-            error && (
-              <p className="documentation-notice is-error" role="alert">
-                <CircleAlert size={15} aria-hidden="true" />
-                <span>{error}</span>
-                <button type="button" onClick={() => commit(latest.current)}>
-                  Retry
+          <>
+            {kept && (
+              <p className="documentation-notice" role="alert">
+                <History size={15} aria-hidden="true" />
+                <span>
+                  Unsaved changes to this documentation from {keptAtLabel(kept.keptAt)} were kept in this browser.
+                  {kept.base !== value.trim() && " It has changed since, and restoring them replaces those changes."}
+                </span>
+                <button type="button" onClick={restoreKept}>
+                  Restore
+                </button>
+                <button type="button" onClick={discardKept}>
+                  Discard
                 </button>
               </p>
-            )
-          )
+            )}
+            {error === TOO_LONG ? (
+              // Retrying cannot help until the documentation is shorter, so the notice says by how much instead.
+              <p className="documentation-notice is-error" role="alert">
+                <CircleAlert size={15} aria-hidden="true" />
+                <span>{overLimitMessage(draft?.length ?? 0)}</span>
+              </p>
+            ) : (
+              error && (
+                <p className="documentation-notice is-error" role="alert">
+                  <CircleAlert size={15} aria-hidden="true" />
+                  <span>{error}</span>
+                  <button type="button" onClick={() => commit(latest.current)}>
+                    Retry
+                  </button>
+                </p>
+              )
+            )}
+          </>
         }
       />
     </section>

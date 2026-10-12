@@ -5,6 +5,7 @@ import { KeyRound, Moon, Pencil, Sun } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
 import { PageIntro } from "../../components/page-intro";
 import { Button, Card, Input, PasswordInput } from "../../components/ui";
+import { clearDocumentationDrafts } from "../inspector/documentation/drafts";
 import { api } from "../../lib/api";
 import { useAppearance } from "../../lib/use-appearance";
 
@@ -210,6 +211,8 @@ export function ProfilePage() {
                     setPasswordError("");
                     try {
                       await api.changePassword(currentPassword, newPassword);
+                      // Changing the password signs this browser out too.
+                      clearDocumentationDrafts();
                       queryClient.clear();
                       await navigate({ to: "/login" });
                     } catch (error) {

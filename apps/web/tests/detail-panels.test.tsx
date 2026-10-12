@@ -4,6 +4,11 @@ import { type ReactNode, StrictMode, useState } from "react";
 import { CanvasActivityLog } from "../src/features/canvas/canvas-activity-log";
 import { canvasShortcutLabel, isApplePlatform } from "../src/features/canvas/canvas-shortcuts";
 import { DatabaseSchema } from "../src/features/inspector/database-schema";
+import {
+  documentationDraftKey,
+  keepDocumentationDraft,
+  readDocumentationDraft,
+} from "../src/features/inspector/documentation/drafts";
 import { RichDocumentation } from "../src/features/inspector/rich-documentation";
 import { CanvasShareDialog } from "../src/features/workspace/canvas-share-dialog";
 import { editorFromElement, typeInEditor } from "./support/editor";
@@ -772,6 +777,148 @@ describe("rich documentation", () => {
     await blurDocumentation();
     await waitFor(() => expect(onSave.mock.calls).toEqual([[`${initial}b`]]));
   }, 30_000);
+  describe("unsaved changes kept in this browser", () => {
+    const key = documentationDraftKey("user-ada", "entity", "entity-gateway");
+    const keptDraft = () => readDocumentationDraft(key);
+    const keptNotice = () =>
+      screen.queryAllByRole("alert").find((alert) => alert.textContent?.includes("were kept in this browser"));
+
+    it("keeps changes whose save fails after the editor closes, and restores them when it opens again", async () => {
+      const onSave = mock(async (_value: string) => {
+        throw new Error("Network unavailable");
+      });
+      const { unmount } = await renderDocumentation(<RichDocumentation value="Notes" onSave={onSave} draftKey={key} />);
+      await caretToEnd();
+      await typeInEditor(documentation(), " v2");
+      unmount();
+      await waitFor(() => expect(onSave.mock.calls).toEqual([["Notes v2"]]));
+      expect(keptDraft()).toMatchObject({ markdown: "Notes v2", base: "Notes" });
+
+      const retried = mock(async (_value: string) => {});
+      const { user: actor } = await renderDocumentation(
+        <RichDocumentation value="Notes" onSave={retried} draftKey={key} />,
+      );
+      // The kept changes are offered, not applied: the editor opens with the saved documentation.
+      expect(documentation().textContent).toBe("Notes");
+      expect(keptNotice()?.textContent).toContain("Unsaved changes to this documentation from");
+      expect(keptNotice()?.textContent).not.toContain("changed since");
+      expect(retried).not.toHaveBeenCalled();
+
+      await actor.click(screen.getByRole("button", { name: "Restore" }));
+      expect(documentation().textContent).toBe("Notes v2");
+      expect(keptNotice()).toBeUndefined();
+      await waitFor(() => expect(saveState()).toBe("Saved"));
+      expect(retried.mock.calls).toEqual([["Notes v2"]]);
+      expect(keptDraft()).toBeUndefined();
+    });
+
+    it("keeps changes while their save is in flight as the editor closes, until the save succeeds", async () => {
+      const { onSave, finish } = pendingSaves();
+      const { unmount } = await renderDocumentation(<RichDocumentation value="Notes" onSave={onSave} draftKey={key} />);
+      await caretToEnd();
+      await typeInEditor(documentation(), " v2");
+      await blurDocumentation();
+      unmount();
+      expect(keptDraft()?.markdown).toBe("Notes v2");
+
+      await act(async () => finish[0]());
+      expect(onSave.mock.calls).toEqual([["Notes v2"]]);
+      expect(keptDraft()).toBeUndefined();
+    });
+
+    it("keeps nothing when the editor closes with its changes saved or without an edit", async () => {
+      const onSave = mock(async (_value: string) => {});
+      const first = await renderDocumentation(<RichDocumentation value="Notes" onSave={onSave} draftKey={key} />);
+      await caretToEnd();
+      await typeInEditor(documentation(), " v2");
+      await blurDocumentation();
+      await waitFor(() => expect(saveState()).toBe("Saved"));
+      first.unmount();
+      expect(keptDraft()).toBeUndefined();
+
+      const second = await renderDocumentation(<RichDocumentation value="Notes v2" onSave={onSave} draftKey={key} />);
+      await focusDocumentation();
+      await blurDocumentation();
+      second.unmount();
+      expect(keptDraft()).toBeUndefined();
+      expect(onSave.mock.calls).toEqual([["Notes v2"]]);
+    });
+
+    // Rendering and editing 20,000 characters under happy-dom takes several seconds when the editor modules are cold.
+    it("keeps documentation over the limit, which is never sent, when the editor closes", async () => {
+      const onSave = mock(async (_value: string) => {});
+      const initial = `${"word ".repeat(3999)}word`;
+      const { unmount } = await renderDocumentation(
+        <RichDocumentation value={initial} onSave={onSave} draftKey={key} />,
+      );
+      await caretToEnd();
+      await typeInEditor(documentation(), "bc");
+      unmount();
+      expect(keptDraft()?.markdown).toBe(`${initial}bc`);
+
+      // Restored, it is still too long to send, and the notice says by how much.
+      const { user: actor } = await renderDocumentation(
+        <RichDocumentation value={initial} onSave={onSave} draftKey={key} />,
+      );
+      await actor.click(screen.getByRole("button", { name: "Restore" }));
+      expect(screen.getByRole("alert").textContent).toContain("This is 1 character over");
+      expect(saveState()).toBe("Unsaved changes");
+      expect(onSave).not.toHaveBeenCalled();
+    }, 30_000);
+
+    it("says when the documentation changed after the changes were kept, and discards them", async () => {
+      keepDocumentationDraft(key, { markdown: "Notes v2", base: "Notes", keptAt: "2026-10-12T09:30:00.000Z" });
+      const onSave = mock(async (_value: string) => {});
+      const { user: actor } = await renderDocumentation(
+        <RichDocumentation value="Remote notes" onSave={onSave} draftKey={key} />,
+      );
+      expect(keptNotice()?.textContent).toContain("It has changed since, and restoring them replaces those changes.");
+
+      await actor.click(screen.getByRole("button", { name: "Discard" }));
+      expect(keptNotice()).toBeUndefined();
+      expect(keptDraft()).toBeUndefined();
+      expect(documentation().textContent).toBe("Remote notes");
+      expect(onSave).not.toHaveBeenCalled();
+    });
+
+    it("does not offer kept changes that are already the saved documentation", async () => {
+      keepDocumentationDraft(key, { markdown: "Notes v2", base: "Notes", keptAt: "2026-10-12T09:30:00.000Z" });
+      const onSave = mock(async (_value: string) => {});
+      const first = await renderDocumentation(<RichDocumentation value="Notes v2" onSave={onSave} draftKey={key} />);
+      expect(keptNotice()).toBeUndefined();
+      expect(keptDraft()).toBeUndefined();
+      first.unmount();
+
+      // Offered, then saved by the editor that kept them, which finished after this one opened.
+      keepDocumentationDraft(key, { markdown: "Notes v2", base: "Notes", keptAt: "2026-10-12T09:30:00.000Z" });
+      const { rerender } = await renderDocumentation(
+        <RichDocumentation value="Notes" onSave={onSave} draftKey={key} />,
+      );
+      expect(keptNotice()).toBeTruthy();
+      rerender(<RichDocumentation value="Notes v2" onSave={onSave} draftKey={key} />);
+      expect(keptNotice()).toBeUndefined();
+      expect(keptDraft()).toBeUndefined();
+    });
+
+    it("keeps changes only under its own key", async () => {
+      const onSave = mock(async (_value: string) => {
+        throw new Error("Network unavailable");
+      });
+      const { unmount } = await renderDocumentation(<RichDocumentation value="" onSave={onSave} />);
+      await typeInEditor(documentation(), "Unkept");
+      unmount();
+      await waitFor(() => expect(onSave).toHaveBeenCalled());
+      expect(localStorage.length).toBe(0);
+
+      keepDocumentationDraft(documentationDraftKey("user-grace", "entity", "entity-gateway"), {
+        markdown: "Another account's notes",
+        base: "",
+        keptAt: "2026-10-12T09:30:00.000Z",
+      });
+      await renderDocumentation(<RichDocumentation value="" onSave={onSave} draftKey={key} />);
+      expect(keptNotice()).toBeUndefined();
+    });
+  });
 });
 
 describe("editable database schema", () => {

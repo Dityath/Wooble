@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { screen, waitFor } from "@testing-library/react";
+import {
+  documentationDraftKey,
+  keepDocumentationDraft,
+  readDocumentationDraft,
+} from "../src/features/inspector/documentation/drafts";
 import { FakeApi, failWith } from "./support/fake-api";
 import { canvasSummary, ids, user, workspace } from "./support/fixtures";
 import { renderRoute } from "./support/render";
@@ -61,6 +66,8 @@ describe("profile", () => {
 
   it("changes the password and signs the user out", async () => {
     server.on("PUT /api/auth/password", { ok: true });
+    const draftKey = documentationDraftKey(ids.user, "entity", ids.gateway);
+    keepDocumentationDraft(draftKey, { markdown: "Unsaved notes", base: "", keptAt: "2026-10-12T09:30:00.000Z" });
     const { user: actor, router } = await renderRoute("/profile");
     await actor.click(await screen.findByRole("button", { name: /Change password/ }));
     const submit = screen.getAllByRole<HTMLButtonElement>("button", { name: "Change password" }).at(-1);
@@ -75,6 +82,8 @@ describe("profile", () => {
       currentPassword: "old-password",
       newPassword: "too-short-but-now-long",
     });
+    // Signed out, so unsaved documentation kept for the account is removed too.
+    expect(readDocumentationDraft(draftKey)).toBeUndefined();
   });
 
   it("keeps the password form open on error and clears it on cancel", async () => {

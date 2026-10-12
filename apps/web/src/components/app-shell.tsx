@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight, Layers3, LogOut, Menu, Plus, Settings2, Shar
 import type { ArchitectureEntity } from "@wooble/domain";
 import { CanvasShareDialog } from "../features/workspace/canvas-share-dialog";
 import { EntityKindIcon } from "../features/canvas/architecture-nodes";
+import { clearDocumentationDrafts } from "../features/inspector/documentation/drafts";
 import { api, type CanvasGraph } from "../lib/api";
 import { useAppearance } from "../lib/use-appearance";
 import { Separator } from "./ui";
@@ -133,6 +134,8 @@ export function AppShell({
               setSignOutError("");
               try {
                 await api.logout();
+                // Unsaved documentation kept in this browser belongs to the account signing out.
+                clearDocumentationDrafts();
                 queryClient.clear();
                 setOpenMenu(null);
                 await navigate({ to: "/login" });
