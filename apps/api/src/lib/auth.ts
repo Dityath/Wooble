@@ -255,7 +255,7 @@ function deny(): never {
  * - admin: system admins only.
  * - workspaces, canvases: the collection lists or creates the actor's own; a single workspace or
  *   canvas, and every route nested under it, needs a role on it.
- * - live: the canvas read rule, for the socket upgrade.
+ * - live: the canvas read rule for the socket upgrade; live.ts checks it again when the socket opens.
  * - entities, connections: objectAccess, for the object and every route nested under it.
  * - health: outside /api and unguarded.
  * An /api route that matches no class is denied, with 403 when signed in and 401 otherwise. A new
