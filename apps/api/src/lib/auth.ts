@@ -164,10 +164,10 @@ async function linkSharedCanvas(canvasId: string) {
 }
 
 /**
- * The access rule for an entity or connection. Workspace managers (and system admins) may read and
- * write. Otherwise the canvases of the object's workspace that show it decide: reading needs a role
- * on one of them or one of them shared by link; writing needs the editor role on all of them.
- * "missing" means the object does not exist.
+ * The access rule for an entity or connection, and for every route nested under it. Workspace
+ * managers (and system admins) may read and write. Otherwise the canvases of the object's workspace
+ * that show it decide: reading needs a role on one of them or one of them shared by link; writing
+ * needs the editor role on all of them. "missing" means the object does not exist.
  */
 export async function objectAccess(
   actor: Actor,
@@ -232,6 +232,7 @@ async function publicReadAllowed(
     const parsed = canvasIdParamsSchema.safeParse(params);
     return parsed.success && (await linkSharedCanvas(parsed.data.canvasId));
   }
+  // Routes nested under an entity are not public: a new anonymous read needs its own decision.
   if (route !== "/api/entities/:entityId") return false;
   const entity = entityIdParamsSchema.safeParse(params);
   const canvasId = canvasIdQuery ? uuidSchema.safeParse(canvasIdQuery) : null;
@@ -326,8 +327,9 @@ export function accessGuard() {
           return deny();
         return;
       }
-      const isEntityRoute = route === "/api/entities/:entityId";
-      const isConnectionRoute = route === "/api/connections/:connectionId";
+      const isEntityRoute = route === "/api/entities/:entityId" || route.startsWith("/api/entities/:entityId/");
+      const isConnectionRoute =
+        route === "/api/connections/:connectionId" || route.startsWith("/api/connections/:connectionId/");
       if (isEntityRoute || isConnectionRoute) {
         const parsed = isEntityRoute
           ? entityIdParamsSchema.safeParse(context.params)

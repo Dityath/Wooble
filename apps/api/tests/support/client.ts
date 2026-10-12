@@ -7,9 +7,12 @@ export const password = "WoobleTestPassword-2026";
 
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
-/** An in-process API client with fictional, uniquely named accounts for one test file. */
-export function apiClient() {
-  const app = createApp();
+/**
+ * An in-process API client with fictional, uniquely named accounts for one test file. `options` go to
+ * `createApp`, for example to register test-only routes behind the access guard.
+ */
+export function apiClient(options?: Parameters<typeof createApp>[0]) {
+  const app = createApp(options);
   const unique = crypto.randomUUID().slice(0, 8);
   let accounts = 0;
 
