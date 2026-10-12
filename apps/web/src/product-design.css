@@ -354,6 +354,7 @@ p { text-wrap: pretty; }
 .contract-operation-detail > summary:after { content: "⌄"; margin-left: auto; color: var(--wooble-muted); }.contract-operation-detail[open] > summary:after { transform: rotate(180deg); }
 .contract-operation-body { padding: 10px 14px 14px; border-top: 1px solid var(--wooble-border-soft); color: var(--wooble-ink-soft); font-size: 11px; line-height: 1.6; }.contract-operation-body p { margin: 5px 0; }.contract-operation-body strong { display: block; color: var(--wooble-ink); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
 .viewer-details .contract-info { flex-direction: column; gap: 2px; }.viewer-details .contract-operation { flex-wrap: wrap; gap: 5px; }.viewer-details .contract-operation > span:last-of-type { width: 100%; }.viewer-details .contract-raw-preview { max-height: 260px; }
+.viewer-documentation { margin-top: 20px; }.viewer-documentation h3 { margin: 0 0 8px; font-size: 13px; }.viewer-documentation .rich-markdown { overflow-wrap: anywhere; }.viewer-documentation .rich-markdown :is(pre, table) { max-width: 100%; overflow-x: auto; }
 /* The hierarchy sits close to the workspace switcher and expands like a file tree. */
 .canvas-mode .workspace-menu { margin-bottom: 6px; }
 .canvas-mode .sidebar-heading.system-heading { margin-top: 12px; margin-bottom: 8px; }

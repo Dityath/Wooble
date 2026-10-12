@@ -120,6 +120,30 @@ describe("viewer canvas", () => {
     expect(router.state.location.search).toEqual({ canvasId: ids.canvas });
   });
 
+  it("shows connection documentation read-only, with an empty state", async () => {
+    const data = graph();
+    data.connections[0] = {
+      ...data.connections[0],
+      metadata: { documentation: "## Retry policy\n\nRetries **twice** before failing." },
+    };
+    const { user: actor } = await openCanvas("viewer", data);
+    await actor.click(screen.getByRole("button", { name: "Reads orders" }));
+    fireEvent.click(document.querySelector(".react-flow__edge") as Element);
+    const documentation = await screen.findByRole("region", { name: "Connection documentation" });
+    expect(within(documentation).getByRole("heading", { name: "Retry policy" })).toBeTruthy();
+    expect(within(documentation).getByText("twice", { selector: "strong" })).toBeTruthy();
+    expect(within(documentation).queryByRole("textbox")).toBeNull();
+    expect(within(documentation).queryByRole("button")).toBeNull();
+  });
+
+  it("says when a connection has no documentation yet", async () => {
+    const { user: actor } = await openCanvas("viewer");
+    await actor.click(screen.getByRole("button", { name: "Reads orders" }));
+    fireEvent.click(document.querySelector(".react-flow__edge") as Element);
+    const documentation = await screen.findByRole("region", { name: "Connection documentation" });
+    expect(within(documentation).getByText("No documentation yet.")).toBeTruthy();
+  });
+
   it("clears the selection from the pane and toggles Zen mode", async () => {
     const { user: actor } = await openCanvas("viewer");
     fireEvent.click(node("Orders API"));
@@ -655,5 +679,20 @@ describe("shared canvas guests", () => {
     expect(await screen.findByText("Orders API")).toBeTruthy();
     const presence = screen.getByRole("region", { name: "People on this canvas" });
     expect(within(presence).getByText("You (you)")).toBeTruthy();
+  });
+
+  it("lets signed-out visitors read connection documentation", async () => {
+    const data = graph();
+    data.connections[0] = { ...data.connections[0], metadata: { documentation: "Orders are read through a replica." } };
+    server
+      .on("GET /api/auth/me", failWith(401, "Sign in required"))
+      .on("GET /api/canvases/:id/access", { role: "viewer" })
+      .on("GET /api/canvases/:id/graph", data);
+    const { user: actor } = await renderRoute(`/canvases/${ids.canvas}`);
+    await screen.findByText("Orders API");
+    await actor.click(screen.getByRole("button", { name: "Reads orders" }));
+    fireEvent.click(document.querySelector(".react-flow__edge") as Element);
+    const documentation = await screen.findByRole("region", { name: "Connection documentation" });
+    expect(within(documentation).getByText("Orders are read through a replica.")).toBeTruthy();
   });
 });

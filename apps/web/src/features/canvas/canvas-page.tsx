@@ -50,6 +50,7 @@ import { connectionTitle } from "../../lib/connection-title";
 import { useEditorStore } from "../../stores/editor-store";
 import { InspectorPanel } from "../inspector/inspector-panel";
 import { ContractPreview } from "../inspector/contract-editor";
+import { MarkdownContent } from "../inspector/rich-documentation";
 import type { ArchitectureFlowEdge } from "./architecture-edge";
 import { ConnectorEditContext } from "./connector-edit-context";
 import { edgeTypes } from "./edge-types";
@@ -348,6 +349,17 @@ function CanvasViewer({
             <p>{selectedEntity?.description ?? selectedConnection?.description ?? "No description yet."}</p>
             {selectedConnection && (
               <ContractPreview value={selectedConnection.metadata.contractBody ?? ""} kind={selectedConnection.type} />
+            )}
+            {selectedConnection && (
+              // Connections have no read-only details page, so their documentation is shown here.
+              <section className="viewer-documentation" aria-label="Connection documentation">
+                <h3>Documentation</h3>
+                {selectedConnection.metadata.documentation ? (
+                  <MarkdownContent value={selectedConnection.metadata.documentation} />
+                ) : (
+                  <p className="rich-empty">No documentation yet.</p>
+                )}
+              </section>
             )}
             {selectedEntity && (
               <Button
