@@ -741,8 +741,9 @@ describe("rich documentation", () => {
   });
 
   // Rendering and editing 20,000 characters under happy-dom takes several seconds when the editor modules are cold.
-  it("does not send documentation over 20,000 characters of Markdown", async () => {
-    const limitMessage = "Documentation is limited to 20,000 characters of Markdown. Shorten it to save.";
+  it("does not send documentation over 20,000 characters of Markdown and says how far over it is", async () => {
+    const limitMessage = (over: string) =>
+      `Documentation is limited to 20,000 characters of Markdown. This is ${over} over; shorten it to save.`;
     const onSave = mock(async (_value: string) => {});
     // Use prose-sized words so this checks the save boundary rather than linkifying a 20,000-character token.
     const initial = `${"word ".repeat(3999)}word`;
@@ -751,16 +752,21 @@ describe("rich documentation", () => {
     await caretToEnd();
     await typeInEditor(documentation(), "bc");
     await blurDocumentation();
-    expect(screen.getByRole("alert").textContent).toContain(limitMessage);
+    expect(screen.getByRole("alert").textContent).toBe(limitMessage("1 character"));
     expect(saveState()).toBe("Unsaved changes");
     expect(documentation().textContent).toHaveLength(20_001);
+    // Retrying cannot save documentation that is still too long.
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
 
-    await actor.click(screen.getByRole("button", { name: "Retry" }));
-    expect(screen.getByRole("alert").textContent).toContain(limitMessage);
-    expect(onSave).not.toHaveBeenCalled();
-
+    // The notice follows the length while it is shortened.
+    await typeInEditor(documentation(), "d");
+    expect(screen.getByRole("alert").textContent).toBe(limitMessage("2 characters"));
     await caretToEnd();
     await focusDocumentation();
+    await actor.keyboard("{Backspace}");
+    expect(screen.getByRole("alert").textContent).toBe(limitMessage("1 character"));
+    expect(onSave).not.toHaveBeenCalled();
+
     await actor.keyboard("{Backspace}");
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     await blurDocumentation();

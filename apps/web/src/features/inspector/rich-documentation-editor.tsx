@@ -5,7 +5,14 @@ import { DocumentationEditor, type DocumentationEditorHandle } from "./documenta
 const AUTOSAVE_DELAY_MS = 900;
 // Mirrors `documentation: z.string().trim().max(20000)` in the API contracts, which do not export the limit.
 const MAX_DOCUMENTATION_LENGTH = 20_000;
-const TOO_LONG_MESSAGE = "Documentation is limited to 20,000 characters of Markdown. Shorten it to save.";
+// The error for documentation that is too long to send. Its message says by how much, so it is written when shown.
+const TOO_LONG = "too-long";
+
+/** Describes how far `length` characters of Markdown are over the limit. */
+function overLimitMessage(length: number) {
+  const over = length - MAX_DOCUMENTATION_LENGTH;
+  return `Documentation is limited to 20,000 characters of Markdown. This is ${over.toLocaleString("en-US")} ${over === 1 ? "character" : "characters"} over; shorten it to save.`;
+}
 
 /**
  * Documentation that is always editable and saves itself: 900 ms after the last edit, when the editor loses focus, and
@@ -65,7 +72,7 @@ export function RichDocumentation({ value, onSave }: { value: string; onSave: (v
         return;
       }
       if (next.length > MAX_DOCUMENTATION_LENGTH) {
-        setError(TOO_LONG_MESSAGE);
+        setError(TOO_LONG);
         return;
       }
       lastSubmitted.current = next;
@@ -104,7 +111,7 @@ export function RichDocumentation({ value, onSave }: { value: string; onSave: (v
     // The user's edit replaces documentation that changed elsewhere and was not shown (the last write wins).
     pending.current = undefined;
     setDraft(next);
-    if (next.length <= MAX_DOCUMENTATION_LENGTH) setError((current) => (current === TOO_LONG_MESSAGE ? "" : current));
+    if (next.length <= MAX_DOCUMENTATION_LENGTH) setError((current) => (current === TOO_LONG ? "" : current));
   }, []);
 
   const handleBlur = useCallback(() => {
@@ -154,7 +161,7 @@ export function RichDocumentation({ value, onSave }: { value: string; onSave: (v
   const saveState =
     draft === undefined
       ? undefined
-      : error && error !== TOO_LONG_MESSAGE
+      : error && error !== TOO_LONG
         ? { state: "error", label: "Save failed" }
         : savesInFlight > 0
           ? { state: "saving", label: "Saving…" }
@@ -175,14 +182,22 @@ export function RichDocumentation({ value, onSave }: { value: string; onSave: (v
           </span>
         }
         notice={
-          error && (
+          error === TOO_LONG ? (
+            // Retrying cannot help until the documentation is shorter, so the notice says by how much instead.
             <p className="documentation-notice is-error" role="alert">
               <CircleAlert size={15} aria-hidden="true" />
-              <span>{error}</span>
-              <button type="button" onClick={() => commit(latest.current)}>
-                Retry
-              </button>
+              <span>{overLimitMessage(draft?.length ?? 0)}</span>
             </p>
+          ) : (
+            error && (
+              <p className="documentation-notice is-error" role="alert">
+                <CircleAlert size={15} aria-hidden="true" />
+                <span>{error}</span>
+                <button type="button" onClick={() => commit(latest.current)}>
+                  Retry
+                </button>
+              </p>
+            )
           )
         }
       />
