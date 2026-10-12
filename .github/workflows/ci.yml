@@ -133,3 +133,83 @@ jobs:
             "Database migrations=$MIGRATE_RESULT" \
             "API tests=$API_RESULT" \
             "Coverage floors=$COVERAGE_RESULT"
+
+  browser:
+    name: Browser journeys
+    needs: code-quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: architecture
+          POSTGRES_PASSWORD: architecture
+          POSTGRES_DB: browser_journeys
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U architecture -d browser_journeys"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      BROWSER_TEST_DATABASE_URL: postgres://architecture:architecture@localhost:5432/browser_journeys
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install dependencies
+        id: install
+        run: bun install --frozen-lockfile
+      - name: Read the Playwright version
+        id: playwright
+        if: ${{ steps.install.outcome == 'success' }}
+        working-directory: apps/web
+        run: echo "version=$(bun --print 'require("@playwright/test/package.json").version')" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        if: ${{ steps.install.outcome == 'success' }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      - name: Install Chromium
+        id: chromium
+        if: ${{ steps.install.outcome == 'success' }}
+        working-directory: apps/web
+        run: bunx playwright install --with-deps chromium
+      - name: Apply database migrations
+        id: migrate
+        if: ${{ steps.install.outcome == 'success' }}
+        env:
+          DATABASE_URL: ${{ env.BROWSER_TEST_DATABASE_URL }}
+        run: bun run db:migrate
+      - name: Browser journeys
+        id: journeys
+        if: ${{ steps.chromium.outcome == 'success' && steps.migrate.outcome == 'success' }}
+        run: bun run --cwd apps/web test:browser
+      - name: Upload Playwright report
+        if: ${{ failure() && steps.journeys.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          if-no-files-found: warn
+      - name: Summarize browser journeys
+        if: ${{ always() }}
+        env:
+          INSTALL_RESULT: ${{ steps.install.outcome }}
+          CHROMIUM_RESULT: ${{ steps.chromium.outcome }}
+          MIGRATE_RESULT: ${{ steps.migrate.outcome }}
+          JOURNEYS_RESULT: ${{ steps.journeys.outcome }}
+        run: |
+          bash .github/scripts/report-ci.sh "Browser journeys" \
+            "Install dependencies=$INSTALL_RESULT" \
+            "Install Chromium=$CHROMIUM_RESULT" \
+            "Database migrations=$MIGRATE_RESULT" \
+            "Browser journeys=$JOURNEYS_RESULT"
