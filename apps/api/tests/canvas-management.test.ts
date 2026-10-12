@@ -325,10 +325,59 @@ describe("connector routes and layout", () => {
     });
     const admin = await api.register("Placement Admin");
     await api.promoteToAdmin(admin.user.id);
-    expect((await api.json<{ saved: number }>("PUT", thirdUrl, admin.session, place(publicApi))).body).toEqual({
+    const ledger = await api.createNode(owner.session, restricted, { type: "database", name: "Ledger DB" });
+    expect((await api.json<{ saved: number }>("PUT", thirdUrl, admin.session, place(ledger))).body).toEqual({
       saved: 1,
     });
+
+    // A batch is refused whole when any new entity, including a new parent, is unreadable.
+    const secret = await api.createNode(owner.session, restricted, { type: "system", name: "Secret System" });
+    await api.request("DELETE", `/api/canvases/${restricted}/members/${editor.user.id}`, owner.session);
+    const mixed = await api.json<{ message: string }>("PUT", url, editor.session, {
+      placements: [
+        { entityId: publicApi, parentEntityId: null, x: 80, y: 80, width: 220, height: 120 },
+        { entityId: secret, parentEntityId: null, x: 0, y: 0, width: 220, height: 120 },
+      ],
+    });
+    expect(mixed.status).toBe(400);
+    const asParent = await api.json<{ message: string }>("PUT", url, editor.session, {
+      placements: [
+        { entityId: secret, parentEntityId: null, x: 0, y: 0, width: 600, height: 400 },
+        { entityId: publicApi, parentEntityId: secret, x: 20, y: 20, width: 220, height: 120 },
+      ],
+    });
+    expect(asParent.status).toBe(400);
+    const graphAfter = (await api.json<Graph>("GET", `/api/canvases/${board}/graph`, owner.session)).body;
+    expect(graphAfter.placements.find((placement) => placement.entityId === publicApi)).toMatchObject({
+      x: 40,
+      y: 40,
+      parentEntityId: null,
+    });
+    expect(graphAfter.placements.some((placement) => placement.entityId === secret)).toBe(false);
   });
+
+  it("places new entities concurrently without exhausting the database pool", async () => {
+    const owner = await api.register("Concurrent Placement Owner");
+    const source = await api.createCanvas(owner.session, owner.workspaceId, "Source");
+    const board = await api.createCanvas(owner.session, owner.workspaceId, "Board");
+    const entityIds = await Promise.all(
+      Array.from({ length: 12 }, (_, index) => api.createNode(owner.session, source, { name: `Node ${index}` })),
+    );
+    // Each request holds a pooled connection while it waits for the canvas row lock. The access check must not ask
+    // the pool for another connection, or the lock holder waits forever once the pool is exhausted.
+    const saves = Promise.all(
+      entityIds.map(
+        async (entityId) =>
+          (
+            await api.request("PUT", `/api/canvases/${board}/placements`, owner.session, {
+              placements: [{ entityId, parentEntityId: null, x: 0, y: 0, width: 220, height: 120 }],
+            })
+          ).status,
+      ),
+    );
+    const outcome = await Promise.race([saves, Bun.sleep(10_000).then(() => "timed out")]);
+    expect(outcome).toEqual(entityIds.map(() => 200));
+  }, 20_000);
 
   it("rejects placements that reference other workspaces or unplaced parents", async () => {
     const { owner, canvasId, a } = await canvasWithConnection();

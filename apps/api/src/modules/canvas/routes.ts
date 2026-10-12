@@ -31,7 +31,6 @@ import {
   hashToken,
   newToken,
   materializeLinkViewer,
-  workspaceRole,
   type Actor,
   type Api,
 } from "../../lib/auth";
@@ -906,7 +905,15 @@ async function canReadEntities(
 ): Promise<boolean> {
   if (!entityIds.length) return true;
   if (!actor) return false;
-  if ((await workspaceRole(actor, workspaceId)) === "manager") return true;
+  if (actor.systemRole === "admin") return true;
+  // Read through the transaction, not the shared pool: the caller holds a connection and a canvas row lock, so waiting
+  // for a second pooled connection could deadlock once concurrent requests have taken the rest of the pool.
+  const [membership] = await tx
+    .select({ role: workspaceMembers.role })
+    .from(workspaceMembers)
+    .where(and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, actor.id)))
+    .limit(1);
+  if (membership?.role === "manager") return true;
   const rows = await tx
     .select({ entityId: canvasNodes.entityId, shareMode: canvases.shareMode, role: canvasMembers.role })
     .from(canvasNodes)
