@@ -1,16 +1,22 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { canvasConnections, canvasNodes, db } from "@wooble/db";
+import { createApp } from "../src/app";
+import { type RouteAccess, routeAccess } from "../src/lib/auth";
 import { resetLoginAttempts } from "../src/modules/auth/routes";
 import { apiClient } from "./support/client";
 
 // Test-only routes nested under an entity and a connection. They stand in for the documentation,
 // contract, schema and comment routes planned there, which must get the object rule from the guard.
+// The unclassified ones stand in for a new route nobody gave an access class.
 const api = apiClient({
   configure: (app) => {
     app.get("/api/entities/:entityId/probe", () => ({ reached: true }));
     app.patch("/api/entities/:entityId/probe", () => ({ reached: true }));
     app.get("/api/connections/:connectionId/probe", () => ({ reached: true }));
     app.put("/api/connections/:connectionId/probe/:part", () => ({ reached: true }));
+    app.get("/api/unclassified-probe", () => ({ reached: true }));
+    app.post("/api/auth/probe", () => ({ reached: true }));
+    app.get("/api/invitations/:token/probe", () => ({ reached: true }));
   },
 });
 beforeEach(() => resetLoginAttempts());
@@ -21,6 +27,57 @@ async function joinCanvas(owner: Person, person: Person, canvasId: string, role:
   const token = await api.invite(owner.session, `/api/canvases/${canvasId}/invitations`, role);
   expect((await api.request("POST", `/api/invitations/${token}/accept`, person.session)).status).toBe(200);
 }
+
+// Every route the app registers and its access class. A new route fails the inventory test until
+// it is listed here, so its class is a reviewed decision rather than a side effect of its path.
+const registeredRoutes: Record<string, RouteAccess> = {
+  "GET /health": "health",
+  "POST /api/auth/register": "auth",
+  "POST /api/auth/login": "auth",
+  "GET /api/auth/me": "profile",
+  "POST /api/auth/logout": "profile",
+  "PATCH /api/auth/profile": "profile",
+  "PUT /api/auth/password": "profile",
+  "GET /api/admin/users": "admin",
+  "PATCH /api/admin/users/:userId": "admin",
+  "GET /api/workspaces": "workspaces",
+  "POST /api/workspaces": "workspaces",
+  "GET /api/workspaces/:workspaceId": "workspaces",
+  "PATCH /api/workspaces/:workspaceId": "workspaces",
+  "GET /api/workspaces/:workspaceId/members": "workspaces",
+  "POST /api/workspaces/:workspaceId/members": "workspaces",
+  "PATCH /api/workspaces/:workspaceId/members/:userId": "workspaces",
+  "DELETE /api/workspaces/:workspaceId/members/:userId": "workspaces",
+  "POST /api/workspaces/:workspaceId/invitations": "workspaces",
+  "GET /api/invitations/:token": "invitations",
+  "POST /api/invitations/:token/accept": "invitations",
+  "GET /api/canvases": "canvases",
+  "POST /api/canvases": "canvases",
+  "GET /api/canvases/:canvasId": "canvases",
+  "GET /api/canvases/:canvasId/access": "canvases",
+  "PATCH /api/canvases/:canvasId": "canvases",
+  "DELETE /api/canvases/:canvasId": "canvases",
+  "GET /api/canvases/:canvasId/members": "canvases",
+  "POST /api/canvases/:canvasId/members": "canvases",
+  "PATCH /api/canvases/:canvasId/members/:userId": "canvases",
+  "DELETE /api/canvases/:canvasId/members/:userId": "canvases",
+  "POST /api/canvases/:canvasId/invitations": "canvases",
+  "GET /api/canvases/:canvasId/graph": "canvases",
+  "GET /api/canvases/:canvasId/activity": "canvases",
+  "POST /api/canvases/:canvasId/entities": "canvases",
+  "POST /api/canvases/:canvasId/connections": "canvases",
+  "PUT /api/canvases/:canvasId/connections/:connectionId/bend": "canvases",
+  "PUT /api/canvases/:canvasId/auto-neat": "canvases",
+  "DELETE /api/canvases/:canvasId/connections/:connectionId": "canvases",
+  "DELETE /api/canvases/:canvasId/entities/:entityId": "canvases",
+  "PUT /api/canvases/:canvasId/placements": "canvases",
+  "POST /api/canvases/:canvasId/undo": "canvases",
+  "WS /api/canvases/:canvasId/live": "live",
+  "GET /api/entities/:entityId": "entities",
+  "PATCH /api/entities/:entityId": "entities",
+  "GET /api/connections/:connectionId": "connections",
+  "PATCH /api/connections/:connectionId": "connections",
+};
 
 /**
  * Restricted Orders and Billing canvases that both show two nodes and their connection, a node only
@@ -65,7 +122,7 @@ async function nestedFixture() {
   };
 }
 
-async function status(session: string | undefined, method: "GET" | "PATCH" | "PUT", url: string) {
+async function status(session: string | undefined, method: "GET" | "POST" | "PATCH" | "PUT", url: string) {
   return (await api.request(method, url, session, method === "GET" ? undefined : {})).status;
 }
 
@@ -121,5 +178,105 @@ describe("routes nested under an entity or a connection", () => {
     expect(await nested(undefined, "entity", objects.published)).toEqual([401, 401]);
     expect(await nested(undefined, "entity", objects.ordersOnly, `?canvasId=${canvases.orders}`)).toEqual([401, 401]);
     expect(await nested(undefined, "connection", objects.connection)).toEqual([401, 401]);
+  });
+});
+
+describe("route access classes", () => {
+  it("cover every registered route", () => {
+    const routes = createApp().routes.map((route) => ({ key: `${route.method} ${route.path}`, path: route.path }));
+
+    expect(routes.filter((route) => !routeAccess(route.path)).map((route) => route.key)).toEqual([]);
+    expect(Object.fromEntries(routes.map((route) => [route.key, routeAccess(route.path)]))).toEqual(registeredRoutes);
+  });
+
+  it("extend to nested routes only under a single resource", () => {
+    expect(routeAccess("/api/entities/:entityId/documentation")).toBe("entities");
+    expect(routeAccess("/api/connections/:connectionId/contract/revisions")).toBe("connections");
+    expect(routeAccess("/api/canvases/:canvasId/comments/:threadId")).toBe("canvases");
+    expect(routeAccess("/api/workspaces/:workspaceId/settings")).toBe("workspaces");
+    expect(routeAccess("/api/admin/sessions")).toBe("admin");
+    for (const route of [
+      "/api",
+      "/api/entities",
+      "/api/entities/:id/documentation",
+      "/api/entitiesearch",
+      "/api/auth/sessions",
+      "/api/invitations",
+      "/api/invitations/:token/decline",
+      "/api/administrators",
+      "/api/notifications",
+    ])
+      expect(routeAccess(route)).toBeNull();
+  });
+
+  it("deny every caller on a route without a class", async () => {
+    const member = await api.register("Unclassified Member");
+    const admin = await api.register("Unclassified Admin");
+    await api.promoteToAdmin(admin.user.id);
+    const routes = [
+      ["GET", "/api/unclassified-probe"],
+      ["POST", "/api/auth/probe"],
+      ["GET", `/api/invitations/${"t".repeat(32)}/probe`],
+    ] as const;
+
+    for (const [method, url] of routes) {
+      expect(await status(member.session, method, url)).toBe(403);
+      expect(await status(admin.session, method, url)).toBe(403);
+      expect(await status(undefined, method, url)).toBe(401);
+    }
+    const denied = await api.json("GET", "/api/unclassified-probe", member.session);
+    expect(denied.body).toEqual({ message: "You do not have access to this resource" });
+  });
+});
+
+describe("invalid params and missing resources", () => {
+  it("keep the handlers' 400 and 404 responses", async () => {
+    const owner = await api.register("Missing Owner");
+    const missing = crypto.randomUUID();
+    const badRequest = (message: string) => ({ error: "bad_request", message });
+    const notFound = (message: string) => ({ error: "not_found", message });
+    const cases = [
+      ["GET", "/api/entities/not-a-uuid", 400, badRequest("Entity ID must be a UUID")],
+      ["GET", `/api/entities/${missing}`, 404, notFound("Entity not found")],
+      ["PATCH", `/api/entities/${missing}`, 404, notFound("Entity not found")],
+      ["GET", "/api/connections/not-a-uuid", 400, badRequest("Connection ID must be a UUID")],
+      ["GET", `/api/connections/${missing}`, 404, notFound("Connection not found")],
+      ["PATCH", `/api/connections/${missing}`, 404, notFound("Connection not found")],
+      ["GET", "/api/workspaces/not-a-uuid", 400, badRequest("Workspace ID must be a UUID")],
+      ["GET", "/api/canvases/not-a-uuid/graph", 400, badRequest("Canvas ID must be a UUID")],
+    ] as const;
+
+    for (const [method, url, code, body] of cases) {
+      const response = await api.json(
+        method,
+        url,
+        owner.session,
+        method === "GET" ? undefined : { description: "Changed" },
+      );
+      expect([url, response.status, response.body]).toEqual([url, code, body]);
+    }
+  });
+
+  it("let nested object routes answer them, and deny missing workspaces and canvases", async () => {
+    const owner = await api.register("Missing Nested Owner");
+    const admin = await api.register("Missing Nested Admin");
+    await api.promoteToAdmin(admin.user.id);
+    const missing = crypto.randomUUID();
+
+    // Nothing to protect, so the guard leaves the 400 or 404 to the nested route's own handler.
+    expect(await nested(owner.session, "entity", "not-a-uuid")).toEqual([200, 200]);
+    expect(await nested(owner.session, "entity", missing)).toEqual([200, 200]);
+    expect(await nested(owner.session, "connection", missing)).toEqual([200, 200]);
+    expect(await nested(undefined, "entity", missing)).toEqual([401, 401]);
+    // A workspace or canvas that does not exist looks like one the caller has no role on.
+    expect(await status(owner.session, "GET", `/api/workspaces/${missing}`)).toBe(403);
+    expect(await status(owner.session, "GET", `/api/canvases/${missing}/graph`)).toBe(403);
+    expect(await status(admin.session, "GET", `/api/canvases/${missing}/graph`)).toBe(403);
+    expect((await api.json("GET", `/api/workspaces/${missing}`, admin.session)).body).toEqual({
+      error: "not_found",
+      message: "Workspace not found",
+    });
+    expect(await status(undefined, "GET", "/api/canvases/not-a-uuid")).toBe(401);
+    expect(await status(undefined, "GET", `/api/entities/${missing}?canvasId=${missing}`)).toBe(401);
   });
 });

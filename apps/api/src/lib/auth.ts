@@ -248,6 +248,59 @@ function deny(): never {
   throw Object.assign(new Error("You do not have access to this resource"), { status: 403 });
 }
 
+/**
+ * How `accessGuard` authorizes a registered route:
+ * - auth: sign-in and registration, no session needed.
+ * - profile, invitations: any signed-in user; the handler scopes to the actor or the token.
+ * - admin: system admins only.
+ * - workspaces, canvases: the collection lists or creates the actor's own; a single workspace or
+ *   canvas, and every route nested under it, needs a role on it.
+ * - live: the canvas read rule, for the socket upgrade.
+ * - entities, connections: objectAccess, for the object and every route nested under it.
+ * - health: outside /api and unguarded.
+ * An /api route that matches no class is denied, with 403 when signed in and 401 otherwise. A new
+ * route is classified here, and tests/route-access.test.ts lists every registered route's class.
+ */
+export type RouteAccess =
+  | "auth"
+  | "profile"
+  | "invitations"
+  | "admin"
+  | "workspaces"
+  | "canvases"
+  | "live"
+  | "entities"
+  | "connections"
+  | "health";
+
+const exactRouteAccess = new Map<string, RouteAccess>([
+  ["/health", "health"],
+  ["/api/auth/login", "auth"],
+  ["/api/auth/register", "auth"],
+  ["/api/auth/me", "profile"],
+  ["/api/auth/logout", "profile"],
+  ["/api/auth/profile", "profile"],
+  ["/api/auth/password", "profile"],
+  ["/api/invitations/:token", "invitations"],
+  ["/api/invitations/:token/accept", "invitations"],
+  ["/api/workspaces", "workspaces"],
+  ["/api/canvases", "canvases"],
+  ["/api/canvases/:canvasId/live", "live"],
+]);
+const scopedRouteAccess: Array<[string, RouteAccess]> = [
+  ["/api/admin", "admin"],
+  ["/api/workspaces/:workspaceId", "workspaces"],
+  ["/api/canvases/:canvasId", "canvases"],
+  ["/api/entities/:entityId", "entities"],
+  ["/api/connections/:connectionId", "connections"],
+];
+
+export function routeAccess(route: string): RouteAccess | null {
+  const exact = exactRouteAccess.get(route);
+  if (exact) return exact;
+  return scopedRouteAccess.find(([base]) => route === base || route.startsWith(`${base}/`))?.[1] ?? null;
+}
+
 export function accessGuard() {
   return new Elysia({ name: "wooble-access-guard" })
     .decorate("actor", null as Actor | null)
@@ -288,10 +341,12 @@ export function accessGuard() {
       context.actor = user;
     })
     .onBeforeHandle({ as: "global" }, async (context) => {
-      const requestPath = new URL(context.request.url).pathname;
+      // Decide by the registered route, not the request path, so no spelling of a path can match an
+      // /api route and skip the guard.
       const route = context.route;
-      if (!requestPath.startsWith("/api/")) return;
-      if (route === "/api/auth/login" || route === "/api/auth/register") return;
+      if (!route.startsWith("/api/")) return;
+      const access = routeAccess(route);
+      if (access === "auth") return;
       const actor = context.actor;
       if (!actor) {
         const url = new URL(context.request.url);
@@ -299,46 +354,53 @@ export function accessGuard() {
           return;
         unauthorized("Sign in to continue");
       }
-      if (route.startsWith("/api/auth/") || route.startsWith("/api/invitations/")) return;
-      if (route.startsWith("/api/admin/")) {
-        if (actor.systemRole !== "admin") return deny();
-        return;
-      }
-      if (route === "/api/workspaces" || route === "/api/canvases") return;
-      const isWorkspaceRoute =
-        route === "/api/workspaces/:workspaceId" || route.startsWith("/api/workspaces/:workspaceId/");
-      if (isWorkspaceRoute) {
-        const id = uuidSchema.safeParse(context.params.workspaceId);
-        if (!id.success) return;
-        const role = await workspaceRole(actor, id.data);
-        if (!role || (context.request.method !== "GET" && role !== "manager")) return deny();
-        return;
-      }
-      const isCanvasRoute = route === "/api/canvases/:canvasId" || route.startsWith("/api/canvases/:canvasId/");
-      if (isCanvasRoute) {
-        const parsed = canvasIdParamsSchema.safeParse(context.params);
-        if (!parsed.success) return;
-        const role = await canvasRole(actor, parsed.data.canvasId);
-        const managerOnly =
-          route.includes("/members") ||
-          route.includes("/invitations") ||
-          (route === "/api/canvases/:canvasId" && context.request.method !== "GET");
-        if (!role || (managerOnly && role !== "manager") || (context.request.method !== "GET" && role === "viewer"))
-          return deny();
-        return;
-      }
-      const isEntityRoute = route === "/api/entities/:entityId" || route.startsWith("/api/entities/:entityId/");
-      const isConnectionRoute =
-        route === "/api/connections/:connectionId" || route.startsWith("/api/connections/:connectionId/");
-      if (isEntityRoute || isConnectionRoute) {
-        const parsed = isEntityRoute
-          ? entityIdParamsSchema.safeParse(context.params)
-          : connectionIdParamsSchema.safeParse(context.params);
-        if (!parsed.success) return;
-        const id = "entityId" in parsed.data ? parsed.data.entityId : parsed.data.connectionId;
-        const mode = context.request.method === "GET" ? "read" : "write";
-        if ((await objectAccess(actor, isEntityRoute ? "entity" : "connection", id, mode)) === "denied") return deny();
-        return;
+      const method = context.request.method;
+      // Invalid params identify nothing, so they pass through and the handler answers 400. An entity
+      // or connection that does not exist passes through to the handler's 404. A missing workspace
+      // or canvas is denied like one without a role (admins get the workspace handler's 404).
+      switch (access) {
+        case "profile":
+        case "invitations":
+          return;
+        case "admin":
+          if (actor.systemRole !== "admin") deny();
+          return;
+        case "workspaces": {
+          if (route === "/api/workspaces") return;
+          const id = uuidSchema.safeParse(context.params.workspaceId);
+          if (!id.success) return;
+          const role = await workspaceRole(actor, id.data);
+          if (!role || (method !== "GET" && role !== "manager")) deny();
+          return;
+        }
+        case "canvases":
+        case "live": {
+          if (route === "/api/canvases") return;
+          const parsed = canvasIdParamsSchema.safeParse(context.params);
+          if (!parsed.success) return;
+          const role = await canvasRole(actor, parsed.data.canvasId);
+          const managerOnly =
+            route.includes("/members") ||
+            route.includes("/invitations") ||
+            (route === "/api/canvases/:canvasId" && method !== "GET");
+          if (!role || (managerOnly && role !== "manager") || (method !== "GET" && role === "viewer")) deny();
+          return;
+        }
+        case "entities":
+        case "connections": {
+          const parsed =
+            access === "entities"
+              ? entityIdParamsSchema.safeParse(context.params)
+              : connectionIdParamsSchema.safeParse(context.params);
+          if (!parsed.success) return;
+          const id = "entityId" in parsed.data ? parsed.data.entityId : parsed.data.connectionId;
+          const kind = access === "entities" ? "entity" : "connection";
+          if ((await objectAccess(actor, kind, id, method === "GET" ? "read" : "write")) === "denied") deny();
+          return;
+        }
+        default:
+          // No access class: deny until the route is classified in routeAccess.
+          deny();
       }
     });
 }
