@@ -134,6 +134,86 @@ export async function materializeLinkViewer(actor: Actor, canvasId: string): Pro
   if (existing) return;
   await db.insert(canvasMembers).values({ canvasId, userId: actor.id, role: "viewer" }).onConflictDoNothing();
 }
+
+export type ObjectKind = "entity" | "connection";
+
+/** Whether the canvas shows the entity (placement) or connection (link). */
+export async function objectOnCanvas(kind: ObjectKind, objectId: string, canvasId: string): Promise<boolean> {
+  const [row] =
+    kind === "entity"
+      ? await db
+          .select({ canvasId: canvasNodes.canvasId })
+          .from(canvasNodes)
+          .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.entityId, objectId)))
+          .limit(1)
+      : await db
+          .select({ canvasId: canvasConnections.canvasId })
+          .from(canvasConnections)
+          .where(and(eq(canvasConnections.canvasId, canvasId), eq(canvasConnections.connectionId, objectId)))
+          .limit(1);
+  return !!row;
+}
+
+async function linkSharedCanvas(canvasId: string) {
+  const [canvas] = await db
+    .select({ id: canvases.id })
+    .from(canvases)
+    .where(and(eq(canvases.id, canvasId), eq(canvases.shareMode, "link")))
+    .limit(1);
+  return !!canvas;
+}
+
+/**
+ * The access rule for an entity or connection. Workspace managers (and system admins) may read and
+ * write. Otherwise the canvases of the object's workspace that show it decide: reading needs a role
+ * on one of them or one of them shared by link; writing needs the editor role on all of them.
+ * "missing" means the object does not exist.
+ */
+export async function objectAccess(
+  actor: Actor,
+  kind: ObjectKind,
+  objectId: string,
+  mode: "read" | "write",
+): Promise<"allowed" | "denied" | "missing"> {
+  const [object] =
+    kind === "entity"
+      ? await db.select({ workspaceId: entities.workspaceId }).from(entities).where(eq(entities.id, objectId)).limit(1)
+      : await db
+          .select({ workspaceId: connections.workspaceId })
+          .from(connections)
+          .where(eq(connections.id, objectId))
+          .limit(1);
+  if (!object) return "missing";
+  if ((await workspaceRole(actor, object.workspaceId)) === "manager") return "allowed";
+  const canvasIds = (
+    kind === "entity"
+      ? await db
+          .select({ canvasId: canvasNodes.canvasId })
+          .from(canvasNodes)
+          .innerJoin(canvases, eq(canvases.id, canvasNodes.canvasId))
+          .where(and(eq(canvasNodes.entityId, objectId), eq(canvases.workspaceId, object.workspaceId)))
+      : await db
+          .select({ canvasId: canvasConnections.canvasId })
+          .from(canvasConnections)
+          .innerJoin(canvases, eq(canvases.id, canvasConnections.canvasId))
+          .where(and(eq(canvasConnections.connectionId, objectId), eq(canvases.workspaceId, object.workspaceId)))
+  ).map((row) => row.canvasId);
+  if (!canvasIds.length) return "denied";
+  const memberships = await db
+    .select({ canvasId: canvasMembers.canvasId, role: canvasMembers.role })
+    .from(canvasMembers)
+    .where(and(eq(canvasMembers.userId, actor.id), inArray(canvasMembers.canvasId, canvasIds)));
+  const roles = new Map(memberships.map((row) => [row.canvasId, row.role]));
+  if (mode === "write") return canvasIds.every((id) => roles.get(id) === "editor") ? "allowed" : "denied";
+  if (canvasIds.some((id) => roles.has(id))) return "allowed";
+  const [shared] = await db
+    .select({ id: canvases.id })
+    .from(canvases)
+    .where(and(inArray(canvases.id, canvasIds), eq(canvases.shareMode, "link")))
+    .limit(1);
+  return shared ? "allowed" : "denied";
+}
+
 const publicCanvasRoutes = new Set([
   "/api/canvases/:canvasId",
   "/api/canvases/:canvasId/graph",
@@ -150,31 +230,15 @@ async function publicReadAllowed(
   if (method !== "GET") return false;
   if (publicCanvasRoutes.has(route)) {
     const parsed = canvasIdParamsSchema.safeParse(params);
-    if (!parsed.success) return false;
-    const [canvas] = await db
-      .select({ id: canvases.id })
-      .from(canvases)
-      .where(and(eq(canvases.id, parsed.data.canvasId), eq(canvases.shareMode, "link")))
-      .limit(1);
-    return !!canvas;
+    return parsed.success && (await linkSharedCanvas(parsed.data.canvasId));
   }
   if (route !== "/api/entities/:entityId") return false;
   const entity = entityIdParamsSchema.safeParse(params);
   const canvasId = canvasIdQuery ? uuidSchema.safeParse(canvasIdQuery) : null;
   if (!entity.success || !canvasId?.success) return false;
-  const [placement] = await db
-    .select({ entityId: canvasNodes.entityId })
-    .from(canvasNodes)
-    .innerJoin(canvases, eq(canvases.id, canvasNodes.canvasId))
-    .where(
-      and(
-        eq(canvasNodes.canvasId, canvasId.data),
-        eq(canvasNodes.entityId, entity.data.entityId),
-        eq(canvases.shareMode, "link"),
-      ),
-    )
-    .limit(1);
-  return !!placement;
+  return (
+    (await linkSharedCanvas(canvasId.data)) && (await objectOnCanvas("entity", entity.data.entityId, canvasId.data))
+  );
 }
 function unauthorized(message: string): never {
   throw Object.assign(new Error(message), { status: 401 });
@@ -265,81 +329,13 @@ export function accessGuard() {
       const isEntityRoute = route === "/api/entities/:entityId";
       const isConnectionRoute = route === "/api/connections/:connectionId";
       if (isEntityRoute || isConnectionRoute) {
-        let resourceId: string;
-        if (isEntityRoute) {
-          const parsed = entityIdParamsSchema.safeParse(context.params);
-          if (!parsed.success) return;
-          resourceId = parsed.data.entityId;
-        } else {
-          const parsed = connectionIdParamsSchema.safeParse(context.params);
-          if (!parsed.success) return;
-          resourceId = parsed.data.connectionId;
-        }
-        const [resource] = isEntityRoute
-          ? await db
-              .select({ workspaceId: entities.workspaceId })
-              .from(entities)
-              .where(eq(entities.id, resourceId))
-              .limit(1)
-          : await db
-              .select({ workspaceId: connections.workspaceId })
-              .from(connections)
-              .where(eq(connections.id, resourceId))
-              .limit(1);
-        if (!resource) return;
-        if ((await workspaceRole(actor, resource.workspaceId)) === "manager") return;
-        const rows = isEntityRoute
-          ? await db
-              .select({ canvasId: canvasNodes.canvasId })
-              .from(canvasNodes)
-              .innerJoin(canvases, eq(canvases.id, canvasNodes.canvasId))
-              .where(and(eq(canvasNodes.entityId, resourceId), eq(canvases.workspaceId, resource.workspaceId)))
-          : await db
-              .select({ canvasId: canvasConnections.canvasId })
-              .from(canvasConnections)
-              .innerJoin(canvases, eq(canvases.id, canvasConnections.canvasId))
-              .where(
-                and(eq(canvasConnections.connectionId, resourceId), eq(canvases.workspaceId, resource.workspaceId)),
-              );
-        if (!rows.length) return deny();
-        const memberships = await db
-          .select({ canvasId: canvasMembers.canvasId, role: canvasMembers.role })
-          .from(canvasMembers)
-          .where(
-            and(
-              eq(canvasMembers.userId, actor.id),
-              inArray(
-                canvasMembers.canvasId,
-                rows.map((row) => row.canvasId),
-              ),
-            ),
-          );
-        const roles = new Map(memberships.map((row) => [row.canvasId, row.role]));
-        const linkSharedCanvasIds =
-          context.request.method === "GET"
-            ? new Set(
-                (
-                  await db
-                    .select({ id: canvases.id })
-                    .from(canvases)
-                    .where(
-                      and(
-                        inArray(
-                          canvases.id,
-                          rows.map((row) => row.canvasId),
-                        ),
-                        eq(canvases.shareMode, "link"),
-                      ),
-                    )
-                ).map((row) => row.id),
-              )
-            : new Set<string>();
-        if (
-          context.request.method === "GET"
-            ? !rows.some((row) => roles.has(row.canvasId) || linkSharedCanvasIds.has(row.canvasId))
-            : rows.some((row) => roles.get(row.canvasId) !== "editor")
-        )
-          return deny();
+        const parsed = isEntityRoute
+          ? entityIdParamsSchema.safeParse(context.params)
+          : connectionIdParamsSchema.safeParse(context.params);
+        if (!parsed.success) return;
+        const id = "entityId" in parsed.data ? parsed.data.entityId : parsed.data.connectionId;
+        const mode = context.request.method === "GET" ? "read" : "write";
+        if ((await objectAccess(actor, isEntityRoute ? "entity" : "connection", id, mode)) === "denied") return deny();
         return;
       }
     });
