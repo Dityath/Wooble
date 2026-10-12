@@ -25,7 +25,16 @@ import {
 } from "@wooble/db";
 import { canvasSubtreeIds } from "@wooble/domain";
 import { badRequest, notFound } from "../../lib/http-error";
-import { requireActor, canvasRole, hashToken, newToken, materializeLinkViewer, type Api } from "../../lib/auth";
+import {
+  requireActor,
+  canvasRole,
+  hashToken,
+  newToken,
+  materializeLinkViewer,
+  workspaceRole,
+  type Actor,
+  type Api,
+} from "../../lib/auth";
 import { listCanvasEvents, recordCanvasEvent } from "./activity";
 import { applyNextUndo } from "./undo";
 
@@ -750,10 +759,18 @@ export function canvasRoutes(app: Api) {
         .from(entities)
         .where(inArray(entities.id, [...referencedEntityIds]));
       const entitiesById = new Map(referencedEntities.map((entity) => [entity.id, entity]));
-      if ([...referencedEntityIds].some((entityId) => entitiesById.get(entityId)?.workspaceId !== canvas.workspaceId)) {
+      const existingByEntityId = new Map(existingRows.map((placement) => [placement.entityId, placement]));
+      // Placing an entity on this canvas exposes it to everyone who can read the canvas, and the object write rule then
+      // requires editor access here too. Only someone who can already read the entity may add it. An unreadable entity
+      // gets the same response as a missing one, so the response does not confirm that it exists.
+      const newEntityIds = [...placementEntityIds].filter((entityId) => !existingByEntityId.has(entityId));
+      if (
+        [...referencedEntityIds].some((entityId) => entitiesById.get(entityId)?.workspaceId !== canvas.workspaceId) ||
+        !(await canReadEntities(tx, context.actor, canvas.workspaceId, newEntityIds))
+      ) {
         return {
           kind: "invalid" as const,
-          message: "Placement entities and parents must belong to the canvas workspace",
+          message: "Placement entities and parents must belong to the canvas workspace and be visible to you",
         };
       }
 
@@ -770,7 +787,6 @@ export function canvasRoutes(app: Api) {
         return { kind: "invalid" as const, message: "Parent relationships cannot contain a cycle" };
       }
 
-      const existingByEntityId = new Map(existingRows.map((placement) => [placement.entityId, placement]));
       const changedPlacements = body.data.placements.filter((placement) => {
         const existing = existingByEntityId.get(placement.entityId);
         return (
@@ -874,6 +890,31 @@ export function canvasRoutes(app: Api) {
     }
     return { undone: true, action: result.action, skipped: result.skipped };
   });
+}
+
+type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Whether the actor can read every entity, using the read rule of the entity routes: a workspace manager or system admin,
+ * or a role on (or a link share of) a canvas in the workspace that already shows the entity.
+ */
+async function canReadEntities(
+  tx: Transaction,
+  actor: Actor | null,
+  workspaceId: string,
+  entityIds: string[],
+): Promise<boolean> {
+  if (!entityIds.length) return true;
+  if (!actor) return false;
+  if ((await workspaceRole(actor, workspaceId)) === "manager") return true;
+  const rows = await tx
+    .select({ entityId: canvasNodes.entityId, shareMode: canvases.shareMode, role: canvasMembers.role })
+    .from(canvasNodes)
+    .innerJoin(canvases, eq(canvases.id, canvasNodes.canvasId))
+    .leftJoin(canvasMembers, and(eq(canvasMembers.canvasId, canvases.id), eq(canvasMembers.userId, actor.id)))
+    .where(and(inArray(canvasNodes.entityId, entityIds), eq(canvases.workspaceId, workspaceId)));
+  const readable = new Set(rows.filter((row) => row.role || row.shareMode === "link").map((row) => row.entityId));
+  return entityIds.every((entityId) => readable.has(entityId));
 }
 
 function connectionTitle(
