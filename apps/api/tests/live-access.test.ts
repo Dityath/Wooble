@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { sql } from "drizzle-orm";
 import { Elysia } from "elysia";
 import { db } from "@wooble/db";
@@ -182,6 +182,30 @@ describe("live canvas socket", () => {
     await Bun.sleep(50);
     expect(outsiderLive.messages).toEqual([]);
     expect(anonymousLive.messages).toEqual([]);
+    expect(types(ownerLive)).toEqual(["presence"]);
+  });
+
+  it("closes with 1011, before any presence, when the access check cannot run", async () => {
+    const { owner, payments } = await liveFixture();
+    const editor = await api.register("Live Unchecked");
+    await joinCanvas(owner, editor, payments, "editor");
+    actors.set(owner.session, actor(owner));
+    actors.set(editor.session, actor(editor));
+    const ownerLive = openLive("unguarded", payments, owner.session);
+    await received(ownerLive, "presence");
+
+    // The next query is the open-time session check of the editor's socket.
+    const select = spyOn(db, "select").mockImplementationOnce(() => {
+      throw new Error("database unavailable");
+    });
+    try {
+      const editorLive = openLive("unguarded", payments, editor.session);
+      expect(await closedWithin(editorLive)).toEqual({ code: 1011, reason: "Access check unavailable" });
+      expect(editorLive.messages).toEqual([]);
+    } finally {
+      select.mockRestore();
+    }
+    await Bun.sleep(50);
     expect(types(ownerLive)).toEqual(["presence"]);
   });
 

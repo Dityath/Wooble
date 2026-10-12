@@ -5,7 +5,7 @@ import { createApp } from "../../src/app";
 
 export const password = "WoobleTestPassword-2026";
 
-type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+type Method = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 /**
  * An in-process API client with fictional, uniquely named accounts for one test file. `options` go to

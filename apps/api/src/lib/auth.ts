@@ -355,6 +355,8 @@ export function accessGuard() {
         unauthorized("Sign in to continue");
       }
       const method = context.request.method;
+      // Elysia answers HEAD with the GET handler, so it reads like GET.
+      const reads = method === "GET" || method === "HEAD";
       // Invalid params identify nothing, so they pass through and the handler answers 400. An entity
       // or connection that does not exist passes through to the handler's 404. A missing workspace
       // or canvas is denied like one without a role (admins get the workspace handler's 404).
@@ -370,7 +372,7 @@ export function accessGuard() {
           const id = uuidSchema.safeParse(context.params.workspaceId);
           if (!id.success) return;
           const role = await workspaceRole(actor, id.data);
-          if (!role || (method !== "GET" && role !== "manager")) deny();
+          if (!role || (!reads && role !== "manager")) deny();
           return;
         }
         case "canvases":
@@ -382,8 +384,8 @@ export function accessGuard() {
           const managerOnly =
             route.includes("/members") ||
             route.includes("/invitations") ||
-            (route === "/api/canvases/:canvasId" && method !== "GET");
-          if (!role || (managerOnly && role !== "manager") || (method !== "GET" && role === "viewer")) deny();
+            (route === "/api/canvases/:canvasId" && !reads);
+          if (!role || (managerOnly && role !== "manager") || (!reads && role === "viewer")) deny();
           return;
         }
         case "entities":
@@ -395,7 +397,7 @@ export function accessGuard() {
           if (!parsed.success) return;
           const id = "entityId" in parsed.data ? parsed.data.entityId : parsed.data.connectionId;
           const kind = access === "entities" ? "entity" : "connection";
-          if ((await objectAccess(actor, kind, id, method === "GET" ? "read" : "write")) === "denied") deny();
+          if ((await objectAccess(actor, kind, id, reads ? "read" : "write")) === "denied") deny();
           return;
         }
         default:

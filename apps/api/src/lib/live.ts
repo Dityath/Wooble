@@ -113,9 +113,16 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
     for (const peer of rooms.get(canvasId) ?? []) if (peer !== except) send(peer, message);
   }
   async function revalidatePeers(affected: (peer: Peer) => boolean) {
-    for (const peer of [...connected]) {
-      if (affected(peer) && !(await canReadCanvas(peer, peer.canvasId))) revoke(peer);
-    }
+    // Checked in parallel, and one failed check does not stop the rest; the periodic recheck retries it.
+    await Promise.all(
+      [...connected].filter(affected).map(async (peer) => {
+        try {
+          if (!(await canReadCanvas(peer, peer.canvasId))) revoke(peer);
+        } catch (error) {
+          console.error("Could not recheck live canvas access", error);
+        }
+      }),
+    );
   }
   const closeRevokedPeers = (canvasId: string) => revalidatePeers((peer) => peer.canvasId === canvasId);
   /** Rechecks the user's sockets after a sign-out, a password change, or a system role change. */

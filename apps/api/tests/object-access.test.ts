@@ -145,3 +145,16 @@ describe("entity and connection routes", () => {
     ).toBe(403);
   });
 });
+
+describe("HEAD requests", () => {
+  it("follow the read rule, like the GET handlers that answer them", async () => {
+    const { owner, orders, source } = await sharedObjects();
+    const viewer = await api.register("Head Viewer");
+    const outsider = await api.register("Head Outsider");
+    await joinCanvas(owner, viewer, orders, "viewer");
+
+    expect((await api.request("HEAD", `/api/entities/${source}`, viewer.session)).status).toBe(200);
+    expect((await api.request("HEAD", `/api/canvases/${orders}`, viewer.session)).status).toBe(200);
+    expect((await api.request("HEAD", `/api/entities/${source}`, outsider.session)).status).toBe(403);
+  });
+});
