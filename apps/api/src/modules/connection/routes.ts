@@ -4,6 +4,7 @@ import { db, connections, entities } from "@wooble/db";
 import { badRequest, notFound } from "../../lib/http-error";
 import type { Api } from "../../lib/auth";
 import { lockCanvasesForConnection, recordCanvasEvent } from "../canvas/activity";
+import { describeUpdate } from "../canvas/undo";
 
 export function connectionRoutes(app: Api) {
   app.get("/api/connections/:connectionId", async (context) => {
@@ -61,8 +62,11 @@ export function connectionRoutes(app: Api) {
         })
         .where(eq(connections.id, params.data.connectionId))
         .returning();
-      // The history row commits or rolls back with the change it describes.
-      for (const canvasId of canvasIds) {
+      // The history row commits or rolls back with the change it describes. It
+      // holds previous values for the changed fields and keys only; a save that
+      // changed nothing leaves no history.
+      const change = describeUpdate("connection", current, result);
+      for (const canvasId of change ? canvasIds : []) {
         await recordCanvasEvent(tx, {
           canvasId,
           actor: context.actor,
@@ -70,15 +74,7 @@ export function connectionRoutes(app: Api) {
           targetType: "connection",
           targetId: result.id,
           targetName: result.label || "Connection",
-          metadata: {
-            fields: Object.keys(body.data),
-            previous: {
-              type: current.type,
-              label: current.label,
-              description: current.description,
-              metadata: current.metadata,
-            },
-          },
+          metadata: { ...change },
         });
       }
       return result;

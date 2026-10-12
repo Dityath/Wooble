@@ -195,4 +195,28 @@ describe("undo is ordered after concurrently committed edits", () => {
       { action: "canvas.undo", actorUserId: owner.user.id },
     ]);
   });
+
+  it("reverts only the rename when a collaborator's documentation edit commits while the undo waits", async () => {
+    const { owner, editor, canvasId, service, entity } = await sharedCanvas();
+    expect(
+      (await api.request("PATCH", `/api/entities/${service}`, owner.session, { name: "Order Service" })).status,
+    ).toBe(200);
+
+    const resume = await pauseEventInserts();
+    const collaborator = api.request("PATCH", `/api/entities/${service}`, editor.session, {
+      metadata: { documentation: "Reserves stock before charging." },
+    });
+    await waitForLockWaiters(1);
+    const undo = api.request("POST", `/api/canvases/${canvasId}/undo`, owner.session);
+    await waitForLockWaiters(2);
+    await resume();
+
+    expect((await collaborator).status).toBe(200);
+    const undone = await undo;
+    expect(await undone.json()).toEqual({ undone: true, action: "entity.updated", skipped: [] });
+    expect(await entity(service)).toMatchObject({
+      name: "Orders API",
+      metadata: { documentation: "Reserves stock before charging." },
+    });
+  });
 });

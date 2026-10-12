@@ -48,6 +48,137 @@ export async function markUndone(tx: Transaction, eventId: string) {
   await tx.update(canvasEvents).set({ undoneAt: new Date() }).where(eq(canvasEvents.id, eventId));
 }
 
+export type UndoTarget = "entity" | "connection";
+
+/** What a delete covers when its snapshot hooks run; connection deletes have no entity ids. */
+export interface DeleteScope {
+  canvasId: string;
+  entityIds: string[];
+  connectionIds: string[];
+}
+
+/**
+ * Lets a feature that keeps its own rows next to an entity or connection put
+ * them back when canvas undo restores a delete. `capture` runs inside the
+ * delete transaction before any row is removed and returns JSON stored on the
+ * event; `restore` runs inside the undo transaction after the core rows exist.
+ */
+export interface DeleteSnapshotHook {
+  capture(tx: Transaction, scope: DeleteScope): Promise<unknown>;
+  restore(tx: Transaction, scope: DeleteScope, snapshot: unknown): Promise<void>;
+}
+
+const registry = {
+  irreversibleActions: new Set<string>(),
+  managedMetadataKeys: { entity: new Set<string>(), connection: new Set<string>() },
+  deleteHooks: { entity: new Map<string, DeleteSnapshotHook>(), connection: new Map<string, DeleteSnapshotHook>() },
+};
+
+/**
+ * Registration points for later features. Each call returns a function that
+ * removes the registration again.
+ *
+ * - An irreversible action is never undone. It also acts as a barrier: an
+ *   older event touching the same objects is skipped as a conflict, because
+ *   undoing it would reach back across the irreversible change.
+ * - A managed metadata key belongs to another feature's workflow; canvas undo
+ *   never restores it and never treats it as an undo conflict.
+ * - A delete hook snapshots and restores extra rows for entity subtree and
+ *   connection deletes under its own key.
+ */
+export const undoRegistry = {
+  registerIrreversibleAction(action: CanvasEventAction) {
+    registry.irreversibleActions.add(action);
+    return () => void registry.irreversibleActions.delete(action);
+  },
+  registerManagedMetadataKey(target: UndoTarget, key: string) {
+    registry.managedMetadataKeys[target].add(key);
+    return () => void registry.managedMetadataKeys[target].delete(key);
+  },
+  registerDeleteHook(target: UndoTarget, key: string, hook: DeleteSnapshotHook) {
+    if (registry.deleteHooks[target].has(key)) throw new Error(`Delete hook ${target}:${key} is already registered`);
+    registry.deleteHooks[target].set(key, hook);
+    return () => void registry.deleteHooks[target].delete(key);
+  },
+};
+
+function isIrreversible(action: string) {
+  return registry.irreversibleActions.has(action);
+}
+
+/** Runs every registered delete hook; the result is stored on the delete event under `extensions`. */
+export async function captureDeleteSnapshots(
+  tx: Transaction,
+  target: UndoTarget,
+  scope: DeleteScope,
+): Promise<Record<string, unknown> | undefined> {
+  const hooks = registry.deleteHooks[target];
+  if (!hooks.size) return undefined;
+  const snapshots: Record<string, unknown> = {};
+  for (const [key, hook] of hooks) snapshots[key] = await hook.capture(tx, scope);
+  return snapshots;
+}
+
+async function restoreDeleteSnapshots(
+  tx: Transaction,
+  target: UndoTarget,
+  scope: DeleteScope,
+  metadata: Record<string, unknown>,
+) {
+  const stored = metadata.extensions;
+  if (!stored || typeof stored !== "object") return;
+  for (const [key, hook] of registry.deleteHooks[target]) {
+    // A snapshot whose hook is no longer registered is left alone.
+    if (key in stored) await hook.restore(tx, scope, (stored as Record<string, unknown>)[key]);
+  }
+}
+
+const ENTITY_FIELDS = ["type", "name", "description"] as const;
+const CONNECTION_FIELDS = ["type", "label", "description"] as const;
+
+/** The metadata stored on `entity.updated` and `connection.updated` events from PATCH. */
+export interface UpdateEventMetadata {
+  /** Top-level fields whose value changed, `metadata` included when any key did. */
+  fields: string[];
+  /** Metadata keys whose value changed. Its presence marks the field-scoped format. */
+  metadataKeys: string[];
+  /** Previous values of the changed fields and keys only; `null` marks a key that was absent. */
+  previous: Record<string, unknown> & { metadata?: Record<string, unknown> };
+}
+
+/**
+ * Describes an update for history and undo: only what actually changed, with
+ * previous values for exactly those fields and metadata keys. Returns null
+ * when the update changed nothing.
+ */
+export function describeUpdate(
+  target: UndoTarget,
+  before: Record<string, unknown> & { metadata: unknown },
+  after: Record<string, unknown> & { metadata: unknown },
+): UpdateEventMetadata | null {
+  const fields: string[] = [];
+  const previous: UpdateEventMetadata["previous"] = {};
+  for (const field of target === "entity" ? ENTITY_FIELDS : CONNECTION_FIELDS) {
+    if (sameValue(before[field], after[field])) continue;
+    fields.push(field);
+    previous[field] = before[field] ?? null;
+  }
+  const beforeMetadata = (before.metadata ?? {}) as Record<string, unknown>;
+  const afterMetadata = (after.metadata ?? {}) as Record<string, unknown>;
+  const metadataKeys = [...new Set([...Object.keys(beforeMetadata), ...Object.keys(afterMetadata)])]
+    .filter((key) => !sameValue(beforeMetadata[key], afterMetadata[key]))
+    .sort();
+  if (metadataKeys.length) {
+    fields.push("metadata");
+    previous.metadata = Object.fromEntries(metadataKeys.map((key) => [key, beforeMetadata[key] ?? null]));
+  }
+  return fields.length ? { fields, metadataKeys, previous } : null;
+}
+
+function sameValue(a: unknown, b: unknown) {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
+
 export type UndoSkipReason = "conflict" | "no-op";
 
 export interface UndoSkippedEvent {
@@ -85,12 +216,18 @@ export async function applyNextUndo(tx: Transaction, canvasId: string, actorId: 
     .limit(500);
   const skipped: UndoSkippedEvent[] = [];
   for (const [index, candidate] of rows.entries()) {
-    if (candidate.actorUserId !== actorId) continue;
+    if (candidate.actorUserId !== actorId || isIrreversible(candidate.action)) continue;
     const blocked = await undoBlockedByCurrentState(tx, candidate);
     const affected = await affectedObjectsFor(tx, candidate);
     const conflicted =
       !blocked &&
-      rows.slice(0, index).some((later) => later.actorUserId !== actorId && overlaps(affected, affectedObjects(later)));
+      rows
+        .slice(0, index)
+        .some(
+          (later) =>
+            (later.actorUserId !== actorId || isIrreversible(later.action)) &&
+            overlaps(affected, affectedObjects(later)),
+        );
     if (blocked || conflicted) {
       skipped.push({ action: candidate.action, targetName: candidate.targetName, reason: "conflict" });
       continue;
@@ -240,9 +377,60 @@ async function undoBlockedByCurrentState(tx: Transaction, event: CanvasEventRow)
 }
 
 interface AffectedObjects {
+  /** Objects the event affects as a whole. */
   entityIds: Set<string>;
   connectionIds: Set<string>;
+  /** Field-scoped updates: object id to fields such as `name` or `metadata.documentation`. */
+  entityFields: Map<string, Set<string>>;
+  connectionFields: Map<string, Set<string>>;
   canvasFields: Set<string>;
+}
+
+/** Stands for "some metadata key" in events recorded before keys were tracked. */
+const ANY_METADATA_KEY = "metadata.*";
+
+interface UpdateScope {
+  /** Top-level fields to restore, `metadata` included when any key is restored. */
+  fields: Set<string>;
+  /** Metadata keys to restore, or null for a legacy event that did not record them. */
+  metadataKeys: Set<string> | null;
+}
+
+/**
+ * Which parts of an object an `entity.updated` or `connection.updated` event
+ * changed. New events list changed fields and metadata keys. Legacy events
+ * list the requested fields (a reliable superset) but not the keys; events
+ * without a field list count as touching every field. Managed metadata keys
+ * are never in scope.
+ */
+function updateScope(target: UndoTarget, metadata: Record<string, unknown>): UpdateScope {
+  const known: readonly string[] = [...(target === "entity" ? ENTITY_FIELDS : CONNECTION_FIELDS), "metadata"];
+  const listed = Array.isArray(metadata.fields)
+    ? metadata.fields.filter((field): field is string => typeof field === "string" && known.includes(field))
+    : known;
+  const fields = new Set(listed);
+  if (!fields.has("metadata")) return { fields, metadataKeys: new Set() };
+  if (!Array.isArray(metadata.metadataKeys)) return { fields, metadataKeys: null };
+  const managed = registry.managedMetadataKeys[target];
+  const metadataKeys = new Set(
+    metadata.metadataKeys.filter((key): key is string => typeof key === "string" && !managed.has(key)),
+  );
+  if (!metadataKeys.size) fields.delete("metadata");
+  return { fields, metadataKeys };
+}
+
+function updateFieldTokens(target: UndoTarget, metadata: Record<string, unknown>): Set<string> {
+  const scope = updateScope(target, metadata);
+  const tokens = new Set([...scope.fields].filter((field) => field !== "metadata"));
+  if (scope.fields.has("metadata")) {
+    if (scope.metadataKeys === null) tokens.add(ANY_METADATA_KEY);
+    else for (const key of scope.metadataKeys) tokens.add(`metadata.${key}`);
+  }
+  return tokens;
+}
+
+function addFields(map: Map<string, Set<string>>, id: string | null, fields: Set<string>) {
+  if (id && fields.size) map.set(id, fields);
 }
 
 const CANVAS_FIELDS = ["name", "description", "shareMode"] as const;
@@ -258,12 +446,20 @@ function canvasUpdatedFields(metadata: Record<string, unknown>): Set<string> {
 }
 
 function affectedObjects(event: CanvasEventRow): AffectedObjects {
-  const affected: AffectedObjects = { entityIds: new Set(), connectionIds: new Set(), canvasFields: new Set() };
+  const affected: AffectedObjects = {
+    entityIds: new Set(),
+    connectionIds: new Set(),
+    entityFields: new Map(),
+    connectionFields: new Map(),
+    canvasFields: new Set(),
+  };
   const metadata = (event.metadata ?? {}) as Record<string, unknown>;
   switch (event.action) {
     case "entity.created":
-    case "entity.updated":
       if (event.targetId) affected.entityIds.add(event.targetId);
+      break;
+    case "entity.updated":
+      addFields(affected.entityFields, event.targetId, updateFieldTokens("entity", metadata));
       break;
     case "entity.deleted": {
       // Undoing a delete restores the whole recorded subtree.
@@ -279,8 +475,14 @@ function affectedObjects(event: CanvasEventRow): AffectedObjects {
       }
       break;
     }
-    case "connection.created":
     case "connection.updated":
+      addFields(
+        affected.connectionFields,
+        event.targetId,
+        metadata.field === "bend" ? new Set(["bend"]) : updateFieldTokens("connection", metadata),
+      );
+      break;
+    case "connection.created":
     case "connection.deleted":
       if (event.targetId) affected.connectionIds.add(event.targetId);
       break;
@@ -337,10 +539,33 @@ async function affectedObjectsFor(tx: Transaction, event: CanvasEventRow): Promi
 }
 
 function overlaps(a: AffectedObjects, b: AffectedObjects): boolean {
-  for (const id of a.entityIds) if (b.entityIds.has(id)) return true;
-  for (const id of a.connectionIds) if (b.connectionIds.has(id)) return true;
-  for (const field of a.canvasFields) if (b.canvasFields.has(field)) return true;
+  return (
+    objectsOverlap(a.entityIds, a.entityFields, b.entityIds, b.entityFields) ||
+    objectsOverlap(a.connectionIds, a.connectionFields, b.connectionIds, b.connectionFields) ||
+    [...a.canvasFields].some((field) => b.canvasFields.has(field))
+  );
+}
+
+/** A whole object overlaps any change to it; field-scoped updates overlap only on a shared field. */
+function objectsOverlap(
+  aWhole: Set<string>,
+  aFields: Map<string, Set<string>>,
+  bWhole: Set<string>,
+  bFields: Map<string, Set<string>>,
+): boolean {
+  for (const id of aWhole) if (bWhole.has(id) || bFields.has(id)) return true;
+  for (const id of bWhole) if (aFields.has(id)) return true;
+  for (const [id, fields] of aFields) {
+    const other = bFields.get(id);
+    if (other && fieldsOverlap(fields, other)) return true;
+  }
   return false;
+}
+
+function fieldsOverlap(a: Set<string>, b: Set<string>): boolean {
+  const anyKey = (fields: Set<string>) => [...fields].some((field) => field.startsWith("metadata."));
+  if ((a.has(ANY_METADATA_KEY) && anyKey(b)) || (b.has(ANY_METADATA_KEY) && anyKey(a))) return true;
+  return [...a].some((field) => b.has(field));
 }
 
 /**
@@ -395,22 +620,11 @@ async function applyUndo(tx: Transaction, event: CanvasEventRow): Promise<boolea
       // The canvas row is already locked; lock the entity next, the same order PATCH uses.
       const [current] = await tx.select().from(entities).where(eq(entities.id, entityId)).for("update").limit(1);
       if (!current) return false;
-      const next = {
-        type: previousField<EntityType>(metadata, "type", current.type),
-        name: previousField<string>(metadata, "name", current.name),
-        description: previousNullableField(metadata, "description"),
-        metadata: previousField<EntityMetadata>(metadata, "metadata", current.metadata),
-      };
-      if (
-        current.type === next.type &&
-        current.name === next.name &&
-        current.description === next.description &&
-        JSON.stringify(current.metadata ?? {}) === JSON.stringify(next.metadata ?? {})
-      )
-        return false;
+      const patch = fieldScopedRestore("entity", metadata, current);
+      if (!patch) return false;
       await tx
         .update(entities)
-        .set({ ...next, updatedAt: new Date() })
+        .set({ ...(patch as Partial<typeof entities.$inferInsert>), updatedAt: new Date() })
         .where(eq(entities.id, entityId));
       return true;
     }
@@ -446,18 +660,32 @@ async function applyUndo(tx: Transaction, event: CanvasEventRow): Promise<boolea
         .where(eq(canvases.id, event.canvasId));
       return true;
     }
-    case "connection.deleted":
-      return restoreConnection(
+    case "connection.deleted": {
+      const connection = snapshotValue<ConnectionSnapshot | undefined>(metadata, "connection");
+      if (!(await restoreConnection(tx, event.canvasId, connection))) return false;
+      await restoreDeleteSnapshots(
         tx,
-        event.canvasId,
-        snapshotValue<ConnectionSnapshot | undefined>(metadata, "connection"),
+        "connection",
+        { canvasId: event.canvasId, entityIds: [], connectionIds: connection ? [connection.id] : [] },
+        metadata,
       );
-    case "entity.deleted":
-      return restoreEntitySubtree(
+      return true;
+    }
+    case "entity.deleted": {
+      const snapshot = snapshotValue<Record<string, unknown>>(metadata, "snapshot") ?? {};
+      if (!(await restoreEntitySubtree(tx, event.canvasId, snapshot))) return false;
+      const ids = (rows: unknown) =>
+        (Array.isArray(rows) ? (rows as Array<{ id?: unknown }>) : [])
+          .map((row) => row?.id)
+          .filter((id): id is string => typeof id === "string");
+      await restoreDeleteSnapshots(
         tx,
-        event.canvasId,
-        snapshotValue<Record<string, unknown>>(metadata, "snapshot") ?? {},
+        "entity",
+        { canvasId: event.canvasId, entityIds: ids(snapshot.entities), connectionIds: ids(snapshot.connections) },
+        metadata,
       );
+      return true;
+    }
     case "canvas.auto_neat": {
       const previous = autoNeatPrevious(metadata);
       if (!previous.placements.length && !previous.connections.length) return false;
@@ -505,16 +733,57 @@ function snapshotValue<T>(metadata: Record<string, unknown>, field: string): T {
   return (metadata[field] ?? undefined) as T;
 }
 
+/**
+ * The columns an update event's undo writes: only the fields and metadata keys
+ * that event changed, so newer edits to anything else survive. Returns null
+ * when the object already holds those previous values.
+ *
+ * Legacy events stored the whole previous metadata without saying which keys
+ * changed. For those, the keys restored are the ones whose current value
+ * differs from that snapshot. This is safe because a legacy event conflicts
+ * with any later collaborator change to the object's metadata
+ * (`ANY_METADATA_KEY`), and undo walks the actor's own events newest first, so
+ * by the time a legacy event is reversed the current metadata is the state it
+ * left behind.
+ */
+function fieldScopedRestore(
+  target: UndoTarget,
+  metadata: Record<string, unknown>,
+  current: Record<string, unknown> & { metadata: unknown },
+): Record<string, unknown> | null {
+  const scope = updateScope(target, metadata);
+  const previous = (metadata.previous ?? {}) as Record<string, unknown>;
+  const patch: Record<string, unknown> = {};
+  for (const field of scope.fields) {
+    if (field === "metadata") continue;
+    const value = previous[field];
+    if (field === "description") patch.description = typeof value === "string" ? value : null;
+    else if (value !== undefined && value !== null) patch[field] = value;
+  }
+  if (scope.fields.has("metadata")) {
+    const currentMetadata = (current.metadata ?? {}) as Record<string, unknown>;
+    const previousMetadata = (previous.metadata ?? {}) as Record<string, unknown>;
+    const managed = registry.managedMetadataKeys[target];
+    const keys =
+      scope.metadataKeys ??
+      [...new Set([...Object.keys(previousMetadata), ...Object.keys(currentMetadata)])].filter(
+        (key) => !managed.has(key) && !sameValue(previousMetadata[key], currentMetadata[key]),
+      );
+    const next = { ...currentMetadata };
+    for (const key of keys) {
+      const value = previousMetadata[key];
+      if (value === undefined || value === null) delete next[key];
+      else next[key] = value;
+    }
+    patch.metadata = next;
+  }
+  return Object.entries(patch).some(([field, value]) => !sameValue(current[field], value)) ? patch : null;
+}
+
 function previousField<T>(metadata: Record<string, unknown>, field: string, fallback: T): T {
   const snapshot = metadata.previous as Record<string, unknown> | undefined;
   const value = snapshot?.[field];
   return (value === undefined || value === null ? fallback : value) as T;
-}
-
-function previousNullableField(metadata: Record<string, unknown>, field: string): string | null {
-  const snapshot = metadata.previous as Record<string, unknown> | undefined;
-  const value = snapshot?.[field];
-  return typeof value === "string" ? value : null;
 }
 
 async function restorePlacements(tx: Transaction, canvasId: string, placements: PlacementSnapshot[]) {
@@ -665,20 +934,12 @@ async function undoConnectionUpdated(
   }
   const [current] = await tx.select().from(connections).where(eq(connections.id, connectionId)).for("update").limit(1);
   if (!current) return false;
-  const next = {
-    type: previousField<ConnectionType>(metadata, "type", current.type),
-    label: previousField<string>(metadata, "label", current.label),
-    description: previousNullableField(metadata, "description"),
-    metadata: previousField<Record<string, unknown>>(metadata, "metadata", current.metadata),
-  };
-  if (
-    current.type === next.type &&
-    current.label === next.label &&
-    current.description === next.description &&
-    JSON.stringify(current.metadata ?? {}) === JSON.stringify(next.metadata ?? {})
-  )
-    return false;
-  await tx.update(connections).set(next).where(eq(connections.id, connectionId));
+  const patch = fieldScopedRestore("connection", metadata, current);
+  if (!patch) return false;
+  await tx
+    .update(connections)
+    .set(patch as Partial<typeof connections.$inferInsert>)
+    .where(eq(connections.id, connectionId));
   await touchCanvas(tx, canvasId);
   return true;
 }

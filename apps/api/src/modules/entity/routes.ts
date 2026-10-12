@@ -5,6 +5,7 @@ import type { EntityMetadata } from "@wooble/domain";
 import { badRequest, notFound } from "../../lib/http-error";
 import type { Api } from "../../lib/auth";
 import { lockCanvasesForEntity, recordCanvasEvent } from "../canvas/activity";
+import { describeUpdate } from "../canvas/undo";
 
 export function entityRoutes(app: Api) {
   app.get("/api/entities/:entityId", async (context) => {
@@ -47,8 +48,11 @@ export function entityRoutes(app: Api) {
         })
         .where(eq(entities.id, params.data.entityId))
         .returning();
-      // The history row commits or rolls back with the change it describes.
-      for (const canvasId of canvasIds) {
+      // The history row commits or rolls back with the change it describes. It
+      // holds previous values for the changed fields and keys only; a save that
+      // changed nothing leaves no history.
+      const change = describeUpdate("entity", current, updated);
+      for (const canvasId of change ? canvasIds : []) {
         await recordCanvasEvent(tx, {
           canvasId,
           actor: context.actor,
@@ -56,15 +60,7 @@ export function entityRoutes(app: Api) {
           targetType: "entity",
           targetId: updated.id,
           targetName: updated.name || "New node",
-          metadata: {
-            fields: Object.keys(body.data),
-            previous: {
-              type: current.type,
-              name: current.name,
-              description: current.description,
-              metadata: current.metadata,
-            },
-          },
+          metadata: { ...change },
         });
       }
       return { kind: "updated" as const, entity: updated };

@@ -27,7 +27,7 @@ import { canvasSubtreeIds } from "@wooble/domain";
 import { badRequest, notFound } from "../../lib/http-error";
 import { requireActor, canvasRole, hashToken, newToken, materializeLinkViewer, type Api } from "../../lib/auth";
 import { listCanvasEvents, recordCanvasEvent } from "./activity";
-import { applyNextUndo } from "./undo";
+import { applyNextUndo, captureDeleteSnapshots } from "./undo";
 
 const placementColumns = {
   entityId: canvasNodes.entityId,
@@ -174,7 +174,13 @@ export function canvasRoutes(app: Api) {
         targetType: "canvas",
         targetId: updated.id,
         targetName: updated.name,
-        metadata: { fields: Object.keys(body.data), previous },
+        // Previous values for the requested fields only; undo restores just those.
+        metadata: {
+          fields: Object.keys(body.data),
+          previous: Object.fromEntries(
+            Object.keys(body.data).map((field) => [field, previous[field as keyof typeof previous]]),
+          ),
+        },
       });
       return updated;
     });
@@ -577,6 +583,12 @@ export function canvasRoutes(app: Api) {
           and(eq(canvasConnections.canvasId, canvas.id), eq(canvasConnections.connectionId, params.data.connectionId)),
         )
         .limit(1);
+      if (!existing) return { kind: "not-found" as const };
+      const extensions = await captureDeleteSnapshots(tx, "connection", {
+        canvasId: canvas.id,
+        entityIds: [],
+        connectionIds: [params.data.connectionId],
+      });
       const [removed] = await tx
         .delete(canvasConnections)
         .where(
@@ -597,15 +609,14 @@ export function canvasRoutes(app: Api) {
         action: "connection.deleted",
         targetType: "connection",
         targetId: params.data.connectionId,
-        targetName: existing?.connection.label || "Connection",
+        targetName: existing.connection.label || "Connection",
         metadata: {
-          type: existing?.connection.type,
-          connection: existing
-            ? (() => {
-                const { createdAt: _createdAt, ...connection } = existing.connection;
-                return { ...connection, bend: existing.bend };
-              })()
-            : null,
+          type: existing.connection.type,
+          connection: (() => {
+            const { createdAt: _createdAt, ...connection } = existing.connection;
+            return { ...connection, bend: existing.bend };
+          })(),
+          ...(extensions ? { extensions } : {}),
         },
       });
       return { kind: "deleted" as const };
@@ -684,6 +695,11 @@ export function canvasRoutes(app: Api) {
           return { ...rest, bend };
         }),
       };
+      const extensions = await captureDeleteSnapshots(tx, "entity", {
+        canvasId: canvas.id,
+        entityIds,
+        connectionIds: linkIds,
+      });
       if (linkIds.length)
         await tx
           .delete(canvasConnections)
@@ -719,6 +735,7 @@ export function canvasRoutes(app: Api) {
           removedNodes: entityIds.length,
           removedConnections: linkIds.length,
           snapshot,
+          ...(extensions ? { extensions } : {}),
         },
       });
       return { kind: "deleted" as const, removedNodes: entityIds.length, removedConnections: linkIds.length };
