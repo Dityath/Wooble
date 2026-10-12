@@ -56,11 +56,21 @@ The proxy must terminate HTTPS. Session cookies are Secure for non-local product
 The `postgres-data` Docker volume contains Wooble's durable application data. Save a database backup before updating:
 
 ```sh
-docker compose --env-file .env.selfhost -f compose.selfhost.yml exec -T postgres \
-  pg_dump -U wooble -Fc wooble > wooble-backup.dump
+(umask 077 && mkdir -p backups && docker compose --env-file .env.selfhost -f compose.selfhost.yml exec -T postgres \
+  pg_dump -U wooble -Fc wooble > "backups/wooble-$(date -u +%Y%m%dT%H%M%SZ).dump")
 ```
 
-Store the backup outside the server as well. After updating the checkout, run the same `up --build -d` command. The migration service applies pending migrations before the API starts. Test a restore on a separate installation before depending on backups for recovery.
+The `umask` keeps the directory and the dump readable only by your user. `backups/` is excluded from Git and from the Docker build context, so a dump stored there is never copied into an image. Store a copy outside the server as well.
+
+Update to a tagged release rather than following `main`. `main` can contain migrations for features that are still in progress, and an applied migration can only be undone by restoring a backup. After the backup, check out the release you want and run the same `up --build -d` command:
+
+```sh
+git fetch --tags
+git checkout v0.1.0 # replace with the release you are installing
+docker compose --env-file .env.selfhost -f compose.selfhost.yml up --build -d
+```
+
+The migration service applies pending migrations before the API starts. Test a restore on a separate installation before depending on backups for recovery.
 
 ## Bun on the host
 
