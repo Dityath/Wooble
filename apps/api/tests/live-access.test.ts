@@ -49,9 +49,9 @@ afterEach(() => {
   for (const live of sockets.splice(0)) live.socket.close();
 });
 
-function openLive(server: keyof typeof origins, canvasId: string, session?: string): Live {
+function openLive(server: keyof typeof origins, canvasId: string, session?: string, origin = webOrigin): Live {
   const socket = new WebSocket(`${origins[server].replace(/^http/, "ws")}/api/canvases/${canvasId}/live`, {
-    headers: { origin: webOrigin, ...(session ? { cookie: session } : {}) },
+    headers: { origin, ...(session ? { cookie: session } : {}) },
   });
   const messages: Message[] = [];
   socket.addEventListener("message", (event) => messages.push(JSON.parse(String(event.data)) as Message));
@@ -141,6 +141,24 @@ describe("live canvas upgrade", () => {
     const refused = openLive("guarded", payments, outsider.session);
     expect(await refused.opened).toBe(false);
     expect(refused.messages).toEqual([]);
+  });
+
+  it("closes a socket with an invalid canvas ID or origin, and refuses a missing canvas", async () => {
+    const { owner, payments } = await liveFixture();
+    const invalid = { code: 1008, reason: "Invalid canvas or origin" };
+
+    // The guard leaves invalid IDs to the route, which closes the socket before any database check.
+    for (const canvasId of ["not-a-uuid", "-".repeat(36)]) {
+      const live = openLive("guarded", canvasId, owner.session);
+      expect(await closedWithin(live)).toEqual(invalid);
+      expect(live.messages).toEqual([]);
+    }
+    const otherSite = openLive("guarded", payments, owner.session, "https://another.example");
+    expect(await closedWithin(otherSite)).toEqual(invalid);
+    expect(otherSite.messages).toEqual([]);
+    const missing = crypto.randomUUID();
+    expect(await upgradeStatus(missing, owner.session)).toBe(403);
+    expect(await upgradeStatus(missing)).toBe(401);
   });
 });
 

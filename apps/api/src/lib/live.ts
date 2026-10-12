@@ -232,11 +232,13 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
         headers: Record<string, string | undefined>;
         actor: Actor | null;
       };
-      const canvasId = data.params.canvasId;
-      if (!/^[0-9a-f-]{36}$/i.test(canvasId) || !allowedWebOrigins.includes(data.headers.origin ?? "")) {
+      // accessGuard lets invalid params through, so validate the ID as the canvas routes do.
+      const params = canvasIdParamsSchema.safeParse(data.params);
+      if (!params.success || !allowedWebOrigins.includes(data.headers.origin ?? "")) {
         socket.close(1008, "Invalid canvas or origin");
         return;
       }
+      const canvasId = params.data.canvasId;
       ignoreOversizedMessages(socket);
       const id = crypto.randomUUID();
       const token = sessionToken(data.headers.cookie);
