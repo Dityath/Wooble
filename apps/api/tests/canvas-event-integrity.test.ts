@@ -220,3 +220,93 @@ describe("undo is ordered after concurrently committed edits", () => {
     });
   });
 });
+
+describe("the activity feed exposes summaries, not earlier content", () => {
+  type Activity = {
+    events: Array<{ action: string; targetName: string | null; metadata: Record<string, unknown>; undoneAt: unknown }>;
+  };
+
+  it("never shows a viewer or link guest earlier documentation, contracts, schema, or canvas text", async () => {
+    const { owner, canvasId, service, database, connectionId } = await sharedCanvas();
+    const viewer = await api.register("Event Viewer");
+    const token = await api.invite(owner.session, `/api/canvases/${canvasId}/invitations`, "viewer");
+    expect((await api.request("POST", `/api/invitations/${token}/accept`, viewer.session)).status).toBe(200);
+
+    const secrets = {
+      documentation: "Fictional draft: card numbers are logged here",
+      schemaSql: "create table draft_secret_cards (pan text);",
+      contractBody: "openapi: 3.1.0 # draft secret contract",
+      canvasDescription: "Draft secret canvas note",
+    };
+    const patch = (url: string, payload: unknown) => api.request("PATCH", url, owner.session, payload);
+    expect(
+      (await patch(`/api/entities/${service}`, { metadata: { documentation: secrets.documentation } })).status,
+    ).toBe(200);
+    expect((await patch(`/api/entities/${service}`, { metadata: { documentation: "Public notes" } })).status).toBe(200);
+    expect((await patch(`/api/entities/${database}`, { metadata: { schemaSql: secrets.schemaSql } })).status).toBe(200);
+    expect(
+      (await patch(`/api/connections/${connectionId}`, { metadata: { contractBody: secrets.contractBody } })).status,
+    ).toBe(200);
+    expect((await patch(`/api/connections/${connectionId}`, { metadata: { contractBody: null } })).status).toBe(200);
+    expect((await patch(`/api/canvases/${canvasId}`, { description: secrets.canvasDescription })).status).toBe(200);
+    expect((await patch(`/api/canvases/${canvasId}`, { description: "Public", shareMode: "link" })).status).toBe(200);
+    // Deletes snapshot the whole subtree, including the schema text.
+    expect((await api.request("DELETE", `/api/canvases/${canvasId}/entities/${database}`, owner.session)).status).toBe(
+      200,
+    );
+    // Rows written by earlier builds still hold full previous metadata.
+    await db.insert(canvasEvents).values({
+      canvasId,
+      actorUserId: owner.user.id,
+      actorName: "Event Owner",
+      action: "entity.updated",
+      targetType: "entity",
+      targetId: service,
+      targetName: "Orders API",
+      metadata: {
+        fields: ["name"],
+        previous: { name: "Orders API", metadata: { documentation: secrets.documentation } },
+      },
+    });
+
+    const viewerFeed = await api.json<Activity>("GET", `/api/canvases/${canvasId}/activity`, viewer.session);
+    // A signed-in non-member reads a link-shared canvas as a viewer; anonymous guests get no feed at all.
+    const linkGuest = await api.register("Link Guest");
+    const guestFeed = await api.json<Activity>("GET", `/api/canvases/${canvasId}/activity`, linkGuest.session);
+    expect((await api.request("GET", `/api/canvases/${canvasId}/activity`)).status).toBe(401);
+    for (const feed of [viewerFeed, guestFeed]) {
+      expect(feed.status).toBe(200);
+      const text = JSON.stringify(feed.body);
+      for (const secret of Object.values(secrets)) expect(text).not.toContain(secret);
+      expect(text).not.toContain('"previous"');
+      expect(text).not.toContain('"snapshot"');
+    }
+
+    const metadataFor = (action: string) =>
+      viewerFeed.body.events.filter((event) => event.action === action).map((event) => event.metadata);
+    expect(metadataFor("entity.deleted")).toEqual([{ removedNodes: 1, removedConnections: 1 }]);
+    expect(metadataFor("canvas.updated")).toEqual([
+      { fields: ["description", "shareMode"] },
+      { fields: ["description"] },
+    ]);
+    expect(metadataFor("connection.updated")).toEqual([
+      { fields: ["metadata"], metadataKeys: ["contractBody"] },
+      { fields: ["metadata"], metadataKeys: ["contractBody"] },
+    ]);
+    expect(metadataFor("entity.created")).toEqual([{ type: "database" }, { type: "service" }]);
+  });
+
+  it("keeps the undo summary the activity log shows", async () => {
+    const { owner, canvasId, service } = await sharedCanvas();
+    expect(
+      (await api.request("PATCH", `/api/entities/${service}`, owner.session, { name: "Order Service" })).status,
+    ).toBe(200);
+    expect((await api.request("POST", `/api/canvases/${canvasId}/undo`, owner.session)).status).toBe(200);
+    const feed = await api.json<Activity>("GET", `/api/canvases/${canvasId}/activity`, owner.session);
+    const [undo, update] = feed.body.events;
+    expect(undo).toMatchObject({ action: "canvas.undo", targetName: "Order Service", undoneAt: null });
+    expect(undo.metadata).toEqual({ undoOf: expect.any(String), undoneAction: "entity.updated", skipped: [] });
+    expect(update).toMatchObject({ action: "entity.updated", metadata: { fields: ["name"], metadataKeys: [] } });
+    expect(update.undoneAt).toEqual(expect.any(String));
+  });
+});

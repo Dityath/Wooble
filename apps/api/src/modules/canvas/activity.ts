@@ -35,6 +35,44 @@ export async function recordCanvasEvent(executor: Executor, input: CanvasEventIn
   });
 }
 
+/**
+ * The metadata each action exposes through the activity feed. Everything else
+ * stays server-side: previous values and delete snapshots hold old
+ * documentation, contract bodies and schema text that the canvas no longer
+ * shows, and any reader of the canvas, including a viewer or link guest, can
+ * read the feed.
+ */
+const activityMetadataKeys: Partial<Record<CanvasEventAction, readonly string[]>> = {
+  "entity.created": ["type"],
+  "entity.updated": ["fields", "metadataKeys"],
+  "entity.deleted": ["removedNodes", "removedConnections"],
+  "connection.created": ["type"],
+  "connection.updated": ["field", "fields", "metadataKeys"],
+  "connection.deleted": ["type"],
+  "canvas.updated": ["fields"],
+  "canvas.auto_neat": ["nodes", "connections"],
+  "canvas.undo": ["undoOf", "undoneAction", "skipped"],
+};
+
+function isSummaryValue(value: unknown): boolean {
+  if (value === null || ["string", "number", "boolean"].includes(typeof value)) return true;
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+export function activityMetadata(action: string, metadata: Record<string, unknown>): Record<string, unknown> {
+  const projected: Record<string, unknown> = {};
+  for (const key of activityMetadataKeys[action as CanvasEventAction] ?? []) {
+    const value = metadata[key];
+    if (key === "skipped" && Array.isArray(value)) {
+      projected.skipped = value.map((item) => {
+        const { action: skippedAction, targetName, reason } = (item ?? {}) as Record<string, unknown>;
+        return { action: skippedAction, targetName, reason };
+      });
+    } else if (value !== undefined && isSummaryValue(value)) projected[key] = value;
+  }
+  return projected;
+}
+
 export async function listCanvasEvents(canvasId: string, limit: number) {
   // The feed keeps the full history: undone events stay visible and are flagged to the UI.
   const rows = await db
@@ -51,7 +89,7 @@ export async function listCanvasEvents(canvasId: string, limit: number) {
     targetType: row.targetType,
     targetId: row.targetId,
     targetName: row.targetName,
-    metadata: row.metadata,
+    metadata: activityMetadata(row.action, row.metadata ?? {}),
     undoneAt: row.undoneAt ? row.undoneAt.toISOString() : null,
     createdAt: row.createdAt.toISOString(),
   }));

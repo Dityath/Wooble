@@ -150,6 +150,7 @@ export const canvasEventSchema = z.object({
   targetType: z.string(),
   targetId: z.string().uuid().nullable(),
   targetName: z.string().nullable(),
+  /** A per-action summary such as changed field names; never previous values or delete snapshots. */
   metadata: z.record(z.unknown()),
   undoneAt: z.string().nullable(),
   createdAt: z.string(),
