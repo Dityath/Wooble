@@ -85,13 +85,15 @@ For Internet access, use HTTPS at the reverse proxy. The same account and email 
 
 ## Configuration reference
 
+The API checks its configuration when it starts. If a setting is missing or invalid, it exits and lists each problem by name without printing secret values; check the API logs (`docker compose --env-file .env.selfhost -f compose.selfhost.yml logs api`). A common one is a plain `http://` address for another machine: production session cookies are Secure, so browsers would not keep the sign-in, and the API refuses to start rather than fail at login.
+
 | Variable | Purpose |
 | --- | --- |
 | `DATABASE_URL` | PostgreSQL connection used by the API and migrations |
 | `API_PORT` | API listener port; defaults to 3001 |
-| `WEB_ORIGIN` | Exact browser origin accepted for credentials, writes, and WebSockets |
+| `WEB_ORIGIN` | Exact browser origin accepted for credentials, writes, and WebSockets, such as `https://wooble.example.com`: scheme, host, and port only, without a path or trailing slash. Separate several with commas. Required in production, where plain `http://` is accepted only for `localhost`, `127.0.0.1`, or `[::1]` |
 | `NODE_ENV` | Set to `production` for a self-hosted API |
-| `TRUST_PROXY` | Set to `true` only when the API is reachable solely through a proxy that controls `X-Forwarded-For`; the Docker stack sets this automatically |
+| `TRUST_PROXY` | `true` only when the API is reachable solely through a proxy that controls `X-Forwarded-For`, otherwise `false` or unset; the Docker stack sets this automatically |
 | `WOOBLE_DB_PASSWORD` | Password used by the Docker PostgreSQL service |
 | `WOOBLE_ORIGIN` | Docker setting that becomes `WEB_ORIGIN` |
 | `WOOBLE_HTTP_PORT` | Local Docker web port; defaults to 8080 |

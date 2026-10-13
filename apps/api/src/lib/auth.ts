@@ -17,6 +17,7 @@ import {
   workspaceMembers,
 } from "@wooble/db";
 import type { ReplyContext } from "./http-error";
+import { isLocalHttpOrigin } from "./config";
 import { allowedWebOrigins } from "./web-origins";
 
 const scrypt = promisify(scryptCallback);
@@ -58,15 +59,7 @@ export async function verifyPassword(password: string, stored: string) {
   return timingSafeEqual(actual, derived);
 }
 export function sessionCookie(token: string, maxAge = SESSION_AGE_SECONDS) {
-  const localHttp = process.env.WEB_ORIGIN?.split(",").every((origin) => {
-    try {
-      const url = new URL(origin.trim());
-      return url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
-    } catch {
-      return false;
-    }
-  });
-  const secure = process.env.NODE_ENV === "production" && !localHttp ? "; Secure" : "";
+  const secure = process.env.NODE_ENV === "production" && !allowedWebOrigins.every(isLocalHttpOrigin) ? "; Secure" : "";
   return `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
 }
 export async function createSession(userId: string, reply: ReplyContext) {
