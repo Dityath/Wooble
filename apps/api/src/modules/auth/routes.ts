@@ -38,6 +38,20 @@ const attempts = new Map<string, { count: number; until: number }>();
 export function resetLoginAttempts() {
   attempts.clear();
 }
+/**
+ * Registration and login attempts allowed per IP address in 15 minutes. AUTH_ATTEMPT_LIMIT raises it for browser test
+ * runs that sign many people in from one address; it is refused in production so it cannot weaken a real installation.
+ */
+export function authAttemptLimit(env: Record<string, string | undefined> = process.env) {
+  const override = env.AUTH_ATTEMPT_LIMIT;
+  if (override === undefined || override === "") return 10;
+  if (env.NODE_ENV === "production")
+    throw new Error("AUTH_ATTEMPT_LIMIT is for test runs and cannot be used in production");
+  const limit = Number(override);
+  if (!Number.isInteger(limit) || limit < 1) throw new Error("AUTH_ATTEMPT_LIMIT must be a positive whole number");
+  return limit;
+}
+const maxAttempts = authAttemptLimit();
 function limited(ip: string) {
   const now = Date.now();
   const entry = attempts.get(ip);
@@ -46,7 +60,7 @@ function limited(ip: string) {
     return false;
   }
   entry.count += 1;
-  return entry.count > 10;
+  return entry.count > maxAttempts;
 }
 function publicUser(user: typeof users.$inferSelect) {
   return { id: user.id, name: user.name, email: user.email, systemRole: user.systemRole };

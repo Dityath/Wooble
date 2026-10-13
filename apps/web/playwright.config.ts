@@ -19,18 +19,31 @@ export default defineConfig({
   workers: 1,
   timeout: 30_000,
   expect: { timeout: 10_000 },
-  reporter: [["list"]],
+  // CI keeps an HTML report to upload when a journey fails.
+  reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : [["list"]],
   use: {
     baseURL: `http://127.0.0.1:${WEB_PORT}`,
     headless: true,
     viewport: { width: 1440, height: 900 },
+    // Lets a machine with its own Chromium build run the journeys without downloading Playwright's pinned one.
+    ...(process.env.BROWSER_TEST_CHROMIUM
+      ? { launchOptions: { executablePath: process.env.BROWSER_TEST_CHROMIUM } }
+      : {}),
   },
   webServer: [
     {
-      command: "bun --env-file=../../.env src/index.ts",
+      // No .env file is loaded, so a developer's settings can never point the journeys at their working database.
+      // The attempt limit is raised because the journeys register and sign in many people from one address.
+      command: "bun --no-env-file src/index.ts",
       url: `http://127.0.0.1:${API_PORT}/health`,
       cwd: "../api",
-      env: { API_PORT, DATABASE_URL: TEST_DATABASE_URL },
+      env: {
+        API_PORT,
+        DATABASE_URL: TEST_DATABASE_URL,
+        WEB_ORIGIN: `http://127.0.0.1:${WEB_PORT}`,
+        NODE_ENV: "test",
+        AUTH_ATTEMPT_LIMIT: "1000",
+      },
       reuseExistingServer: false,
       timeout: 20_000,
     },

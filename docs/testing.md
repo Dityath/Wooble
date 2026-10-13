@@ -8,7 +8,7 @@ Wooble has three test suites, and each one runs with Bun:
 | Shared runtime | `packages/*/tests` | Nothing extra |
 | API | `apps/api/tests` | An isolated, migrated PostgreSQL database in `DATABASE_URL` |
 
-Canvas browser journeys run separately with Playwright; see [CONTRIBUTING.md](../CONTRIBUTING.md#local-checks).
+Canvas browser journeys (`apps/web/e2e`) run with Playwright against a real API, web server, and PostgreSQL database; see [CONTRIBUTING.md](../CONTRIBUTING.md#local-checks). CI runs them in the **Browser journeys** job after code quality, in parallel with the test suites.
 
 ## Writing web tests
 

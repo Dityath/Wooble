@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createApp } from "../src/app";
-import { resetLoginAttempts } from "../src/modules/auth/routes";
+import { authAttemptLimit, resetLoginAttempts } from "../src/modules/auth/routes";
 
 const app = createApp();
 
@@ -42,4 +42,16 @@ test("limits login attempts per IP to just over 10 within a 15 minute window", a
   );
   expect(blocked.status).toBe(429);
   expect(await blocked.json()).toEqual({ message: "Too many attempts. Try again later" });
+});
+
+test("raises the limit only for test runs through AUTH_ATTEMPT_LIMIT", () => {
+  expect(authAttemptLimit({})).toBe(10);
+  expect(authAttemptLimit({ AUTH_ATTEMPT_LIMIT: "" })).toBe(10);
+  expect(authAttemptLimit({ AUTH_ATTEMPT_LIMIT: "500", NODE_ENV: "test" })).toBe(500);
+  expect(() => authAttemptLimit({ AUTH_ATTEMPT_LIMIT: "500", NODE_ENV: "production" })).toThrow(
+    "AUTH_ATTEMPT_LIMIT is for test runs and cannot be used in production",
+  );
+  expect(authAttemptLimit({ NODE_ENV: "production" })).toBe(10);
+  for (const invalid of ["0", "-3", "2.5", "many"])
+    expect(() => authAttemptLimit({ AUTH_ATTEMPT_LIMIT: invalid })).toThrow("positive whole number");
 });
