@@ -19,6 +19,9 @@ const required = [
   "WOOBLE_COMPOSE_PROJECT_NAME",
   "duplicate self-host settings in env file",
   'export WOOBLE_VERSION="$1"',
+  "https_origin_matches_host",
+  "10#$expected_port <= 65535",
+  "10#$port == 10#$expected_port",
 ];
 const missing = required.filter((needle) => !source.includes(needle));
 if (missing.length) throw new Error(`Self-host CLI invariants missing: ${missing.join(", ")}`);

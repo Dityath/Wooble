@@ -23,6 +23,12 @@ function fixture(
     legacyProject?: string;
     project?: string;
     shellVersion?: string;
+    shellOrigin?: string;
+    mode?: string;
+    origin?: string;
+    httpPort?: string;
+    caddyHost?: string;
+    bindAddress?: string;
     fail?: string;
   } = {},
 ) {
@@ -33,9 +39,10 @@ function fixture(
   chmodSync(join(base, "deploy/wooble"), 0o755);
   for (const name of ["compose.selfhost.yml", "compose.selfhost.local.yml"])
     copyFileSync(join(root, name), join(base, name));
+  copyFileSync(join(root, "deploy/Caddyfile"), join(base, "deploy/Caddyfile"));
   writeFileSync(
     join(base, ".env"),
-    `WOOBLE_VERSION=1.2.3\nWOOBLE_COMPOSE_PROJECT_NAME=${options.project ?? "wooble"}\n${options.legacyProject ? `WOOBLE_LEGACY_PROJECT_NAME=${options.legacyProject}\n` : ""}WOOBLE_MODE=local\nWOOBLE_DB_PASSWORD=fictional-secret\nWOOBLE_ORIGIN=https://localhost:18083\nWOOBLE_HTTP_PORT=18083\n`,
+    `WOOBLE_VERSION=1.2.3\nWOOBLE_COMPOSE_PROJECT_NAME=${options.project ?? "wooble"}\n${options.legacyProject ? `WOOBLE_LEGACY_PROJECT_NAME=${options.legacyProject}\n` : ""}WOOBLE_MODE=${options.mode ?? "local"}\nWOOBLE_DB_PASSWORD=fictional-secret\nWOOBLE_ORIGIN=${options.origin ?? "https://localhost:18083"}\nWOOBLE_HTTP_PORT=${options.httpPort ?? "18083"}\nWOOBLE_CADDY_HOST=${options.caddyHost ?? "192.0.2.10"}\nWOOBLE_BIND_ADDRESS=${options.bindAddress ?? "192.0.2.10"}\nWOOBLE_DOMAIN=wooble.example.test\n`,
   );
   const bin = join(base, "bin");
   mkdirSync(bin);
@@ -74,6 +81,7 @@ esac
     const environment = { ...process.env, PATH: `${bin}:${process.env.PATH}`, WOOBLE_ENV_FILE: join(base, ".env") };
     delete environment.WOOBLE_VERSION;
     if (options.shellVersion) environment.WOOBLE_VERSION = options.shellVersion;
+    if (options.shellOrigin) environment.WOOBLE_ORIGIN = options.shellOrigin;
     return spawnSync(join(base, "deploy/wooble"), args, {
       encoding: "utf8",
       env: environment,
@@ -92,6 +100,71 @@ describe("self-host CLI safety", () => {
     expect(f.run("up").stderr).toContain("WOOBLE_VERSION is required");
     expect(f.run("restore", f.backupFile).stderr).toContain("explicit confirmation required");
     expect(existsSync(f.log)).toBe(false);
+  });
+
+  it("diagnoses a safe local origin and health without printing the database password", () => {
+    const f = fixture();
+    const result = f.run("diagnose");
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("mode=local project=wooble version=1.2.3");
+    expect(result.stdout).not.toContain("fictional-secret");
+    expect(result.stderr).not.toContain("fictional-secret");
+  });
+
+  it("rejects malformed local HTTPS origins without echoing query secrets", () => {
+    const f = fixture();
+    const envPath = join(f.base, ".env");
+    const env = readFileSync(envPath, "utf8");
+    writeFileSync(
+      envPath,
+      env.replace("https://localhost:18083", "https://localhost:18083/path?token=fictional-secret"),
+    );
+    const result = f.run("diagnose");
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("local mode requires an HTTPS localhost origin");
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain("fictional-secret");
+  });
+
+  it("rejects invalid or mismatched HTTPS ports without printing the origin", () => {
+    for (const origin of [
+      "https://localhost:abc",
+      "https://localhost:65536",
+      "https://localhost:18443",
+      "https://localhost:18083?token=fictional-secret",
+      "https://user:password@localhost:18083",
+    ]) {
+      const f = fixture({ origin });
+      const result = f.run("diagnose");
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("local mode requires an HTTPS localhost origin");
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain("fictional-secret");
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain("password");
+    }
+  });
+
+  it("accepts an HTTPS origin without an explicit port only for port 443", () => {
+    const f = fixture({ origin: "https://localhost", httpPort: "443" });
+    expect(f.run("diagnose").status).toBe(0);
+    const wrongPort = fixture({ origin: "https://localhost", httpPort: "18083" });
+    expect(wrongPort.run("diagnose").status).not.toBe(0);
+  });
+
+  it("validates the effective shell origin without echoing its secret query", () => {
+    const f = fixture({ shellOrigin: "https://localhost:18083/?token=fictional-secret" });
+    const result = f.run("diagnose");
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("local mode requires an HTTPS localhost origin");
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain("fictional-secret");
+  });
+
+  it("requires private mode HTTPS origin to match the configured host and published port", () => {
+    const valid = fixture({ mode: "private", origin: "https://192.0.2.10:18083" });
+    expect(valid.run("diagnose").status).toBe(0);
+    const mismatch = fixture({ mode: "private", origin: "https://other.example.test:18083" });
+    const result = mismatch.run("diagnose");
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("exactly match WOOBLE_CADDY_HOST");
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain("fictional-secret");
   });
 
   it("rejects duplicate version or mode settings before Docker calls", () => {

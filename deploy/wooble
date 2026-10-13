@@ -13,12 +13,16 @@ read_env() {
   [[ -f "$ENV_FILE" ]] || return 0
   awk -v wanted="$key" 'BEGIN { FS="=" } /^[[:space:]]*#/ || NF < 2 { next } { k=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", k); if (k == wanted) { sub(/^[^=]*=/, ""); gsub(/^\"|\"$/, ""); gsub(/^\047|\047$/, ""); print; exit } }' "$ENV_FILE"
 }
-MODE="${WOOBLE_MODE:-$(read_env WOOBLE_MODE)}"
+read_setting() {
+  local key="$1"
+  if [[ ${!key+x} ]]; then printf '%s' "${!key}"; else read_env "$key"; fi
+}
+MODE="$(read_setting WOOBLE_MODE)"
 MODE="${MODE:-local}"
-PROJECT="${WOOBLE_COMPOSE_PROJECT_NAME:-$(read_env WOOBLE_COMPOSE_PROJECT_NAME)}"
+PROJECT="$(read_setting WOOBLE_COMPOSE_PROJECT_NAME)"
 PROJECT="${PROJECT:-wooble}"
-LEGACY_PROJECT="${WOOBLE_LEGACY_PROJECT_NAME:-$(read_env WOOBLE_LEGACY_PROJECT_NAME)}"
-VERSION="${WOOBLE_VERSION:-$(read_env WOOBLE_VERSION)}"
+LEGACY_PROJECT="$(read_setting WOOBLE_LEGACY_PROJECT_NAME)"
+VERSION="$(read_setting WOOBLE_VERSION)"
 case "$MODE" in
   local|private|domain) COMPOSE_MODE="$ROOT/compose.selfhost.$MODE.yml" ;;
   *) fail "WOOBLE_MODE must be local, private, or domain" ;;
@@ -88,6 +92,19 @@ recover_pre_restore() {
   start_stack
 }
 start_stack() { compose up -d; }
+https_origin_matches_host() {
+  local host="$1" origin="$2" expected_port="$3" port
+  [[ "$expected_port" =~ ^[1-9][0-9]{0,4}$ ]] || return 1
+  ((10#$expected_port <= 65535)) || return 1
+  if [[ "$origin" == "https://$host" ]]; then
+    ((10#$expected_port == 443))
+    return
+  fi
+  [[ "$origin" == "https://$host:"* ]] || return 1
+  port="${origin#"https://$host:"}"
+  [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || return 1
+  ((10#$port >= 1 && 10#$port <= 65535 && 10#$port == 10#$expected_port))
+}
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
@@ -106,21 +123,23 @@ case "$cmd" in
     compose ps
     ;;
   diagnose)
+    version_required
     resolve_project
-    printf 'mode=%s project=%s version=%s\n' "$MODE" "$PROJECT" "${VERSION:-unset}"
-    origin="$(read_env WOOBLE_ORIGIN)"
+    printf 'mode=%s project=%s version=%s\n' "$MODE" "$PROJECT" "$VERSION"
+    origin="$(read_setting WOOBLE_ORIGIN)"
+    http_port="$(read_setting WOOBLE_HTTP_PORT)"
     case "$MODE" in
       local)
-        [[ "$origin" == https://localhost || "$origin" == https://localhost:* ]] || fail "local mode requires an HTTPS localhost origin"
+        https_origin_matches_host localhost "$origin" "$http_port" || fail "local mode requires an HTTPS localhost origin whose port matches WOOBLE_HTTP_PORT"
         ;;
       private)
-        host="$(read_env WOOBLE_CADDY_HOST)"
-        bind="$(read_env WOOBLE_BIND_ADDRESS)"
+        host="$(read_setting WOOBLE_CADDY_HOST)"
+        bind="$(read_setting WOOBLE_BIND_ADDRESS)"
         [[ -n "$host" && -n "$bind" ]] || fail "private mode requires explicit WOOBLE_CADDY_HOST and WOOBLE_BIND_ADDRESS"
-        [[ "$origin" == "https://$host" || "$origin" == "https://$host:"* ]] || fail "private mode origin must use HTTPS and exactly match WOOBLE_CADDY_HOST"
+        https_origin_matches_host "$host" "$origin" "$http_port" || fail "private mode origin must use HTTPS and exactly match WOOBLE_CADDY_HOST and WOOBLE_HTTP_PORT"
         ;;
       domain)
-        domain="$(read_env WOOBLE_DOMAIN)"
+        domain="$(read_setting WOOBLE_DOMAIN)"
         [[ -n "$domain" && "$origin" == "https://$domain" ]] || fail "domain mode origin must exactly match https://WOOBLE_DOMAIN"
         ;;
     esac
