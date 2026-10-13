@@ -678,6 +678,64 @@ describe("undo lock conflicts", () => {
     expect(names[e2]).toBe("Orders DB");
   });
 
+  it("takes no shared lock on an entity while walking past a skipped candidate to an older update of it", async () => {
+    const base = await setup();
+    const canvasB = await api.createCanvas(base.owner.session, base.owner.workspaceId);
+    await placeOnCanvas(base.owner.session, canvasB, base.service);
+    const x = base.service;
+    const owner = base.owner.session;
+    const patch = async (session: string, body: Record<string, unknown>) =>
+      expect((await api.request("PATCH", `/api/entities/${x}`, session, body)).status).toBe(200);
+    await patch(owner, { name: "Renamed" });
+    await patch(owner, { description: "Described" });
+    // Canvas A keeps only the name update, canvas B only the description update, so both undos really write X.
+    await pool.query(
+      `delete from canvas_events where action = 'entity.updated' and target_id = $3
+         and ((canvas_id = $1 and (metadata->'previous') ? 'description')
+           or (canvas_id = $2 and (metadata->'previous') ? 'name'))`,
+      [base.canvasId, canvasB, x],
+    );
+    // Newer than the update on each canvas: the owner's own placement change of X. A collaborator's later edit of X
+    // overlaps it, so the walk skips it as a conflict, but only after the old code had KEY SHARE locked X for it.
+    for (const canvasId of [base.canvasId, canvasB]) {
+      const { status } = await api.json("PUT", `/api/canvases/${canvasId}/placements`, owner, {
+        placements: [{ entityId: x, parentEntityId: null, x: 50, y: 50, width: 220, height: 120 }],
+      });
+      expect(status).toBe(200);
+    }
+    const editor = await joinAsEditor(base.owner, base.canvasId);
+    await joinExisting(base.owner, canvasB, editor);
+    await patch(editor.session, { metadata: { documentation: "Docs" } });
+
+    const actor = {
+      id: base.owner.user.id,
+      name: base.owner.user.name,
+      email: base.owner.user.email,
+      systemRole: "user" as const,
+    };
+    // No retry wrapper: a 40P01 from a KEY SHARE -> FOR UPDATE upgrade must fail this test, not be absorbed.
+    const walk = (canvasId: string) =>
+      db.transaction(async (tx) => {
+        await tx.select({ id: canvases.id }).from(canvases).where(eq(canvases.id, canvasId)).for("update");
+        return applyNextUndo(tx, canvasId, actor);
+      });
+    const { blocker, pid } = await lockEntities([x]);
+    let walks: Promise<Awaited<ReturnType<typeof walk>>>[] = [];
+    try {
+      walks = [walk(base.canvasId), walk(canvasB)];
+      await waitForBlocked(pid, 2);
+    } finally {
+      await release(blocker);
+    }
+    for (const outcome of await Promise.all(walks)) {
+      expect(outcome.undoneEvent?.action).toBe("entity.updated");
+      expect(outcome.skipped.map((item) => item.reason)).toEqual(["conflict"]);
+    }
+    const current = (await graph(owner, base.canvasId)).entities.find((entity) => entity.id === x);
+    expect(current?.name).toBe("Orders API");
+    expect(current?.metadata.documentation).toBe("Docs");
+  });
+
   it("retries a deadlock or serialization abort and then answers with retryable contention", async () => {
     const abort = (code: string, wrapped: boolean) => {
       const inner = Object.assign(new Error("aborted"), { code });

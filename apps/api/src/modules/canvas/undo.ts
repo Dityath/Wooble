@@ -98,11 +98,15 @@ export interface UndoOutcome {
  *
  * Lock order: the caller holds the requested canvas row FOR UPDATE; the undo then takes at most the shared
  * entity/connection rows it writes, FOR UPDATE until commit, after its own canvas row (the order PATCH uses).
- * Candidates are judged on unlocked reads and only a candidate that needs a real write locks its object (re-reading
- * and re-checking write access and the no-op test under the lock), so walking past no-op candidates never holds
- * locks and two undos walking the same objects in opposite order cannot form a cycle. A candidate that turns into
- * a no-op after its lock was granted keeps that one lock, so a rare cycle remains possible; the route retries
- * the whole transaction on 40P01/40001 (`retryOnLockConflict`) and answers 503 if that keeps failing.
+ * Decision phase (the walk): unlocked reads only, including the blocked-state endpoint check, so no share-class or
+ * update lock is ever taken on a candidate that is skipped or a no-op. Apply phase: only the candidate actually
+ * being undone locks, either FOR KEY SHARE on the endpoints a restore re-inserts against (re-checking the blocked
+ * state under that lock; those undos always write and end the walk, so no FOR UPDATE on the same rows follows) or
+ * FOR UPDATE on the object it writes (re-reading write access and the no-op test under the lock). A shared lock is
+ * never taken on a row this transaction may later update-lock. The one residual: an entity/connection update that
+ * becomes a no-op after its FOR UPDATE was granted, or a restore found blocked under its KEY SHARE, keeps that lock
+ * while the walk continues, so a rare cycle remains possible; the route retries the whole transaction on
+ * 40P01/40001 (`retryOnLockConflict`) and answers 503 if that keeps failing.
  */
 export async function applyNextUndo(tx: Transaction, canvasId: string, actor: Actor): Promise<UndoOutcome> {
   const actorId = actor.id;
@@ -130,6 +134,13 @@ export async function applyNextUndo(tx: Transaction, canvasId: string, actor: Ac
       !blocked &&
       rows.slice(0, index).some((later) => later.actorUserId !== actorId && overlaps(affected, affectedObjects(later)));
     if (blocked || conflicted) {
+      skipped.push({ action: candidate.action, targetName: candidate.targetName, reason: "conflict" });
+      continue;
+    }
+    // The walk judged this candidate on unlocked reads. Lock the endpoints its restore needs (KEY SHARE, so a
+    // concurrent delete cannot slip in before the re-insert) and re-check under that lock. Once the lock is held
+    // applyUndo always writes and returns true, so no later FOR UPDATE on those rows follows in this transaction.
+    if (await undoBlockedByCurrentState(tx, candidate, true)) {
       skipped.push({ action: candidate.action, targetName: candidate.targetName, reason: "conflict" });
       continue;
     }
@@ -183,12 +194,13 @@ async function undoAuthorized(tx: Transaction, actor: Actor, event: CanvasEventR
 }
 
 /**
- * Entities among `ids` that still exist, read with FOR KEY SHARE so a concurrent delete cannot slip between this
+ * Entities among `ids` that still exist. With `lock` they are read FOR KEY SHARE (ascending id order) so a concurrent delete cannot slip between this
  * check and the restore that re-inserts rows referencing them (which would fail the foreign key with a 500).
  * A delete already in flight makes this wait, then see the row gone.
  */
-async function existingEntities(tx: Transaction, ids: string[]): Promise<Array<{ id: string }>> {
-  return tx.select({ id: entities.id }).from(entities).where(inArray(entities.id, ids)).for("key share");
+async function existingEntities(tx: Transaction, ids: string[], lock: boolean): Promise<Array<{ id: string }>> {
+  const query = tx.select({ id: entities.id }).from(entities).where(inArray(entities.id, ids));
+  return lock ? query.orderBy(asc(entities.id)).for("key share") : query;
 }
 
 /**
@@ -198,8 +210,11 @@ async function existingEntities(tx: Transaction, ids: string[]): Promise<Array<{
  * the connections foreign keys would reject the restore. The same applies to
  * restoring a deleted subtree whose snapshot connectors point at endpoints
  * that were removed after the fact.
+ *
+ * The candidate walk calls this unlocked (`lock` false). Only the candidate about to be applied calls it again
+ * with `lock` true, which takes FOR KEY SHARE on the endpoints it needs and keeps them to commit.
  */
-async function undoBlockedByCurrentState(tx: Transaction, event: CanvasEventRow): Promise<boolean> {
+async function undoBlockedByCurrentState(tx: Transaction, event: CanvasEventRow, lock = false): Promise<boolean> {
   const metadata = (event.metadata ?? {}) as Record<string, unknown>;
   if (event.action === "connection.deleted") {
     const connection = snapshotValue<ConnectionSnapshot | undefined>(metadata, "connection");
@@ -207,7 +222,7 @@ async function undoBlockedByCurrentState(tx: Transaction, event: CanvasEventRow)
       (id): id is string => typeof id === "string",
     );
     if (!endpointIds.length) return false;
-    const existing = await existingEntities(tx, endpointIds);
+    const existing = await existingEntities(tx, endpointIds, lock);
     return existing.length !== endpointIds.length;
   }
   if (event.action === "entity.deleted") {
@@ -233,7 +248,7 @@ async function undoBlockedByCurrentState(tx: Transaction, event: CanvasEventRow)
     );
     const toCheck = [...endpointIds].filter((id) => !restored.has(id));
     if (!toCheck.length) return false;
-    const existing = await existingEntities(tx, toCheck);
+    const existing = await existingEntities(tx, toCheck, lock);
     return existing.length !== toCheck.length;
   }
   if (event.action === "canvas.auto_neat") {
@@ -247,7 +262,7 @@ async function undoBlockedByCurrentState(tx: Transaction, event: CanvasEventRow)
       ),
     ];
     if (!entityIds.length) return false;
-    const existing = await existingEntities(tx, entityIds);
+    const existing = await existingEntities(tx, entityIds, lock);
     return existing.length !== entityIds.length;
   }
   if (event.action === "placement.updated") {
@@ -261,7 +276,7 @@ async function undoBlockedByCurrentState(tx: Transaction, event: CanvasEventRow)
       ...new Set(entries.map((entry) => entry?.from?.entityId).filter((id): id is string => typeof id === "string")),
     ];
     if (restoredIds.length) {
-      const existing = await existingEntities(tx, restoredIds);
+      const existing = await existingEntities(tx, restoredIds, lock);
       if (existing.length !== restoredIds.length) return true;
     }
     // Placements this event added (from: null) get deleted by the undo.
