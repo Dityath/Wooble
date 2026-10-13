@@ -82,6 +82,11 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
   const loaded = useRef(value);
   const pending = useRef<string | undefined>(undefined);
   const edited = useRef(false);
+  // A recovery offer is open. Rule: while it is, nothing writes to or clears this object's draft slot, because the slot
+  // still holds the older draft the user has not decided about. Fresh edits made before the offer appeared stay in the
+  // editor (and may autosave to the server). Discard removes the older draft and then keeps the fresh edits as the
+  // draft; Restore puts the older draft above the fresh edits, so neither text is lost.
+  const offerOpen = useRef(false);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
   // The latest document once the user has edited it; undefined before the first edit.
   const [doc, setDoc] = useState<string>();
@@ -122,7 +127,7 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
         pending.current = undefined;
         // The draft follows the latest text: cleared when it is what was saved, rewritten when the user went on (or back
         // to the previously saved text) while this save was in flight.
-        if (target) {
+        if (target && !offerOpen.current) {
           if (latest.current === next) clearDraft(target.userId, target.kind, target.objectId);
           else writeDraft(target.userId, target.kind, target.objectId, latest.current);
         }
@@ -158,7 +163,7 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
     if (next !== rejected.current) rejected.current = undefined;
     setDoc(next);
     const target = locationRef.current;
-    if (target && !locked.current) {
+    if (target && !locked.current && !offerOpen.current) {
       // Whatever a save in flight carries, the draft holds the latest text, and nothing once that is the saved text.
       if (next !== lastSaved.current) writeDraft(target.userId, target.kind, target.objectId, next);
       else clearDraft(target.userId, target.kind, target.objectId);
@@ -199,7 +204,7 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
     // changed, so nothing is saved. The draft is written first, so the text survives a failed or interrupted save.
     return () => {
       const target = locationRef.current;
-      if (target && !locked.current && edited.current && latest.current !== lastSaved.current)
+      if (target && !locked.current && !offerOpen.current && edited.current && latest.current !== lastSaved.current)
         writeDraft(target.userId, target.kind, target.objectId, latest.current);
       commit(latest.current);
     };
@@ -210,29 +215,40 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
   const kind = location?.kind;
   const objectId = location?.objectId;
   useEffect(() => {
+    const offer = (draftToOffer: DocumentationDraft | undefined) => {
+      offerOpen.current = draftToOffer !== undefined;
+      setRecovery(draftToOffer);
+    };
     const target = userId === undefined || !kind || objectId === undefined ? undefined : { userId, kind, objectId };
     if (!target || locked.current) {
-      setRecovery(undefined);
+      offer(undefined);
       return;
     }
-    if (edited.current && latest.current !== lastSaved.current) {
-      // Edits made before the location was known are unsaved too: keep them instead of offering an older draft.
-      writeDraft(target.userId, target.kind, target.objectId, latest.current);
-      setRecovery(undefined);
-      return;
-    }
+    // Edits made before the location was known are unsaved too. They must not replace an older stored draft that was
+    // never shown to the user, so they are written only when no older draft needs a decision.
+    const fresh = edited.current && latest.current !== lastSaved.current;
+    const keepFresh = () => {
+      if (fresh) writeDraft(target.userId, target.kind, target.objectId, latest.current);
+    };
     const found = readDraft(target.userId, target.kind, target.objectId);
     if (!found) {
-      setRecovery(undefined);
+      keepFresh();
+      offer(undefined);
       return;
     }
     const markdown = found.markdown.trim();
     if (markdown === currentValue.current.trim() || markdown === lastSaved.current) {
       clearDraft(target.userId, target.kind, target.objectId);
-      setRecovery(undefined);
+      keepFresh();
+      offer(undefined);
       return;
     }
-    setRecovery(found);
+    if (fresh && markdown === latest.current) {
+      // The stored draft is already the text in the editor.
+      offer(undefined);
+      return;
+    }
+    offer(found);
   }, [userId, kind, objectId]);
 
   useEffect(() => {
@@ -271,17 +287,28 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
   const restoreDraft = () => {
     const handle = editor.current;
     const found = recovery;
+    offerOpen.current = false;
     setRecovery(undefined);
     setFocusRequest((count) => count + 1);
     if (!handle || !found) return;
-    // Restoring is an edit like any other: it autosaves, and shows the over-limit notice when it is too long.
-    handleChange(handle.replace(found.markdown));
+    // Fresh edits typed while the offer was pending stay: the older draft goes above them instead of replacing them.
+    const fresh = edited.current && latest.current !== lastSaved.current ? latest.current : "";
+    const restored = [found.markdown.trim(), fresh].filter((part) => part !== "").join("\n\n");
+    // Restoring is an edit like any other: it autosaves, and shows the over-limit notice when it is too long. A draft
+    // of deleted documentation restores to empty documentation.
+    handleChange(handle.replace(fresh ? restored : found.markdown));
     const target = locationRef.current;
     if (target && latest.current === lastSaved.current) clearDraft(target.userId, target.kind, target.objectId);
   };
   const discardDraft = () => {
     const target = locationRef.current;
-    if (target) clearDraft(target.userId, target.kind, target.objectId);
+    offerOpen.current = false;
+    if (target) {
+      clearDraft(target.userId, target.kind, target.objectId);
+      // Fresh edits typed while the offer was pending become the draft now that the slot is free.
+      if (edited.current && latest.current !== lastSaved.current && !locked.current)
+        writeDraft(target.userId, target.kind, target.objectId, latest.current);
+    }
     setRecovery(undefined);
     setFocusRequest((count) => count + 1);
   };
@@ -364,8 +391,8 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
               <p className="documentation-notice is-recovery" role="status">
                 <CircleAlert size={15} aria-hidden="true" />
                 <span>
-                  Unsaved documentation from {describeAge(recovery.savedAt)} was kept on this device. Restore or discard
-                  it to keep editing.
+                  {recovery.markdown.trim() === "" ? "Deleted documentation" : "Unsaved documentation"} from{" "}
+                  {describeAge(recovery.savedAt)} was kept on this device. Restore or discard it to keep editing.
                 </span>
                 <button type="button" onClick={restoreDraft}>
                   Restore

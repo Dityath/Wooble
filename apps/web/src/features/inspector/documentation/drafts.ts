@@ -74,16 +74,16 @@ export function readDraft(userId: string, kind: DraftObjectKind, objectId: strin
 }
 
 /**
- * Stores the draft for one object. Blank text removes the entry instead: an empty draft has nothing to recover, and
- * keeping it would offer to restore nothing. Over-limit text is stored as given, since text the server would reject is
+ * Stores the draft for one object. Blank text is stored like any other: deleting all documentation is a valid edit, and
+ * if that save fails the deletion must survive a reload. Whether an empty draft is worth offering is the caller's call
+ * (it is not when the saved documentation is empty too). Over-limit text is stored as given, since text the server would reject is
  * exactly the text that must not be lost. Never throws; a full or blocked store only costs the draft.
  */
 export function writeDraft(userId: string, kind: DraftObjectKind, objectId: string, markdown: string): void {
   if (!userId || suspended) return;
   try {
     const key = draftKey(userId, kind, objectId);
-    if (markdown.trim() === "") localStorage.removeItem(key);
-    else localStorage.setItem(key, JSON.stringify({ markdown, savedAt: Date.now() } satisfies DocumentationDraft));
+    localStorage.setItem(key, JSON.stringify({ markdown, savedAt: Date.now() } satisfies DocumentationDraft));
   } catch {
     // QuotaExceededError, or a store Safari refuses to touch at all. The editor keeps its text either way.
   }

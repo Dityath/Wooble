@@ -117,12 +117,15 @@ describe("documentation draft isolation", () => {
 });
 
 describe("documentation draft blank writes", () => {
-  it.each(["", "   ", "\n\t "])("removes an existing entry when the Markdown is blank: %p", (blank) => {
-    writeDraft(USER, "entity", OBJECT, "worth keeping");
-    writeDraft(USER, "entity", OBJECT, blank);
-    expect(readDraft(USER, "entity", OBJECT)).toBeNull();
-    expect(localStorage.getItem(draftKey(USER, "entity", OBJECT))).toBeNull();
-  });
+  it.each(["", "   ", "\n\t "])(
+    "stores blank Markdown as a draft, because deleting everything is an edit: %p",
+    (blank) => {
+      writeDraft(USER, "entity", OBJECT, "worth keeping");
+      writeDraft(USER, "entity", OBJECT, blank);
+      expect(readDraft(USER, "entity", OBJECT)?.markdown).toBe(blank);
+      expect(localStorage.getItem(draftKey(USER, "entity", OBJECT))).not.toBeNull();
+    },
+  );
 });
 
 describe("documentation draft expiry", () => {
@@ -201,8 +204,6 @@ describe("documentation draft storage failures", () => {
   it("swallows a store that refuses to remove", () => {
     withBrokenStorage("removeItem", { value: refusing("SecurityError") }, () => {
       expect(() => clearDraft(USER, "entity", OBJECT)).not.toThrow();
-      // Clearing a draft by writing blank text goes through the same member.
-      expect(() => writeDraft(USER, "entity", OBJECT, "   ")).not.toThrow();
       expect(() => clearAllDocumentationDrafts()).not.toThrow();
     });
   });

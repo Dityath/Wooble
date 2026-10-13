@@ -180,10 +180,52 @@ describe("documentation drafts", () => {
     await typeInEditor(documentation(), " more");
     expect(draftOf()?.markdown).toBe("Older text");
 
-    // Once the location is known the edits made so far are kept instead of an older draft being offered.
+    // Once the location is known the older draft is not overwritten: it is offered, and the edits stay in the editor.
     view.rerender(<RichDocumentation value="Saved" onSave={mock(async () => {})} draft={location} />);
-    await waitFor(() => expect(draftOf()?.markdown).toBe("Saved more"));
-    expect(screen.queryByText(/was kept on this device/)).toBeNull();
+    await findPrompt();
+    expect(draftOf()?.markdown).toBe("Older text");
+    expect(documentation().textContent).toBe("Saved more");
+  });
+
+  describe("fresh edits typed before the draft location is known", () => {
+    async function pendingLocation() {
+      writeDraft("user-a", "entity", "entity-1", "Older text");
+      const onSave = mock(async (_value: string) => {});
+      const view = await renderDocumentation({ value: "Saved", onSave });
+      await caretToEnd();
+      await typeInEditor(documentation(), " more");
+      view.rerender(<RichDocumentation value="Saved" onSave={onSave} draft={location} />);
+      await findPrompt();
+      return { view, onSave };
+    }
+
+    it("keeps the older draft, offers it, and keeps the fresh text in the editor", async () => {
+      await pendingLocation();
+      expect(draftOf()?.markdown).toBe("Older text");
+      expect(documentation().textContent).toBe("Saved more");
+    });
+
+    it("Discard drops the older draft and keeps the fresh text as the draft", async () => {
+      await pendingLocation();
+      await act(async () => screen.getByRole("button", { name: "Discard saved copy" }).click());
+      expect(documentation().textContent).toBe("Saved more");
+      expect(draftOf()?.markdown).toBe("Saved more");
+    });
+
+    it("Restore puts the older draft above the fresh text, so neither is lost", async () => {
+      await pendingLocation();
+      await act(async () => screen.getByRole("button", { name: "Restore" }).click());
+      expect(documentation().textContent).toContain("Older text");
+      expect(documentation().textContent).toContain("Saved more");
+      expect(draftOf()?.markdown).toContain("Older text");
+      expect(draftOf()?.markdown).toContain("Saved more");
+    });
+
+    it("does not overwrite the older draft when the editor unmounts with the offer open", async () => {
+      const { view } = await pendingLocation();
+      view.unmount();
+      expect(draftOf()?.markdown).toBe("Older text");
+    });
   });
 
   it("never offers a draft of another user, kind or object", async () => {
@@ -275,6 +317,36 @@ describe("documentation draft recovery", () => {
     await renderDocumentation({ value: "Saved\n", onSave: mock(async () => {}), draft: location });
     await waitFor(() => expect(draftOf()).toBeNull());
     expect(prompt()).toBeNull();
+  });
+
+  describe("deleting all documentation", () => {
+    const deleteAll = () =>
+      act(async () => {
+        editorFromElement(documentation()).commands.clearContent(true);
+      });
+
+    it("keeps the deletion as a draft when the save fails, and offers it again after a reload", async () => {
+      const first = await renderDocumentation({ value: "Saved text", onSave: reject(500), draft: location });
+      await deleteAll();
+      await blurDocumentation();
+      expect(draftOf()?.markdown).toBe("");
+      first.unmount();
+
+      await renderDocumentation({ value: "Saved text", onSave: mock(async () => {}), draft: location });
+      const offer = await findPrompt();
+      expect(offer.textContent).toContain("Deleted documentation");
+      expect(documentation().textContent).toBe("Saved text");
+      await act(async () => screen.getByRole("button", { name: "Restore" }).click());
+      expect(documentation().textContent).toBe("");
+      expect(prompt()).toBeNull();
+    });
+
+    it("clears an empty draft when the saved documentation is empty too, without asking", async () => {
+      writeDraft("user-a", "entity", "entity-1", "");
+      await renderDocumentation({ value: "", onSave: mock(async () => {}), draft: location });
+      await waitFor(() => expect(draftOf()).toBeNull());
+      expect(prompt()).toBeNull();
+    });
   });
 
   it("hides the prompt when the draft location goes away, and stops writing", async () => {
