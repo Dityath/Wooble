@@ -13,6 +13,8 @@ on:
       - "package.json"
       - "scripts/selfhost-smoke.ts"
       - "scripts/selfhost-*.test.ts"
+      - "scripts/release-workflow.test.ts"
+      - "scripts/third-party-notices.test.ts"
       - "scripts/selfhost-cli-check.ts"
       - "scripts/selfhost-image-check.ts"
       - "deploy/wooble"
@@ -43,6 +45,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
+      - name: Install workspace dependencies
+        run: bun install --frozen-lockfile
       - name: Write a throwaway environment file
         run: |
           umask 077
@@ -59,6 +63,7 @@ jobs:
         run: >-
           bun test scripts/selfhost-compose.test.ts scripts/selfhost-cli.test.ts
           scripts/selfhost-image-check.test.ts scripts/selfhost-browser-config.test.ts
+          scripts/release-workflow.test.ts scripts/third-party-notices.test.ts
       - name: Check self-host operator CLI invariants
         run: bun scripts/selfhost-cli-check.ts
       - name: Check build context and API image backup exclusions
