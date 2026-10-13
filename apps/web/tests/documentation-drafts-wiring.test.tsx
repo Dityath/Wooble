@@ -85,11 +85,15 @@ async function openDetails(queryClient: QueryClient = testQueryClient()) {
   return view;
 }
 /** Types until the draft shows up, which it does once identity and access resolved. */
-const typeUntilDrafted = () =>
-  waitFor(async () => {
+async function typeUntilDrafted() {
+  // Not inside waitFor: Testing Library switches the act environment off while it polls, so every act() in the
+  // callback would warn. Each attempt is its own act(), with a short real wait between attempts.
+  for (let attempt = 0; attempt < 100 && !mine(ids.service); attempt++) {
     await typeText("!");
-    expect(mine(ids.service)).toBeTruthy();
-  });
+    if (!mine(ids.service)) await act(async () => new Promise((resolve) => setTimeout(resolve, 50)));
+  }
+  expect(mine(ids.service)).toBeTruthy();
+}
 
 describe("draft identity and access gate", () => {
   it("writes drafts under the signed-in user once identity and edit access resolved", async () => {
