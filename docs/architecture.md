@@ -35,7 +35,7 @@ The API stores password hashes and hashed session tokens in PostgreSQL. Session 
 
 ## Canvas events and undo
 
-Every change to a canvas writes a row to `canvas_events` in the same transaction as the change. If the event insert fails, the change rolls back. A transaction that records events locks the affected canvas rows first, in ascending id order, and then the entity, connection, and placement rows. Undo locks the canvas row before it touches any object. `recordCanvasEvent` also locks the event's canvas row itself, as a safety net for a writer that did not.
+Every change to a canvas writes a row to `canvas_events` in the same transaction as the change. If the event insert fails, the change rolls back. A transaction that records events locks the affected canvas rows first, in ascending id order, and then the entity, connection, and placement rows. Undo locks the canvas row before it touches any object. Undoing `entity.updated` or a non-bend `connection.updated` then reads the shared entity or connection row `FOR UPDATE` and holds it to commit, the same order as the `PATCH` routes, so undos that reach one object through different canvases run one after the other and neither overwrites the other. `recordCanvasEvent` also locks the event's canvas row itself, as a safety net for a writer that did not.
 
 Events are ordered by `seq`, an identity column on `canvas_events` (migrations `0006` and `0007`). The writer holds the canvas lock when `seq` is allocated, so within a canvas a later event always has a higher `seq`. `created_at` is the database clock at transaction start and can step back, so neither undo nor the feed relies on it. Undo walks the canvas's events from the highest `seq` down.
 

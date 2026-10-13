@@ -457,3 +457,124 @@ describe("canvas lock retries", () => {
     expect((await graph(owner.session, canvasId)).entities.find((e) => e.id === service)?.name).toBe("Orders API");
   });
 });
+
+describe("undo through two canvases that show the same object", () => {
+  type Shared = Awaited<ReturnType<typeof setupShared>>;
+
+  /** Canvas A and canvas B (same workspace) both show the service, the database and their connector. */
+  async function setupShared() {
+    const base = await setup();
+    const canvasB = await api.createCanvas(base.owner.session, base.owner.workspaceId);
+    await placeOnCanvas(base.owner.session, canvasB, base.service);
+    await placeOnCanvas(base.owner.session, canvasB, base.database);
+    await pool.query("insert into canvas_connections (canvas_id, connection_id) values ($1, $2)", [
+      canvasB,
+      base.connectionId,
+    ]);
+    return { ...base, canvasA: base.canvasId, canvasB };
+  }
+
+  /**
+   * Two edits of one object, then a history in which canvas A's newest undoable event is the first edit and canvas
+   * B's is the second. The two undos touch different fields, so a correct result reverts both.
+   */
+  async function splitHistory(
+    shared: Shared,
+    kind: "entity" | "connection",
+    first: Record<string, unknown>,
+    second: Record<string, unknown>,
+  ) {
+    const url = kind === "entity" ? `/api/entities/${shared.service}` : `/api/connections/${shared.connectionId}`;
+    expect((await api.request("PATCH", url, shared.owner.session, first)).status).toBe(200);
+    expect((await api.request("PATCH", url, shared.owner.session, second)).status).toBe(200);
+    const action = `${kind}.updated`;
+    const [eventA] = (await eventsFor(shared.canvasA, action)).slice(1);
+    const [eventB] = await eventsFor(shared.canvasB, action);
+    // A keeps only the first edit's event, B only the second's.
+    await pool.query("delete from canvas_events where id = $1", [eventA.id]);
+    const [dropOnB] = await eventsFor(shared.canvasB, action);
+    await pool.query("delete from canvas_events where id = $1", [dropOnB.id]);
+    expect(eventB.id).toBe(dropOnB.id);
+  }
+
+  async function lockRow(table: "entities" | "connections", id: string) {
+    const blocker: PoolClient = await connect();
+    await blocker.query("begin");
+    await blocker.query(`select id from ${table} where id = $1 for update`, [id]);
+    const { rows } = await blocker.query("select pg_backend_pid() as pid");
+    return { blocker, pid: Number(rows[0].pid) };
+  }
+
+  const undoVia = (shared: Shared, canvasId: string) => () =>
+    api.request("POST", `/api/canvases/${canvasId}/undo`, shared.owner.session);
+
+  for (const kind of ["entity", "connection"] as const) {
+    const table = kind === "entity" ? "entities" : "connections";
+    const first = kind === "entity" ? { name: "Renamed API" } : { label: "Loads orders" };
+    const second =
+      kind === "entity" ? { metadata: { documentation: "Docs" } } : { metadata: { contractBody: "openapi: 3" } };
+
+    async function currentObject(shared: Shared) {
+      const g = await graph(shared.owner.session, shared.canvasA);
+      return kind === "entity"
+        ? g.entities.find((e) => e.id === shared.service)
+        : g.connections.find((c) => c.id === shared.connectionId);
+    }
+
+    function expectBothReverted(object: { metadata: Record<string, unknown> } | undefined) {
+      expect(object?.metadata).toEqual({});
+      expect(kind === "entity" ? (object as { name?: string }).name : (object as { label?: string }).label).toBe(
+        kind === "entity" ? "Orders API" : "",
+      );
+    }
+
+    it(`keeps both results when ${kind}.updated is undone concurrently through two canvases`, async () => {
+      const shared = await setupShared();
+      await splitHistory(shared, kind, first, second);
+      const objectId = kind === "entity" ? shared.service : shared.connectionId;
+      const { blocker, pid } = await lockRow(table, objectId);
+      let requests: Promise<Response>[] = [];
+      try {
+        requests = [undoVia(shared, shared.canvasA)(), undoVia(shared, shared.canvasB)()];
+        // Both undos are in flight against the held object row: the interleaving the lost update needs.
+        await waitForBlocked(pid, 2);
+      } finally {
+        await release(blocker);
+      }
+      const responses = await Promise.all(requests);
+      for (const response of responses) {
+        expect(response.status).toBe(200);
+        expect((await response.json()) as UndoResult).toMatchObject({ undone: true, action: `${kind}.updated` });
+      }
+      expectBothReverted((await currentObject(shared)) as { metadata: Record<string, unknown> } | undefined);
+    });
+
+    it(`does not deadlock a ${kind} PATCH racing two undos through different canvases`, async () => {
+      const shared = await setupShared();
+      await splitHistory(shared, kind, first, second);
+      const objectId = kind === "entity" ? shared.service : shared.connectionId;
+      const url = kind === "entity" ? `/api/entities/${objectId}` : `/api/connections/${objectId}`;
+      const { blocker, pid } = await lockRow(table, objectId);
+      let requests: Promise<Response>[] = [];
+      try {
+        requests = [
+          undoVia(shared, shared.canvasA)(),
+          undoVia(shared, shared.canvasB)(),
+          api.request(
+            "PATCH",
+            url,
+            shared.owner.session,
+            kind === "entity" ? { description: "Edited" } : { description: "Edited" },
+          ),
+        ];
+        await waitForBlocked(pid, 3);
+      } finally {
+        await release(blocker);
+      }
+      const responses = await Promise.all(requests);
+      expect(responses.map((response) => response.status)).toEqual([200, 200, 200]);
+      const current = (await currentObject(shared)) as { description: string | null } | undefined;
+      expect(current?.description).toBe("Edited");
+    });
+  }
+});

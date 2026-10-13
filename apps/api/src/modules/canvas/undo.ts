@@ -478,7 +478,11 @@ async function applyUndo(tx: Transaction, event: CanvasEventRow): Promise<boolea
       return deleteConnection(tx, event.canvasId, requireTargetId(event));
     case "entity.updated": {
       const entityId = requireTargetId(event);
-      const [current] = await tx.select().from(entities).where(eq(entities.id, entityId)).limit(1);
+      // Lock order: canvas row(s) first (the route holds the requested canvas), then this shared entity row, the
+      // same as PATCH /api/entities/:id. Held to commit so the read-modify-write cannot lose a concurrent undo or
+      // edit that reached the entity through another canvas; taken FOR UPDATE up front (never FOR SHARE first) so
+      // event recording cannot need a lock upgrade.
+      const [current] = await tx.select().from(entities).where(eq(entities.id, entityId)).for("update").limit(1);
       if (!current) return false;
       const currentMetadata = (current.metadata ?? {}) as Record<string, unknown>;
       let next: { type: EntityType; name: string; description: string | null };
@@ -769,7 +773,9 @@ async function undoConnectionUpdated(
     await touchCanvas(tx, canvasId);
     return true;
   }
-  const [current] = await tx.select().from(connections).where(eq(connections.id, connectionId)).limit(1);
+  // Same lock order as entity.updated: canvas row first, then the shared connection row FOR UPDATE until commit
+  // (matches PATCH /api/connections/:id), so concurrent undos through different canvases serialize.
+  const [current] = await tx.select().from(connections).where(eq(connections.id, connectionId)).for("update").limit(1);
   if (!current) return false;
   const currentMetadata = (current.metadata ?? {}) as Record<string, unknown>;
   let next: { type: ConnectionType; label: string; description: string | null };
