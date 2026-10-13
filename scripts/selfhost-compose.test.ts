@@ -28,6 +28,12 @@ describe("self-host Compose contract", () => {
     expect(base).not.toMatch(/\n\s+(?:api|postgres):[\s\S]*?\n\s+ports:/);
   });
 
+  test("persists Caddy data and config in named volumes", () => {
+    const web = base.match(/\n {2}web:\n([\s\S]*?)\nvolumes:/)?.[1] ?? "";
+    expect(web).toMatch(/\n {4}volumes:\n {6}- caddy-data:\/data\n {6}- caddy-config:\/config/);
+    expect(base).toMatch(/\nvolumes:\n {2}postgres-data:\n {2}caddy-data:\n {2}caddy-config:\n/);
+  });
+
   test("binds local access only to loopback over TLS", () => {
     expect(local).toMatch(/127\.0\.0\.1:\$\{WOOBLE_HTTP_PORT:\?Set WOOBLE_HTTP_PORT\}:443/);
     expect(local).toContain('"tls internal"');
