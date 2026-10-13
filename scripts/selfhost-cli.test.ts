@@ -64,6 +64,11 @@ function fixture(
 printf '%s\\n' "$*" >> '${log}'
 printf 'WOOBLE_VERSION=%s\\n' "\${WOOBLE_VERSION:-unset}" >> '${log}'
 case "$*" in
+  *'stop web api'*) ${options.fail === "stop" ? "exit 24" : "exit 0"} ;;
+  *'exec -T web cat '*) ${options.fail === "ca" ? "exit 25" : "printf '%s\\n' '-----BEGIN CERTIFICATE-----fictional'"} ;;
+  *'PROBE_KIND=https'*) cat > /dev/null; ${options.fail === "probe-https" ? "exit 26" : "exit 0"} ;;
+  *'PROBE_KIND=ws'*) cat > /dev/null; ${options.fail === "probe-ws" ? "exit 27" : "exit 0"} ;;
+  *'127.0.0.1:3001/health'*) ${options.fail === "api-health" ? "exit 28" : "exit 0"} ;;
   *'config -q'*) ${options.fail === "config-secret" ? "printf '%s\\n' 'invalid value fictional-bind-secret' >&2; exit 23" : "exit 0"} ;;
   *'volume ls'*) printf '%s\\n' '${options.volumes ?? ""}' ;;
   *'volume inspect'*)
@@ -324,12 +329,38 @@ describe("self-host CLI safety", () => {
     }
   });
 
-  it("does not restore when the automatic pre-restore backup fails", () => {
+  it("does not restore when the automatic pre-restore backup fails, and restarts the stopped stack", () => {
     const f = fixture({ fail: "backup" });
     const result = f.run("restore", "--confirm", f.backupFile);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("automatic pre-restore backup failed");
-    expect(readFileSync(f.log, "utf8")).not.toContain("pg_restore");
+    const calls = readFileSync(f.log, "utf8");
+    expect(calls).not.toContain("pg_restore");
+    expect(calls.indexOf("stop web api")).toBeLessThan(calls.indexOf("pg_dump"));
+    expect(calls.indexOf("pg_dump")).toBeLessThan(calls.indexOf("up -d"));
+    expect(calls).not.toContain("migrate");
+  });
+
+  it("stops web and api before taking the pre-restore backup", () => {
+    const f = fixture();
+    const result = f.run("restore", "--confirm", f.backupFile);
+    expect(result.status).toBe(0);
+    const calls = readFileSync(f.log, "utf8");
+    expect(calls.indexOf("stop web api")).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf("stop web api")).toBeLessThan(calls.indexOf("pg_dump"));
+    expect(calls.indexOf("pg_dump")).toBeLessThan(calls.indexOf("pg_restore"));
+  });
+
+  it("neither backs up nor restores when web/api cannot be stopped, and restarts the stack", () => {
+    const f = fixture({ fail: "stop" });
+    const result = f.run("restore", "--confirm", f.backupFile);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("could not stop web/API before restore");
+    const calls = readFileSync(f.log, "utf8");
+    expect(calls).not.toContain("pg_dump");
+    expect(calls).not.toContain("pg_restore");
+    expect(calls).toContain("up -d");
+    expect(readFileSync(f.databaseState, "utf8")).toBe("fictional-live-before-restore\n");
   });
 
   it("attempts data recovery and restart after a failed restore while retaining backup", () => {
@@ -423,5 +454,61 @@ describe("self-host CLI safety", () => {
     expect(start.stderr).toContain("original version retained");
     expect(readFileSync(join(startFixture.base, ".env"), "utf8")).toContain("WOOBLE_VERSION=1.2.3");
     expect((readdirSync(join(startFixture.base, "backups")) as string[]).length).toBe(1);
+  });
+
+  describe("diagnose probes the public entry point", () => {
+    it("passes only when API health, HTTPS through Caddy, and the WebSocket upgrade all pass", () => {
+      const f = fixture();
+      const result = f.run("diagnose");
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("diagnose ok");
+      const calls = readFileSync(f.log, "utf8");
+      expect(calls).toContain("PROBE_KIND=https");
+      expect(calls).toContain("PROBE_KIND=ws");
+      expect(calls).toContain("PROBE_ORIGIN=https://localhost:18083");
+      expect(calls).toContain("PROBE_TARGET=web");
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain("fictional-secret");
+    });
+
+    it("fails when the Caddy HTTPS probe fails even though internal API health succeeds", () => {
+      const f = fixture({ fail: "probe-https" });
+      const result = f.run("diagnose");
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("FAILED [caddy-https]");
+      expect(result.stderr).not.toContain("api-internal");
+      expect(result.stdout).not.toContain("diagnose ok");
+    });
+
+    it("fails when Caddy's CA cannot be read from the web container", () => {
+      const f = fixture({ fail: "ca" });
+      const result = f.run("diagnose");
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("FAILED [caddy-ca]");
+    });
+
+    it("fails when the WebSocket upgrade probe fails", () => {
+      const f = fixture({ fail: "probe-ws" });
+      const result = f.run("diagnose");
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("FAILED [caddy-websocket]");
+      expect(result.stderr).not.toContain("caddy-https");
+    });
+
+    it("reports the internal API layer separately when only internal health fails", () => {
+      const f = fixture({ fail: "api-health" });
+      const result = f.run("diagnose");
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("FAILED [api-internal]");
+      expect(result.stderr).not.toContain("caddy-https");
+    });
+
+    it("does not read Caddy's CA in domain mode and still probes through Caddy", () => {
+      const f = fixture({ mode: "domain", origin: "https://wooble.example.test" });
+      const result = f.run("diagnose");
+      expect(result.status).toBe(0);
+      const calls = readFileSync(f.log, "utf8");
+      expect(calls).not.toContain("exec -T web cat");
+      expect(calls).toContain("PROBE_ORIGIN=https://wooble.example.test");
+    });
   });
 });

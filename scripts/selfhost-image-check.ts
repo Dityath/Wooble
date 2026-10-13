@@ -31,11 +31,13 @@ const sentinelRelativePath = join("backups", sentinelName);
 const sentinelPath = join(root, sentinelRelativePath);
 const sentinelContent = `fictional image-check sentinel ${crypto.randomUUID()}\n`;
 const imageTag = `wooble-selfhost-image-check:${crypto.randomUUID()}`;
+const webImageTag = `wooble-selfhost-image-check-web:${crypto.randomUUID()}`;
 const backupsDirectory = join(root, "backups");
 let createdBackupsDirectory = false;
 let sentinelCreated = false;
 
 let imageCreated = false;
+let webImageCreated = false;
 try {
   check(!existsSync(sentinelPath), "Refusing to overwrite an existing sentinel path");
   if (!existsSync(backupsDirectory)) {
@@ -57,7 +59,18 @@ try {
   );
   console.log("Build context passed: Docker could not COPY the backup sentinel");
 
-  const build = run("docker", ["build", "--no-cache", "-f", "deploy/Dockerfile", "-t", imageTag, "."]);
+  // deploy/Dockerfile ends with the Caddy "web" stage, so every build names its target.
+  const build = run("docker", [
+    "build",
+    "--no-cache",
+    "--target",
+    "api",
+    "-f",
+    "deploy/Dockerfile",
+    "-t",
+    imageTag,
+    ".",
+  ]);
   check(build.status === 0, "API image build failed");
   imageCreated = true;
 
@@ -81,11 +94,40 @@ try {
     `,
   ]);
   check(inspect.status === 0, "API image inspection failed");
+
+  // The web image is the Caddy stage: it has no bun, so inspect it with busybox sh.
+  const webBuild = run("docker", [
+    "build",
+    "--no-cache",
+    "--target",
+    "web",
+    "-f",
+    "deploy/Dockerfile",
+    "-t",
+    webImageTag,
+    ".",
+  ]);
+  check(webBuild.status === 0, "Web image build failed");
+  webImageCreated = true;
+  const webInspect = run("docker", [
+    "run",
+    "--rm",
+    "--entrypoint",
+    "sh",
+    webImageTag,
+    "-c",
+    `test ! -e "/srv/backups/${sentinelName}" && test ! -e "/srv/${sentinelName}" && test ! -e /srv/backups && test -f /srv/index.html && test -f /etc/caddy/Caddyfile && echo "Web image passed: backup sentinel absent; static assets and Caddyfile present"`,
+  ]);
+  check(webInspect.status === 0, "Web image inspection failed");
 } finally {
   try {
-    if (imageCreated) {
-      const removal = run("docker", ["image", "rm", "--force", imageTag]);
-      if (removal.status !== 0) console.error(`Could not remove temporary image ${imageTag}`);
+    for (const [created, tag] of [
+      [imageCreated, imageTag],
+      [webImageCreated, webImageTag],
+    ] as const) {
+      if (!created) continue;
+      const removal = run("docker", ["image", "rm", "--force", tag]);
+      if (removal.status !== 0) console.error(`Could not remove temporary image ${tag}`);
     }
   } finally {
     if (sentinelCreated && existsSync(sentinelPath)) unlinkSync(sentinelPath);

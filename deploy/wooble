@@ -102,6 +102,57 @@ recover_pre_restore() {
   start_stack
 }
 start_stack() { compose up -d; }
+# Runs inside the api container (bun) on the Compose proxy network and talks to
+# the Caddy service ("web") on 443 exactly as a browser would: TLS with SNI and
+# Host for the configured origin, verified against the supplied CA (stdin; empty
+# means system roots). TLS verification is never disabled.
+# PROBE_KIND=https expects 200 from /health; PROBE_KIND=ws sends an unauthenticated
+# WebSocket upgrade for a deliberately invalid canvas id and expects 101, which only
+# the API (not Caddy's static file server) can produce for /api/canvases/*/live.
+read -r -d '' PROBE_SCRIPT <<'JS' || true
+const tls = require("node:tls");
+const kind = process.env.PROBE_KIND;
+const origin = new URL(process.env.PROBE_ORIGIN);
+const name = origin.hostname.replace(/^\[|\]$/g, "");
+const ca = require("node:fs").readFileSync(0, "utf8").trim();
+const isIp = /^[0-9.]+$/.test(name) || name.includes(":");
+const ws = kind === "ws";
+const path = ws ? "/api/canvases/diagnose/live" : "/health";
+const headers = [`GET ${path} HTTP/1.1`, `Host: ${origin.host}`, "Connection: " + (ws ? "Upgrade" : "close")];
+if (ws) headers.push("Upgrade: websocket", "Sec-WebSocket-Version: 13", "Sec-WebSocket-Key: d29vYmxlLWRpYWdub3NlIQ==", `Origin: ${origin.origin}`);
+const socket = tls.connect({
+  host: process.env.PROBE_TARGET,
+  port: Number(process.env.PROBE_PORT || 443),
+  servername: isIp ? undefined : name,
+  ca: ca ? ca : undefined,
+  checkServerIdentity: (_host, cert) => tls.checkServerIdentity(name, cert),
+});
+const fail = (why) => { console.error(why); process.exit(1); };
+let data = "";
+socket.setTimeout(10000, () => fail("timed out"));
+socket.on("error", (error) => fail("TLS/connection error: " + error.message));
+socket.on("secureConnect", () => socket.write(headers.join("\r\n") + "\r\n\r\n"));
+socket.on("data", (chunk) => {
+  data += chunk.toString("latin1");
+  if (!data.includes("\r\n")) return;
+  const status = Number(data.split(" ")[1]);
+  if (ws ? status === 101 : status === 200) { console.log(`${kind} probe through Caddy: HTTP ${status}`); process.exit(0); }
+  fail(`${kind} probe through Caddy: unexpected HTTP ${status}`);
+});
+socket.on("end", () => fail("connection closed before a response"));
+JS
+
+# Probe the public entry point (Caddy, the compose "web" service) from the api
+# container, so the host only needs Docker Compose. Local/private modes use
+# Caddy's internal CA, exported from the web container's data volume.
+probe_caddy() {
+  local kind="$1" origin="$2" ca=""
+  if [[ "$MODE" != domain ]]; then
+    ca="$(compose exec -T web cat /data/caddy/pki/authorities/local/root.crt 2>/dev/null)" || return 2
+    [[ -n "$ca" ]] || return 2
+  fi
+  printf '%s\n' "$ca" | compose exec -T -e PROBE_KIND="$kind" -e PROBE_ORIGIN="$origin" -e PROBE_TARGET=web api bun -e "$PROBE_SCRIPT"
+}
 https_origin_matches_host() {
   local host="$1" origin="$2" expected_port="$3" port
   [[ "$expected_port" =~ ^[1-9][0-9]{0,4}$ ]] || return 1
@@ -154,9 +205,19 @@ case "$cmd" in
         ;;
     esac
     compose_config_check
-    if ! grep -Fq 'handle /api/*' "$ROOT/deploy/Caddyfile" || ! grep -Fq 'reverse_proxy api:3001' "$ROOT/deploy/Caddyfile"; then fail "Caddy API/WebSocket proxy route is missing"; fi
     compose ps
-    compose exec -T api bun -e 'fetch("http://127.0.0.1:3001/health").then(async r => { const body = await r.json(); console.log(JSON.stringify(body)); if (!r.ok) process.exit(1) }).catch(() => process.exit(1))' || fail "API health check failed; inspect migration and service logs"
+    printf 'note: HTTPS/WebSocket probes run from the api container against the Caddy service; Caddy'"'"'s CA is read from its data volume and TLS verification stays on\n'
+    failed=0
+    compose exec -T api bun -e 'fetch("http://127.0.0.1:3001/health").then(async r => { const body = await r.json(); console.log(JSON.stringify(body)); if (!r.ok) process.exit(1) }).catch(() => process.exit(1))' || { printf 'FAILED [api-internal]: API health check inside the api container failed; inspect migration and service logs\n' >&2; failed=1; }
+    rc=0; probe_caddy https "$origin" || rc=$?
+    if (( rc == 2 )); then printf 'FAILED [caddy-ca]: cannot read Caddy'"'"'s CA from the web container; is the web service running?\n' >&2; failed=1
+    elif (( rc != 0 )); then printf 'FAILED [caddy-https]: %s/health was not served successfully through Caddy; check the web service, TLS, and proxy route\n' "${origin%%[?#]*}" >&2; failed=1
+    else
+      rc=0; probe_caddy ws "$origin" || rc=$?
+      if (( rc != 0 )); then printf 'FAILED [caddy-websocket]: WebSocket upgrade through Caddy to the API live route did not return 101\n' >&2; failed=1; fi
+    fi
+    (( failed == 0 )) || fail "diagnose found failing layers (see FAILED lines above)"
+    printf 'diagnose ok: API health, HTTPS through Caddy, and WebSocket upgrade through Caddy passed\n'
     ;;
   backup)
     resolve_project
@@ -167,10 +228,15 @@ case "$cmd" in
     file="$2"
     [[ -f "$file" ]] || fail "backup file does not exist"
     resolve_project
-    prebackup="$(backup)" || fail "automatic pre-restore backup failed; restore was not attempted"
+    # Stop writers first so the pre-restore backup captures every accepted write.
+    # backup() only needs the postgres service, which stays running.
     if ! compose stop web api; then
       start_stack || true
-      fail "could not stop web/API before restore; attempted to restart stack; pre-restore backup: $prebackup"
+      fail "could not stop web/API before restore; no backup or restore was attempted; attempted to restart stack"
+    fi
+    if ! prebackup="$(backup)"; then
+      start_stack || true
+      fail "automatic pre-restore backup failed; restore was not attempted; attempted to restart stack"
     fi
     if restore_dump "$file"; then
       if compose run --rm migrate; then

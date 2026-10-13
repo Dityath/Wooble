@@ -64,7 +64,8 @@ jobs:
       - name: Run self-host regression suites
         run: >-
           bun test scripts/selfhost-compose.test.ts scripts/selfhost-cli.test.ts
-          scripts/selfhost-image-check.test.ts scripts/selfhost-browser-config.test.ts
+          scripts/selfhost-image-check.test.ts scripts/selfhost-image-check-script.test.ts
+          scripts/selfhost-browser-config.test.ts
           scripts/release-workflow.test.ts scripts/third-party-notices.test.ts
       - name: Check self-host operator CLI invariants
         run: bun scripts/selfhost-cli-check.ts
