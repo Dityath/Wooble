@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import {
   chmodSync,
   copyFileSync,
@@ -14,6 +14,19 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+
+/** Command lines the Docker shim logged, in order (version lines are dropped). */
+function commands(log: string) {
+  return readFileSync(log, "utf8")
+    .split("\n")
+    .filter((line) => line && !line.startsWith("WOOBLE_VERSION="));
+}
+/** Index of the first command containing `text` at or after `from`; fails the test when absent. */
+function at(lines: string[], text: string, from = 0) {
+  const index = lines.findIndex((line, i) => i >= from && line.includes(text));
+  expect(index).toBeGreaterThanOrEqual(0);
+  return index;
+}
 
 const root = resolve(import.meta.dir, "..");
 const temporaryRoots: string[] = [];
@@ -64,10 +77,10 @@ function fixture(
 printf '%s\\n' "$*" >> '${log}'
 printf 'WOOBLE_VERSION=%s\\n' "\${WOOBLE_VERSION:-unset}" >> '${log}'
 case "$*" in
-  *'stop web api'*) ${options.fail === "stop" ? "exit 24" : "exit 0"} ;;
+  *'stop web api'*) ${options.fail === "stop" ? "exit 24" : options.fail === "signal-stop" ? "kill -TERM $PPID; exit 0" : "exit 0"} ;;
   *'exec -T web cat '*) ${options.fail === "ca" ? "exit 25" : "printf '%s\\n' '-----BEGIN CERTIFICATE-----fictional'"} ;;
-  *'PROBE_KIND=https'*) cat > /dev/null; ${options.fail === "probe-https" ? "exit 26" : "exit 0"} ;;
-  *'PROBE_KIND=ws'*) cat > /dev/null; ${options.fail === "probe-ws" ? "exit 27" : "exit 0"} ;;
+  *'PROBE_KIND=https'*) cat > /dev/null; ${options.fail === "probe-https" || options.fail === "probe-both" ? "exit 26" : options.fail === "probe-https-2" ? "exit 2" : "exit 0"} ;;
+  *'PROBE_KIND=ws'*) cat > /dev/null; ${options.fail === "probe-ws" || options.fail === "probe-both" ? "exit 27" : "exit 0"} ;;
   *'127.0.0.1:3001/health'*) ${options.fail === "api-health" ? "exit 28" : "exit 0"} ;;
   *'config -q'*) ${options.fail === "config-secret" ? "printf '%s\\n' 'invalid value fictional-bind-secret' >&2; exit 23" : "exit 0"} ;;
   *'volume ls'*) printf '%s\\n' '${options.volumes ?? ""}' ;;
@@ -76,7 +89,7 @@ case "$*" in
 ${inspectCases}
   esac ;;
   *'pg_dump'*) ${options.fail === "backup" ? "exit 19" : `cat '${databaseState}'`} ;;
-  *'pg_restore'*) ${options.fail === "restore" ? `cat > '${databaseState}'; if [ ! -e '${base}/restore-failed-once' ]; then touch '${base}/restore-failed-once'; exit 20; fi` : `cat > '${databaseState}'`} ;;
+  *'pg_restore'*) ${options.fail === "signal-restore" ? `cat > /dev/null; kill -TERM $PPID; exit 0` : options.fail === "restore" ? `cat > '${databaseState}'; if [ ! -e '${base}/restore-failed-once' ]; then touch '${base}/restore-failed-once'; exit 20; fi` : `cat > '${databaseState}'`} ;;
   *'run --rm migrate'*) ${options.fail === "migration" ? "exit 21" : options.fail === "migration-once" ? `if [ ! -e '${base}/migration-failed-once' ]; then touch '${base}/migration-failed-once'; exit 21; fi; exit 0` : "exit 0"} ;;
   *'pull api web migrate'*) exit 0 ;;
   *'up -d'*) ${options.fail === "start" ? "exit 22" : "exit 0"} ;;
@@ -382,9 +395,14 @@ describe("self-host CLI safety", () => {
     const result = f.run("restore", "--confirm", f.backupFile);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("restore succeeded; migrations applied");
-    const calls = readFileSync(f.log, "utf8");
-    expect(calls.indexOf("pg_restore")).toBeLessThan(calls.indexOf("run --rm migrate"));
-    expect(calls.indexOf("run --rm migrate")).toBeLessThan(calls.indexOf("up -d"));
+    const calls = commands(f.log);
+    const stop = at(calls, "stop web api");
+    const dump = at(calls, "pg_dump", stop);
+    const restore = at(calls, "pg_restore", dump);
+    const migrate = at(calls, "run --rm migrate", restore);
+    const start = at(calls, "up -d", migrate);
+    expect(start).toBeGreaterThan(migrate);
+    expect(calls.slice(0, migrate).some((line) => line.includes("up -d"))).toBe(false);
   });
 
   it("recovers original data if migration of a restored backup fails", () => {
@@ -392,11 +410,59 @@ describe("self-host CLI safety", () => {
     const result = f.run("restore", "--confirm", f.backupFile);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("restore migrations failed; original data recovered and stack restarted");
-    const calls = readFileSync(f.log, "utf8");
-    expect((calls.match(/pg_restore/g) ?? []).length).toBe(2);
-    expect((calls.match(/migrate/g) ?? []).length).toBe(2);
-    expect(calls).toContain("up -d");
+    const calls = commands(f.log);
+    expect(calls.filter((line) => line.includes("pg_restore")).length).toBe(2);
+    expect(calls.filter((line) => line.includes("run --rm migrate")).length).toBe(2);
+    // stop, pre-restore backup, user restore, failing migrate; then recovery: stop again BEFORE the
+    // pre-restore dump is restored, then migrate, then start.
+    const firstStop = at(calls, "stop web api");
+    const dump = at(calls, "pg_dump", firstStop);
+    const userRestore = at(calls, "pg_restore", dump);
+    const failedMigrate = at(calls, "run --rm migrate", userRestore);
+    const recoveryStop = at(calls, "stop web api", failedMigrate);
+    const recoveryRestore = at(calls, "pg_restore", recoveryStop);
+    const recoveryMigrate = at(calls, "run --rm migrate", recoveryRestore);
+    at(calls, "up -d", recoveryMigrate);
     expect(readFileSync(f.databaseState, "utf8")).toBe("fictional-live-before-restore\n");
+  });
+
+  it("stops web and api again before restoring the pre-restore backup when the user restore fails", () => {
+    const f = fixture({ fail: "restore" });
+    expect(f.run("restore", "--confirm", f.backupFile).status).not.toBe(0);
+    const calls = commands(f.log);
+    const firstStop = at(calls, "stop web api");
+    const dump = at(calls, "pg_dump", firstStop);
+    const userRestore = at(calls, "pg_restore", dump);
+    const recoveryStop = at(calls, "stop web api", userRestore + 1);
+    const recoveryRestore = at(calls, "pg_restore", recoveryStop);
+    const recoveryMigrate = at(calls, "run --rm migrate", recoveryRestore);
+    expect(at(calls, "up -d", recoveryMigrate)).toBeGreaterThan(recoveryMigrate);
+  });
+
+  it("on an interrupt before any restore begins, restarts the stack and names the stop state without recovering data", () => {
+    const f = fixture({ fail: "signal-stop" });
+    const result = f.run("restore", "--confirm", f.backupFile);
+    expect(result.status).toBe(143);
+    expect(result.stderr).toContain("restore interrupted by SIGTERM");
+    expect(result.stderr).toContain("no restore had begun; the stack was restarted");
+    const calls = commands(f.log);
+    at(calls, "up -d", at(calls, "stop web api"));
+    expect(calls.some((line) => line.includes("pg_restore") || line.includes("run --rm migrate"))).toBe(false);
+    expect(readFileSync(f.databaseState, "utf8")).toBe("fictional-live-before-restore\n");
+  });
+
+  it("on an interrupt during the restore, leaves the stack stopped, never replaces data, and prints the pre-restore backup", () => {
+    const f = fixture({ fail: "signal-restore" });
+    const result = f.run("restore", "--confirm", f.backupFile);
+    expect(result.status).toBe(143);
+    expect(result.stderr).toContain("restore interrupted by SIGTERM");
+    expect(result.stderr).toContain("may be partially restored");
+    expect(result.stderr).toContain("stack was left stopped");
+    const backup = result.stderr.match(/pre-restore backup retained at (.+)$/m)?.[1];
+    expect(backup && existsSync(backup)).toBe(true);
+    const calls = commands(f.log);
+    expect(calls.filter((line) => line.includes("pg_restore")).length).toBe(1);
+    expect(calls.some((line) => line.includes("up -d") || line.includes("run --rm migrate"))).toBe(false);
   });
 
   it("backs up before update and runs migrations before starting the target release", () => {
@@ -477,6 +543,7 @@ describe("self-host CLI safety", () => {
       expect(result.stderr).toContain("FAILED [caddy-https]");
       expect(result.stderr).not.toContain("api-internal");
       expect(result.stdout).not.toContain("diagnose ok");
+      expect(result.stderr).not.toContain("caddy-websocket");
     });
 
     it("fails when Caddy's CA cannot be read from the web container", () => {
@@ -484,6 +551,63 @@ describe("self-host CLI safety", () => {
       const result = f.run("diagnose");
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain("FAILED [caddy-ca]");
+    });
+
+    it("runs the WebSocket probe even when the HTTPS probe fails, and reports both", () => {
+      const f = fixture({ fail: "probe-https" });
+      const result = f.run("diagnose");
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("FAILED [caddy-https]");
+      expect(readFileSync(f.log, "utf8")).toContain("PROBE_KIND=ws");
+      expect(result.stderr).not.toContain("caddy-websocket");
+    });
+
+    it("reports both FAILED lines when the HTTPS and WebSocket probes fail", () => {
+      const f = fixture({ fail: "probe-both" });
+      const result = f.run("diagnose");
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("FAILED [caddy-https]");
+      expect(result.stderr).toContain("FAILED [caddy-websocket]");
+    });
+
+    it("skips both Caddy probes only when the CA is unavailable, and says so", () => {
+      const f = fixture({ fail: "ca" });
+      const result = f.run("diagnose");
+      expect(result.stderr).toContain("FAILED [caddy-ca]");
+      expect(result.stderr).toContain("[caddy-https] and [caddy-websocket] were not checked");
+      expect(readFileSync(f.log, "utf8")).not.toContain("PROBE_KIND");
+    });
+
+    it("does not mistake a probe exiting 2 for a CA failure", () => {
+      const f = fixture({ fail: "probe-https-2" });
+      const result = f.run("diagnose");
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("FAILED [caddy-https]");
+      expect(result.stderr).not.toContain("caddy-ca");
+    });
+
+    it("rejects a domain-mode origin carrying credentials without echoing them", () => {
+      const f = fixture({ mode: "domain", origin: "https://fictional-user:fictional-pass@wooble.example.test" });
+      const result = f.run("diagnose");
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("must not contain credentials");
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain("fictional-pass");
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain("fictional-user");
+      expect(existsSync(f.log) ? readFileSync(f.log, "utf8") : "").not.toContain("PROBE_KIND");
+    });
+
+    it("prints only scheme://host[:port] of the origin in FAILED lines", () => {
+      const source = readFileSync(join(root, "deploy/wooble"), "utf8");
+      const fn = source.match(/^display_origin\(\) \{[\s\S]*?^\}/m)?.[0];
+      expect(fn).toBeDefined();
+      for (const [input, shown] of [
+        ["https://u:p@host.example:8443/path?token=x#frag", "https://host.example:8443"],
+        ["https://host.example/?token=fictional-secret", "https://host.example"],
+        ["https://fictional-user@host.example", "https://host.example"],
+      ] as const) {
+        const out = spawnSync("bash", ["-c", `${fn}\ndisplay_origin "$1"`, "bash", input], { encoding: "utf8" });
+        expect(out.stdout).toBe(shown);
+      }
     });
 
     it("fails when the WebSocket upgrade probe fails", () => {
@@ -509,6 +633,139 @@ describe("self-host CLI safety", () => {
       const calls = readFileSync(f.log, "utf8");
       expect(calls).not.toContain("exec -T web cat");
       expect(calls).toContain("PROBE_ORIGIN=https://wooble.example.test");
+    });
+  });
+
+  describe("the extracted probe script against a local TLS server", () => {
+    const apiUnauthorized = () => Response.json({ message: "Sign in to continue" }, { status: 401 });
+    const handlers: Record<string, (request: Request, server: unknown) => Response | undefined> = {
+      "api-401": apiUnauthorized,
+      "wrong-401-body": () => Response.json({ message: "other" }, { status: 401 }),
+      "html-401": () =>
+        new Response("<html>Sign in to continue</html>", { status: 401, headers: { "content-type": "text/html" } }),
+      "bad-gateway": () => new Response("Bad Gateway", { status: 502 }),
+      "spa-html": () =>
+        new Response("<!doctype html><title>Wooble</title>", { headers: { "content-type": "text/html" } }),
+      "not-found": () => Response.json({ message: "not found" }, { status: 404 }),
+      "ok-health": () => Response.json({ status: "ok" }),
+      upgrade: (request, server) =>
+        (server as { upgrade(request: Request): boolean }).upgrade(request)
+          ? undefined
+          : new Response("no", { status: 500 }),
+    };
+    let script = "";
+    let certificate = "";
+    let key = "";
+    let directory = "";
+    beforeAll(() => {
+      script = readFileSync(join(root, "deploy/wooble"), "utf8").match(/<<'JS' \|\| true\n([\s\S]*?)\nJS\n/)?.[1] ?? "";
+      directory = mkdtempSync(join(tmpdir(), "wooble-probe-test-"));
+      temporaryRoots.push(directory);
+      const made = spawnSync(
+        "openssl",
+        [
+          "req",
+          "-x509",
+          "-newkey",
+          "ec",
+          "-pkeyopt",
+          "ec_paramgen_curve:prime256v1",
+          "-nodes",
+          "-keyout",
+          join(directory, "k.pem"),
+          "-out",
+          join(directory, "c.pem"),
+          "-days",
+          "2",
+          "-subj",
+          "/CN=localhost",
+          "-addext",
+          "subjectAltName=DNS:localhost",
+        ],
+        { encoding: "utf8" },
+      );
+      expect(made.status).toBe(0);
+      certificate = readFileSync(join(directory, "c.pem"), "utf8");
+      key = readFileSync(join(directory, "k.pem"), "utf8");
+    });
+    async function probe(kind: "https" | "ws", handler: string, ca = certificate) {
+      let seenPath = "";
+      const server = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        tls: { cert: certificate, key },
+        fetch(request, self) {
+          seenPath = new URL(request.url).pathname;
+          return handlers[handler](request, self);
+        },
+        websocket: { message() {} },
+      });
+      try {
+        const child = Bun.spawn(["bun", "-e", script], {
+          stdin: new Blob([`${ca}\n`]),
+          stdout: "pipe",
+          stderr: "pipe",
+          env: {
+            ...process.env,
+            PROBE_KIND: kind,
+            PROBE_ORIGIN: `https://localhost:${server.port}`,
+            PROBE_TARGET: "127.0.0.1",
+            PROBE_PORT: String(server.port),
+          },
+        });
+        const [stdout, stderr, code] = await Promise.all([
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+          child.exited,
+        ]);
+        return { stdout, stderr, code, seenPath };
+      } finally {
+        await server.stop(true);
+      }
+    }
+
+    it("extracts the script", () => expect(script).toContain("PROBE_KIND"));
+
+    it("accepts the API's JSON 401 for a random valid canvas UUID", async () => {
+      const result = await probe("ws", "api-401");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("HTTP 401 JSON from the API access guard");
+      expect(result.seenPath).toMatch(
+        /^\/api\/canvases\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/live$/,
+      );
+    });
+
+    it("accepts HTTP 101", async () => {
+      const result = await probe("ws", "upgrade");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("HTTP 101");
+    });
+
+    for (const [handler, expected] of [
+      ["bad-gateway", "unexpected HTTP 502"],
+      ["spa-html", "unexpected HTTP 200"],
+      ["not-found", "unexpected HTTP 404"],
+      ["html-401", "unexpected HTTP 401"],
+      ["wrong-401-body", "not the API's expected unauthorized body"],
+    ] as const)
+      it(`rejects ${handler} for the WebSocket probe`, async () => {
+        const result = await probe("ws", handler);
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain(expected);
+        expect(result.stdout).toBe("");
+      });
+
+    it("passes the HTTPS probe on 200 and fails it on 502", async () => {
+      expect((await probe("https", "ok-health")).code).toBe(0);
+      const bad = await probe("https", "bad-gateway");
+      expect(bad.code).toBe(1);
+      expect(bad.stderr).toContain("unexpected HTTP 502");
+    });
+
+    it("keeps TLS verification on", async () => {
+      const result = await probe("https", "ok-health", "");
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("TLS/connection error");
     });
   });
 });

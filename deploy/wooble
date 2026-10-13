@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${WOOBLE_ENV_FILE:-$ROOT/.env.selfhost}"
 COMPOSE_BASE=( -f "$ROOT/compose.selfhost.yml" )
 
-fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+fail() { trap - INT TERM HUP; printf 'error: %s\n' "$*" >&2; exit 1; }
 read_env() {
   local key="$1"
   [[ -f "$ENV_FILE" ]] || return 0
@@ -102,13 +102,39 @@ recover_pre_restore() {
   start_stack
 }
 start_stack() { compose up -d; }
+# Signal handling for restore, active from before web/api are stopped until the
+# stack is handed back. It never restores data: replacing data on a signal would be
+# a surprise. Before the user's dump touches the database it only restarts the stack;
+# afterwards the database may be partially restored, so the stack is left stopped.
+RESTORE_PHASE=""
+restore_interrupted() {
+  local signal="$1" code="$2"
+  trap - INT TERM HUP
+  printf 'restore interrupted by SIG%s\n' "$signal" >&2
+  case "$RESTORE_PHASE" in
+    quiesce)
+      if start_stack; then printf 'no restore had begun; the stack was restarted\n' >&2
+      else printf 'no restore had begun, but restarting the stack failed; the stack may be stopped; run deploy/wooble up\n' >&2; fi ;;
+    restoring)
+      printf 'the database may be partially restored or not yet migrated; the stack was left stopped\n' >&2 ;;
+    *)
+      printf 'the stack may be stopped or partly started; check deploy/wooble status\n' >&2 ;;
+  esac
+  if [[ -n "${prebackup:-}" && -e "$prebackup" ]]; then printf 'pre-restore backup retained at %s\n' "$prebackup" >&2; fi
+  exit "$code"
+}
 # Runs inside the api container (bun) on the Compose proxy network and talks to
 # the Caddy service ("web") on 443 exactly as a browser would: TLS with SNI and
 # Host for the configured origin, verified against the supplied CA (stdin; empty
 # means system roots). TLS verification is never disabled.
-# PROBE_KIND=https expects 200 from /health; PROBE_KIND=ws sends an unauthenticated
-# WebSocket upgrade for a deliberately invalid canvas id and expects 101, which only
-# the API (not Caddy's static file server) can produce for /api/canvases/*/live.
+# PROBE_KIND=https expects 200 from /health.
+# PROBE_KIND=ws sends an unauthenticated WebSocket upgrade for a random, valid,
+# non-existent canvas UUID. The API guard answers such a request before the upgrade
+# with its own JSON 401 ({"message":"Sign in to continue"}, application/json), because
+# an anonymous visitor may only open a link-shared canvas. Reaching the API is proven by
+# either HTTP 101 or that exact 401; Caddy's own 502/503/404, the SPA's HTML fallback, a
+# 200, or a timeout all fail. The observed outcome is printed. The message literal must
+# stay in sync with apps/api/tests/live-access.test.ts, which pins the API side.
 read -r -d '' PROBE_SCRIPT <<'JS' || true
 const tls = require("node:tls");
 const kind = process.env.PROBE_KIND;
@@ -117,7 +143,7 @@ const name = origin.hostname.replace(/^\[|\]$/g, "");
 const ca = require("node:fs").readFileSync(0, "utf8").trim();
 const isIp = /^[0-9.]+$/.test(name) || name.includes(":");
 const ws = kind === "ws";
-const path = ws ? "/api/canvases/diagnose/live" : "/health";
+const path = ws ? `/api/canvases/${crypto.randomUUID()}/live` : "/health";
 const headers = [`GET ${path} HTTP/1.1`, `Host: ${origin.host}`, "Connection: " + (ws ? "Upgrade" : "close")];
 if (ws) headers.push("Upgrade: websocket", "Sec-WebSocket-Version: 13", "Sec-WebSocket-Key: d29vYmxlLWRpYWdub3NlIQ==", `Origin: ${origin.origin}`);
 const socket = tls.connect({
@@ -129,29 +155,54 @@ const socket = tls.connect({
 });
 const fail = (why) => { console.error(why); process.exit(1); };
 let data = "";
-socket.setTimeout(10000, () => fail("timed out"));
+const decide = (final) => {
+  const split = data.indexOf("\r\n\r\n");
+  if (split < 0) return final ? fail(`${kind} probe: connection closed before a complete response`) : undefined;
+  const head = data.slice(0, split);
+  const body = data.slice(split + 4);
+  const status = Number(head.split(" ")[1]);
+  const type = (/^content-type:\s*([^\r\n;]*)/im.exec(head) || [])[1] || "";
+  if (!ws) {
+    if (status === 200) { console.log(`https probe through Caddy: HTTP 200`); process.exit(0); }
+    return fail(`https probe through Caddy: unexpected HTTP ${status}`);
+  }
+  if (status === 101) { console.log("ws probe through Caddy: HTTP 101 (upgrade accepted by the API)"); process.exit(0); }
+  if (status === 401 && type.trim().toLowerCase() === "application/json") {
+    let parsed;
+    try { parsed = JSON.parse(body.slice(body.indexOf("{"), body.lastIndexOf("}") + 1)); } catch { if (!final) return; }
+    if (parsed && parsed.message === "Sign in to continue") { console.log("ws probe through Caddy: HTTP 401 JSON from the API access guard (request reached the API)"); process.exit(0); }
+    return fail("ws probe through Caddy: HTTP 401 JSON was not the API's expected unauthorized body");
+  }
+  return fail(`ws probe through Caddy: unexpected HTTP ${status} (${type || "no content-type"}); expected 101 or the API's JSON 401`);
+};
+socket.setTimeout(10000, () => fail(`${kind} probe: timed out`));
 socket.on("error", (error) => fail("TLS/connection error: " + error.message));
 socket.on("secureConnect", () => socket.write(headers.join("\r\n") + "\r\n\r\n"));
-socket.on("data", (chunk) => {
-  data += chunk.toString("latin1");
-  if (!data.includes("\r\n")) return;
-  const status = Number(data.split(" ")[1]);
-  if (ws ? status === 101 : status === 200) { console.log(`${kind} probe through Caddy: HTTP ${status}`); process.exit(0); }
-  fail(`${kind} probe through Caddy: unexpected HTTP ${status}`);
-});
-socket.on("end", () => fail("connection closed before a response"));
+socket.on("data", (chunk) => { data += chunk.toString("latin1"); decide(false); });
+socket.on("end", () => decide(true));
 JS
 
+# Read Caddy's internal CA (local/private modes) into CADDY_CA. Its own step so a
+# failure here is never confused with a probe's exit status.
+CADDY_CA=""
+read_caddy_ca() {
+  CADDY_CA=""
+  if [[ "$MODE" == domain ]]; then return 0; fi
+  CADDY_CA="$(compose exec -T web cat /data/caddy/pki/authorities/local/root.crt 2>/dev/null)" || return 1
+  [[ -n "$CADDY_CA" ]]
+}
 # Probe the public entry point (Caddy, the compose "web" service) from the api
-# container, so the host only needs Docker Compose. Local/private modes use
-# Caddy's internal CA, exported from the web container's data volume.
+# container, so the host only needs Docker Compose.
 probe_caddy() {
-  local kind="$1" origin="$2" ca=""
-  if [[ "$MODE" != domain ]]; then
-    ca="$(compose exec -T web cat /data/caddy/pki/authorities/local/root.crt 2>/dev/null)" || return 2
-    [[ -n "$ca" ]] || return 2
-  fi
-  printf '%s\n' "$ca" | compose exec -T -e PROBE_KIND="$kind" -e PROBE_ORIGIN="$origin" -e PROBE_TARGET=web api bun -e "$PROBE_SCRIPT"
+  local kind="$1" origin="$2"
+  printf '%s\n' "$CADDY_CA" | compose exec -T -e PROBE_KIND="$kind" -e PROBE_ORIGIN="$origin" -e PROBE_TARGET=web api bun -e "$PROBE_SCRIPT"
+}
+# scheme://host[:port] only: never path, query, fragment, or userinfo.
+display_origin() {
+  local o="$1" scheme rest
+  scheme="${o%%://*}"; rest="${o#*://}"
+  rest="${rest%%[/?#]*}"; rest="${rest##*@}"
+  printf '%s://%s' "$scheme" "$rest"
 }
 https_origin_matches_host() {
   local host="$1" origin="$2" expected_port="$3" port
@@ -201,6 +252,7 @@ case "$cmd" in
         ;;
       domain)
         domain="$(read_setting WOOBLE_DOMAIN)"
+        [[ "$origin" != *@* ]] || fail "WOOBLE_ORIGIN must not contain credentials (userinfo)"
         [[ -n "$domain" && "$origin" == "https://$domain" ]] || fail "domain mode origin must exactly match https://WOOBLE_DOMAIN"
         ;;
     esac
@@ -208,13 +260,13 @@ case "$cmd" in
     compose ps
     printf 'note: HTTPS/WebSocket probes run from the api container against the Caddy service; Caddy'"'"'s CA is read from its data volume and TLS verification stays on\n'
     failed=0
+    shown="$(display_origin "$origin")"
     compose exec -T api bun -e 'fetch("http://127.0.0.1:3001/health").then(async r => { const body = await r.json(); console.log(JSON.stringify(body)); if (!r.ok) process.exit(1) }).catch(() => process.exit(1))' || { printf 'FAILED [api-internal]: API health check inside the api container failed; inspect migration and service logs\n' >&2; failed=1; }
-    rc=0; probe_caddy https "$origin" || rc=$?
-    if (( rc == 2 )); then printf 'FAILED [caddy-ca]: cannot read Caddy'"'"'s CA from the web container; is the web service running?\n' >&2; failed=1
-    elif (( rc != 0 )); then printf 'FAILED [caddy-https]: %s/health was not served successfully through Caddy; check the web service, TLS, and proxy route\n' "${origin%%[?#]*}" >&2; failed=1
+    if read_caddy_ca; then
+      probe_caddy https "$origin" || { printf 'FAILED [caddy-https]: %s/health was not served successfully through Caddy; check the web service, TLS, and proxy route\n' "$shown" >&2; failed=1; }
+      probe_caddy ws "$origin" || { printf 'FAILED [caddy-websocket]: WebSocket upgrade through Caddy to the API live route did not reach the API (expected HTTP 101 or the API'"'"'s JSON 401); check the Caddy /api route and WebSocket proxying\n' >&2; failed=1; }
     else
-      rc=0; probe_caddy ws "$origin" || rc=$?
-      if (( rc != 0 )); then printf 'FAILED [caddy-websocket]: WebSocket upgrade through Caddy to the API live route did not return 101\n' >&2; failed=1; fi
+      printf 'FAILED [caddy-ca]: cannot read Caddy'"'"'s CA from the web container; is the web service running? [caddy-https] and [caddy-websocket] were not checked\n' >&2; failed=1
     fi
     (( failed == 0 )) || fail "diagnose found failing layers (see FAILED lines above)"
     printf 'diagnose ok: API health, HTTPS through Caddy, and WebSocket upgrade through Caddy passed\n'
@@ -230,6 +282,10 @@ case "$cmd" in
     resolve_project
     # Stop writers first so the pre-restore backup captures every accepted write.
     # backup() only needs the postgres service, which stays running.
+    RESTORE_PHASE=quiesce
+    trap 'restore_interrupted INT 130' INT
+    trap 'restore_interrupted TERM 143' TERM
+    trap 'restore_interrupted HUP 129' HUP
     if ! compose stop web api; then
       start_stack || true
       fail "could not stop web/API before restore; no backup or restore was attempted; attempted to restart stack"
@@ -238,9 +294,11 @@ case "$cmd" in
       start_stack || true
       fail "automatic pre-restore backup failed; restore was not attempted; attempted to restart stack"
     fi
+    RESTORE_PHASE=restoring
     if restore_dump "$file"; then
       if compose run --rm migrate; then
-        if start_stack; then printf 'restore succeeded; migrations applied; pre-restore backup: %s\n' "$prebackup"; else
+        RESTORE_PHASE=starting
+        if start_stack; then trap - INT TERM HUP; printf 'restore succeeded; migrations applied; pre-restore backup: %s\n' "$prebackup"; else
           printf 'restore stack start failed; attempting recovery from pre-restore backup %s\n' "$prebackup" >&2
           if recover_pre_restore; then fail "restore start failed; original data recovered and stack restarted; backup retained at $prebackup"; fi
           fail "restore start and automatic recovery failed; stack may be stopped; pre-restore backup retained at $prebackup"
