@@ -1,21 +1,21 @@
 # Collaboration transport spike: Yjs 13 over Elysia binary WebSockets
 
-Date: 2026-10-13. Task T1. **Result: all seven bounded transport scenarios passed,
+Date: 2026-10-13. **Result: all seven bounded transport scenarios passed,
 including two actual reruns. This is evidence, not a production implementation or an ADR.**
 
 ## Isolation and restart inventory
 
-- Repository worktree: `/Volumes/dityath-workspace/Projects/Wooble/.worktrees/prompt-1-4`.
+- Repository file: `<repo>/docs/spikes/2026-10-13-collaboration-sync.md`.
   This document is the only repository file owned/changed by this task. No repository
   package manifest, lockfile, application source, test, migration, or database was changed.
 - Requested sandbox was absent. Created and preserved
-  `/var/folders/r3/t4z62t_x0ylchytg9r9ln6fh0000gp/T/opencode/wooble_p1_4_spike`.
-- A previous, differently named sandbox, `.../opencode/wooble-p1-4-spike`, existed
+  `$SPIKE_DIR`, an external temporary directory.
+- A previous, differently named sandbox, `wooble-p1-4-spike` beside it, existed
   with `package.json`, `bun.lock`, `src/client.ts`, `src/server.ts`, and `tests/`.
   Its directory and manifest were inspected, but none of its files were modified,
   deleted, executed, or relied upon as test evidence.
 - Initial `git status --short`: `?? docs/release-backlog.md`. That file belongs to
-  another agent and was preserved. No commit, GitHub write, or package publication.
+  the release backlog work and was preserved. No commit, GitHub write, or package publication.
 - `bun --version` returned **1.3.14**, matching the root `packageManager` and `bun.lock`.
   Platform: **darwin/arm64**. Repository `bun.lock` resolves Elysia to **1.4.30**,
   despite `apps/api/package.json` specifying `^1.4.30`; this spike pins the resolved version.
@@ -114,7 +114,7 @@ bun run test
 # Actual second test and audit executions, followed by lock consistency check:
 bun run test && bun run audit && bun install --frozen-lockfile
 # Third test execution, after checking that documentation fences equal source:
-bun verify-evidence.mjs && bun run test
+bun verify-evidence.mjs <repo>/docs/spikes/2026-10-13-collaboration-sync.md && bun run test
 ```
 
 Installation output: `elysia@1.4.30`, `lib0@0.2.119`, `y-protocols@1.0.7`,
@@ -166,8 +166,22 @@ spike.mjs     1b3070c3a5a79f990dee86f5fcf0764c2b8a0b36cb58e61b8fe98ec00098eb5a
 bun.lock      5455acbd41b10a1661be644889fc6c00187304ed7d709a5de9565289b4420261
 ```
 
-Final worktree inventory remains only the other agent's `?? docs/release-backlog.md`
-and this task's `?? docs/spikes/` (this document). Tracked `git diff --name-only`
+Rerun on 2026-10-13 after scrubbing local paths and making the evidence-document path a
+required argument of `verify-evidence.mjs` (the only embedded source that changed): in
+the sandbox, `bun install --frozen-lockfile` reported `Checked 21 installs across 22
+packages (no changes)`, `bun run test` passed all 7 scenarios with output identical to
+the block above, `bun run audit` passed, and `bun verify-evidence.mjs <repo>/docs/spikes/2026-10-13-collaboration-sync.md`
+passed for all five files. The four digests above are unchanged; the new
+`verify-evidence.mjs` digest is:
+
+```text
+verify-evidence.mjs  3f2fabe542340eb50fe255e384456508287ec8aa770e53f78fb7dac29dabf640
+```
+
+Running it without an argument exits 2 with a usage message.
+
+Final worktree inventory showed only the untracked release backlog file
+and `?? docs/spikes/` (this document). Tracked `git diff --name-only`
 is empty. Listener inspection after completed tests shows no listener on 41424.
 
 | Scenario | Result | Assertion/evidence |
@@ -229,15 +243,15 @@ The main script starts and stops its own Elysia listener.
 For example, after creating/checking the chosen external directory and copying files:
 
 ```sh
-S=/var/folders/r3/t4z62t_x0ylchytg9r9ln6fh0000gp/T/opencode/wooble_p1_4_spike
+S="$SPIKE_DIR"   # external temporary directory containing the files below
 bun --version
 lsof -nP -iTCP:41424 -sTCP:LISTEN
 bun install --cwd "$S" --frozen-lockfile
 bun run --cwd "$S" audit
 bun run --cwd "$S" test
 bun run --cwd "$S" test
-# Optional: point the source/fence verifier at this saved evidence document:
-bun --cwd "$S" verify-evidence.mjs /absolute/path/to/2026-10-13-collaboration-sync.md
+# Required: pass the saved evidence document as the only argument:
+bun --cwd "$S" verify-evidence.mjs <repo>/docs/spikes/2026-10-13-collaboration-sync.md
 lsof -nP -iTCP:41424 -sTCP:LISTEN
 ```
 
@@ -265,7 +279,11 @@ lsof -nP -iTCP:41424 -sTCP:LISTEN
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 
-const path = Bun.argv[2] ?? "/Volumes/dityath-workspace/Projects/Wooble/.worktrees/prompt-1-4/docs/spikes/2026-10-13-collaboration-sync.md";
+const path = Bun.argv[2];
+if (!path) {
+  console.error("usage: bun verify-evidence.mjs <path-to-evidence-doc>");
+  process.exit(2);
+}
 const evidence = await Bun.file(path).text();
 for (const file of ["package.json", "audit.mjs", "spike.mjs", "bun.lock", "verify-evidence.mjs"]) {
   const heading = `### \`${file}\``;
@@ -310,6 +328,8 @@ console.log("PASS installed versions, registry metadata, and MIT license texts")
 ```
 
 ### `spike.mjs`
+
+> Do not deploy: the client selects its role from the URL by design; synthetic roles only.
 
 ```js
 import assert from "node:assert/strict";

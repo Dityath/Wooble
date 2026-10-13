@@ -36,6 +36,8 @@ The detailed, dated tracking lives in [release backlog and acceptance evidence](
 
 Status words are used strictly and match the backlog: **planned** (accepted outcome, no active work), **active** (work is in progress, possibly only as a local branch or an unmerged draft pull request), **draft/unmerged PR** (open for review, not on `main`), **merged** (on `main`, not necessarily released), and **released** (tagged and published). A branch, a draft pull request, or a merged prerequisite does not mean a release criterion is done.
 
+As of 2026-10-13:
+
 | Release | Status | Notes |
 | --- | --- | --- |
 | `v0.1.0` | Released (preview) | The only publicly released version. |
@@ -51,7 +53,7 @@ The contract and schema inspectors already in Wooble are foundations for `v0.3.0
 
 Releases build on shared work, so the order matters more than the dates:
 
-1. **Collaboration backend.** The decision (#16) and its prerequisites, #10 to #15 (access guard, canvas placement checks, reader access, browser journeys in CI, upgrade harness), come first. These are shared prerequisites for `v0.2.0` through `v0.5.0`.
+1. **Collaboration backend.** The decision (#16) and its prerequisites, #10 to #15 (access guard, canvas placement checks, activity/undo integrity (#12), reader access, browser journeys in CI, upgrade harness), come first. These are shared prerequisites for `v0.2.0` through `v0.5.0`.
 2. **Contracts with stable sections.** Contract editing for `v0.3.0` needs identifiable sections so that collaboration and comments can refer to them.
 3. **Schema with stable IDs.** Database diagrams for `v0.4.0` need stable table and column identifiers, kept separate from diagram layout.
 4. **Comment anchors.** `v0.5.0` anchors build on the items above. Text anchors in documentation (Yjs relative positions) and orphan handling for moved or deleted anchors are separate work items from stable IDs.

@@ -5,17 +5,21 @@
 This is evidence and tracking, **not an implementation report, code approval or release claim**.
 The roadmap and the five draft release cards remain the acceptance authority. This revision
 supersedes the earlier six-issue write plan; it does not retroactively change the earlier
-snapshot. No GitHub write, commit, merge or runtime edit was made by this documentation task.
+snapshot. No GitHub write or runtime edit was made by this documentation task. This file is
+committed only on the unmerged branch `prompt-1/4-collaboration-roadmap`, not on `main`.
 
 **Planned ≠ active ≠ PR draft ≠ merged ≠ released.** An accepted issue is not automatically
-active; a branch alone does not establish release completion. An active local ADR may be claimed
-without being approved or on `main`. An open draft PR is active work, not merged work.
+active; a branch alone does not establish release completion. A Proposed ADR on an unmerged
+branch may support a claimed task without being accepted or on `main`. An open draft PR is active work, not merged work.
 `status:claimed` tracks that verified activity; it does **not** assign a human. No assignee,
 milestone or date will be invented. New design/dependency-blocked work is `status:needs-triage`.
 
 The interim storage ADR for #16 was read from another branch. It is not on `main` and is not the
-full collaboration ADR. Another agent owns that local ADR/spike; its existence, SHA and results
-must be read back before recording them. This file makes no collaboration-model decision.
+full collaboration ADR. The collaboration ADR is committed at
+[docs/decisions/collaboration-sync.md](decisions/collaboration-sync.md) with status **Proposed**
+(unmerged branch, not accepted until maintainer review and merge); spike evidence is committed at
+[docs/spikes/2026-10-13-collaboration-sync.md](spikes/2026-10-13-collaboration-sync.md). This
+file makes no collaboration-model decision; it only tracks that ADR.
 
 The write plan covers v0.2–v0.5 only. **Keep exactly five draft release cards; add no Project
 implementation items.** Use issue/PR links in the existing card bodies. **v0.6 is not edited**:
@@ -95,11 +99,11 @@ result is reused. Refresh check reads and subsequent PR reads matched for every 
 | --- | --- | --- | --- | --- | --- | --- |
 | #24 Keep database backups out of images and Git | #17 / [17] | `fix/issue-6-keep-backups-out-of-images` | `c145c4a043354b29f4034cfdcaecf39ea00d73e3` | main / no | CQ, T success; 2/2 | Local Docker context not run; operators must move old backups before rebuilding. No source blocker identified is not approval. |
 | #25 Show connection documentation to viewers and link guests | #13 / [13] | `fix/issue-13-viewer-connection-documentation` | `63920de9f5c99106830625001cb8a260d1f07bcf` | main / no | CQ, T success; 2/2 | Reconcile MarkdownContent import after #9; author reports browser tests. No source blocker identified is not approval. |
-| #26 Deny unclassified API routes and check live socket access on open | #10 / [10] | `fix/issue-10-access-guard-default-deny` | `5ecc77a303a2e9c6a5d517b2540011ea445f4cbf` | main / no | CQ, T success; 2/2 | Author-reported review fixes do not dispose of the supplied local fail-closed recheck finding below. |
+| #26 Deny unclassified API routes and check live socket access on open | #10 / [10] | `fix/issue-10-access-guard-default-deny` | `5ecc77a303a2e9c6a5d517b2540011ea445f4cbf` | main / no | CQ, T success; 2/2 | Author-reported review fixes do not dispose of the fail-closed recheck regression requirement below. |
 | #27 Require read access before placing an entity on another canvas | #11 / [11] | `fix/issue-11-placement-requires-entity-access` | `85124559303a142cb0f2d3fc42e8f79323ac5c8f` | main / no | CQ, T success; 2/2 | Separate multi-canvas write-rule decision remains open; original #11 scope unchanged. |
-| #28 Add a migration upgrade test from v0.1.0 and journal checks | #15 / [15] | `test/issue-15-migration-upgrade-harness` | `4f56d2460460edf015616d3911d8f27ea60f7962` | main / no | CQ, T success; 2/2 | Requires database-creation privileges; supplied parallel/pre-drop finding below remains unresolved here. |
+| #28 Add a migration upgrade test from v0.1.0 and journal checks | #15 / [15] | `test/issue-15-migration-upgrade-harness` | `4f56d2460460edf015616d3911d8f27ea60f7962` | main / no | CQ, T success; 2/2 | Requires database-creation privileges; the deterministic parallel/pre-drop evidence requirement below is not shown as met here. |
 | #29 Run the browser journeys in CI | #14 / [14] | `chore/issue-14-ci-browser-journeys` | `365f454163708219f5d0f4c0d1bbe830c70571f2` | main / no | CQ, T, Browser journeys success; 3/3 | Green isolated CI is not evidence for the combined editor branch; production-build browser project deferred by author. |
-| #30 Validate WEB_ORIGIN and runtime configuration at startup | #18 / [] (body says Closes #18) | `fix/issue-6-origin-and-runtime-config-checks` | `407902c22e964849385e5bd8b8fcad1af40e8bdb` | `fix/issue-10-access-guard-default-deny` / yes, #26 | CQ, T success; 2/2 | Base SHA is #26's head; release notes need configuration failures; supplied raw-origin diagnostic finding below not resolved here. |
+| #30 Validate WEB_ORIGIN and runtime configuration at startup | #18 / [] (body says Closes #18) | `fix/issue-6-origin-and-runtime-config-checks` | `407902c22e964849385e5bd8b8fcad1af40e8bdb` | `fix/issue-10-access-guard-default-deny` / yes, #26 | CQ, T success; 2/2 | Base SHA is #26's head; release notes need configuration failures; the sanitized-diagnostic regression requirement below is not shown as met here. |
 | #31 Smoke-test the self-hosted Docker stack in CI | #19 / [19] | `chore/issue-6-docker-smoke-ci` | `6673e2a414e944f00a3f9b6805ca2f507eb3430e` | main / no | CQ, T, Docker smoke test success; 3/3 | CI smoke is real remote evidence, not browser, second-device or previous-release upgrade validation. |
 
 All main bases are `4b5fa0a73baba300004da5caf661080c8750e4ab`; #30's base is
@@ -115,19 +119,19 @@ to main, re-fetch its base, head, checks and closingIssuesReferences:** Closes #
 interpreted and close #18 on merge. Do not predict that it can never close #18, nor assume a
 stack merge automatically closes it. Merging/retargeting/closing is not authorized here.
 
-### Supplied LOCAL AUDIT findings, separate from REMOTE evidence
+### Local review notes and regression requirements, separate from REMOTE evidence
 
-These are the revision brief's supplied local audit findings, not tests run by this task, not
-GitHub reviews and **not claims that the remote PR has been fixed**. The executor carries the
-following exact, requirement-level notes in owned tracking sections, preserving original PR
-bodies and issue acceptance. Maintainer re-review and per-SHA regression evidence are needed.
+These notes come from the audit brief. They are not tests run by this task, not GitHub reviews
+and **not claims that the remote PR has been fixed**. The executor carries the following
+requirement-level notes in owned tracking sections, preserving original PR bodies and issue
+acceptance. Maintainer re-review and per-SHA regression evidence are needed.
 
-| PR | Local audit note to carry forward | Remote evidence does not prove |
+| PR | Note to carry forward | Remote evidence does not prove |
 | --- | --- | --- |
-| #24 / #25 | No source blocker identified by the supplied audit; this is NOT approval. #25 still needs the import reconciliation with #9. | Acceptance, combined-branch browser behavior or permission coverage for future live documents. |
-| #26 | Open finding: immediate access rechecks must fail closed when revalidation cannot complete; require a regression proving no continuing unauthorized live session. | That a green Code quality/Tests run covers this failure path. |
-| #28 | Open finding: make parallel upgrade tests deterministic and record pre-drop evidence before cleanup of their isolated databases. | Parallel determinism or inspectable evidence just because the existing upgrade test passed. |
-| #30 | Open finding: raw WEB_ORIGIN diagnostics must not echo sensitive raw configuration; regress the sanitized diagnostic behavior. | That all invalid-origin diagnostics are safely redacted. |
+| #24 / #25 | No source blocker identified by the audit; this is NOT approval. #25 still needs the import reconciliation with #9. | Acceptance, combined-branch browser behavior or permission coverage for future live documents. |
+| #26 | Regression required: immediate access rechecks fail closed when revalidation cannot complete, with a test showing no continuing unauthorized live session. | That a green Code quality/Tests run covers this requirement. |
+| #28 | Regression required: parallel upgrade tests are deterministic and record pre-drop evidence before cleanup of their isolated databases. | Parallel determinism or inspectable evidence just because the existing upgrade test passed. |
+| #30 | Regression required: invalid-origin diagnostics do not echo sensitive raw configuration; a test covers the sanitized output. | That all invalid-origin diagnostics are safely redacted. |
 | #29 | Browser journeys is green on this PR's head, not on the combined editor work. | Combined editor, co-editing, import/export or new release journey validation. |
 | #31 | Docker smoke is green on this PR's head; browser, second-device and previous-release upgrade journeys remain separate. | Completion of #6 or the fresh-install/upgrade release gate. |
 
@@ -152,7 +156,7 @@ are unassigned, without a milestone and without projectItems. Closed #3/#4 alone
 | #13 [Bug] Viewers and link guests cannot read connection documentation | OPEN; bug, area:web, status:ready | none / none / none | #25 draft | Yes: ready → claimed |
 | #14 [Task] Run browser journeys in CI | OPEN; task, area:testing, status:ready | none / none / none | #29 draft | Yes: ready → claimed; don't duplicate |
 | #15 [Task] Add a migration upgrade harness from v0.1.0 | OPEN; task, area:data, area:testing, status:ready | none / none / none | #28 draft | Yes: ready → claimed; don't duplicate |
-| #16 [Task] Decide the collaborative document model for v0.2.0 | OPEN; documentation, task, area:api, area:docs, status:ready | none / none / none | Active local ADR/spike; local T1 spike artifact read below, no PR | Yes: ready → claimed for verified local activity, unmerged/pending review, not an accepted model; retain documentation |
+| #16 [Task] Decide the collaborative document model for v0.2.0 | OPEN; documentation, task, area:api, area:docs, status:ready | none / none / none | ADR (Proposed) and spike evidence committed on the unmerged branch; no PR | Yes: ready → claimed for verified activity, unmerged/pending review, not an accepted model; retain documentation |
 | #17 [Bug] Database backups can be copied into the API image | OPEN; bug, area:self-hosting, status:ready | none / none / none | #24 draft | Yes: ready → claimed |
 | #18 [Feature] Validate WEB_ORIGIN and runtime configuration at startup | OPEN; enhancement, area:api, area:self-hosting, status:ready | none / none / none | #30 draft, stacked #26 | Yes: ready → claimed |
 | #19 [Task] Smoke-test the self-hosted Docker stack in CI | OPEN; task, area:testing, area:self-hosting, status:ready | none / none / none | #31 draft | Yes: ready → claimed |
@@ -164,10 +168,10 @@ are unassigned, without a milestone and without projectItems. Closed #3/#4 alone
 Remote editor tip: `1bddbaa200d27da4dd58be4da75f3eabbcd4c51e`; remote #12 branch tip:
 `7200a4e1c010d1845eaaa4cd54d5bc1c2c48a424`. Verified with
 `git ls-remote origin refs/heads/feat/tiptap-documentation-editor refs/heads/fix/issue-12-canvas-event-integrity`.
-Local `git worktree list` additionally showed active documentation-safety work at `687c520`
-and access/data-integrity work at `0b8603a`. These local heads are **not remote PR heads** and
-must not substitute for remote CI evidence. A missing merged ADR is not grounds to demote an
-actively owned decision task to needs-triage; its dependent implementation remains blocked.
+Additional local work on other branches exists but is not pushed. Unpushed local work is **not
+a remote PR head** and must not substitute for remote CI evidence. A missing merged ADR is not
+grounds to demote an actively owned decision task to needs-triage; its dependent implementation
+remains blocked.
 
 ## Acceptance → issue → PR → evidence: exact card criteria
 
@@ -190,7 +194,7 @@ merged or released by this audit. Basic fields on main are not proof of the comp
 
 **Dependency verbatim:** Choose and test a collaborative document representation and
 persistence/recovery model before replacing the current Markdown field. Keep document presence
-separate from durable content. Owner #16 (active local decision work, unmerged/pending review);
+separate from durable content. Owner #16 (ADR Proposed on an unmerged branch, pending maintainer review);
 implementation slugs do not replace it or pre-approve its proposals.
 
 ### v0.3.0
@@ -259,10 +263,10 @@ Dependencies are prerequisites, not proof that a downstream release is active or
 
 | Shared owner | Used by | Gate still required |
 | --- | --- | --- |
-| #10 / #26 | v0.2–v0.5 new object routes/live channels | route classification and fail-closed current access, including recheck findings |
+| #10 / #26 | v0.2–v0.5 new object routes/live channels | route classification and fail-closed current access, including the recheck regression requirement |
 | #11 / #27; separate `shared/multi-canvas-write-rule` | v0.2–v0.4 shared objects | original read-before-placement fix plus separately reviewed cross-canvas write rule |
 | #12 | v0.2–v0.5 writes/history/undo | transactional history and feature-owned metadata/delete integration |
-| #16 | v0.2 documents; reusable transport for v0.3, text anchors for v0.5 | reviewed representation, spike, persistence/recovery and license evidence |
+| #16 | v0.2 documents; reusable transport for v0.3, text anchors for v0.5 | ADR accepted by maintainer (currently Proposed), spike, persistence/recovery and license evidence |
 | #14 / #29 | all v0.2–v0.5 release evidence issues | run combined feature journeys, not just PR-isolated CI |
 | #15 / #28 | all v0.2–v0.5 data conversions | extend preserved-content seeds, previous-release cases and deterministic harness |
 | #6; #17–#23 (#24/#30/#31 partial) | shared fresh-install/upgrade gate | fresh host, browser/second device, versioned update and restore rehearsal, maintainer review |
@@ -284,12 +288,11 @@ every card; do not replace it with a weaker checklist or mark it complete becaus
 
 Origin #11 / PR #27; its accepted read-before-placement scope is unchanged. At requirement level,
 read access is sufficient for the placement proposed by that PR, whereas current entity writes
-require editor rights across every canvas containing the entity. Fictional example: a member
-who reads an entity on “Team A board” and edits “Team B board” may legitimately place it on B,
-but an all-canvases write rule can affect source editors on A who were not intended participants
-in that action. Neither a shared identity nor a placement should silently imply a new authority.
+require editor rights across every canvas containing the entity. Placement on another canvas
+can therefore change who may edit the object, so a written rule is needed. Neither a shared
+identity nor a placement should silently imply a new authority.
 
-The new decision issue must ask for a written rule covering that consequence, the permission
+The new decision issue must ask for a written rule covering that effect on editing rights, the permission
 matrix, existing placements and compatibility. It does not choose among per-object/per-placement
 or higher-placement-authority models. Do not silently redefine #11, publish exploit mechanics,
 payloads or reproduction steps, or present this decision as fixed by #27.
@@ -341,7 +344,7 @@ For each existing target use exactly one owned appended section:
 <!-- wooble-release-backlog:tracking:start -->
 ## Release tracking and evidence
 <resolved release links, current work state, dependencies, remote SHA/check evidence,
- supplied local audit note and remaining gates, selected by the target table below>
+ applicable sanitized review note and remaining gates, selected by the target table below>
 <!-- wooble-release-backlog:tracking:end -->
 ```
 
@@ -352,10 +355,25 @@ stop, not truncate. Compare a just-read body/update timestamp against the captur
 before writing; GitHub's edit CLI has no atomic compare-and-swap, so minimize the gap and abort
 on conflict. Use JSON input/output and `--body-file`; never interpolate bodies into a shell.
 
+**Sanitize carried-over text.** Any text copied into an owned block (audit notes, maintainer
+notes, PR titles) is stripped of `@` mentions, closing keywords (`Closes`/`Fixes`/`Resolves`
+followed by an issue reference, in any case or tense; #30's original body already contains one,
+which must not be copied) and HTML comments other than the exact owned markers. **Pre-write
+check, per appended block and new body:** fail and stop if it matches a closing keyword followed
+by `#N`/`owner/repo#N`/an issue URL, or contains any `@`. Log the check result.
+
+**Cross-reference side effect (needs user acceptance before execution).** A `#N` reference in an
+edited issue, PR or card body creates a timeline cross-reference event (not a comment or
+mention) on the referenced issue/PR, and can notify its subscribers. This is a known side effect
+of the plan as written. The executor must obtain explicit user acceptance first. Minimizing
+option: include `#N` references only where needed for dependency mapping and otherwise refer
+to items by slug or plain title text.
+
 New issues use one persistent identity marker `<!-- wooble-release-backlog:slug=<slug> -->`.
 Before create, paginate all open/closed issue bodies (individual `gh issue view` or paginated
-API), search the marker and exact title, and reconcile any matching scope. Do not create if it
-already exists; record its real number. First create all missing proposals with dependency
+API), search the marker and exact title. Do not create if the marker already exists; record its
+real number. **If an existing issue has the same title but a different scope, STOP and report:
+no reconcile, overwrite or edit of that issue.** First create all missing proposals with dependency
 slugs, then resolve the slug map to real #numbers/URLs in **only their owned tracking block**.
 Keep slugs too, so retries are idempotent. No numbers are preallocated; do not invent branches.
 
@@ -363,10 +381,10 @@ Keep slugs too, so retries are idempotent. No numbers are preallocated; do not i
 
 | Target | Exact owned-section final content / label operation | Read-back |
 | --- | --- | --- |
-| #10, #11, #13, #14, #15, #17, #18, #19 | `State: active; PR draft (unmerged), pending maintainer review.` Link the mapped PR using the exact full SHA/table above and correct release association below; append the applicable LOCAL AUDIT note verbatim. For #11 explicitly preserve original read-before-placement scope and link the separate decision without redefining it. Remove only status:ready; add only status:claimed. Preserve all other labels. | `gh issue view <n> --repo Dityath/Wooble --json number,title,body,labels,assignees,milestone,projectItems,updatedAt` |
+| #10, #11, #13, #14, #15, #17, #18, #19 | `State: active; PR draft (unmerged), pending maintainer review.` Link the mapped PR using the exact full SHA/table above and correct release association below; append the applicable note from the regression-requirement table above (sanitized). For #11 explicitly preserve original read-before-placement scope and link the separate decision without redefining it. Remove only status:ready; add only status:claimed. Preserve all other labels. | `gh issue view <n> --repo Dityath/Wooble --json number,title,body,labels,assignees,milestone,projectItems,updatedAt` |
 | #9 | `State: active editor branch/local safety work; no PR, unmerged, pending review. v0.2 criterion 1 and paste/safety part of criterion 2. Remaining collaboration/import/export implementation is linked by slugs; storage unchanged in this increment.` Preserve acceptance; no label change. | same issue read-back |
 | #12 | `State: remote branch exists; no PR, unmerged. Shared event/undo prerequisite for v0.2–v0.5. Do not conflate later feature hooks with completion of this scope.` No label change. | same issue read-back |
-| #16 | Append `State: active local ADR/spike, unmerged, pending review; not an accepted collaboration model.` Link the observed `docs/spikes/2026-10-13-collaboration-sync.md` artifact, explicitly untracked/local. T1 records seven bounded synthetic transport scenarios passing in three executions; T2 read the report but did not rerun it. Production authentication, persistence, TipTap and browser acceptance remain unproven. Record a full ADR's actual path/SHA/results only after reading it. Remove only status:ready, add only status:claimed; retain documentation, task, area:api, area:docs and all unrelated labels. Recheck the local artifact before execution; if unavailable, leave pending rather than invent evidence. | same issue read-back plus local artifact/SHA read before write |
+| #16 | Append `State: ADR committed with status Proposed on an unmerged branch, pending maintainer review; not an accepted collaboration model.` Link both repo paths on branch `prompt-1/4-collaboration-roadmap`: `docs/decisions/collaboration-sync.md` (ADR) and `docs/spikes/2026-10-13-collaboration-sync.md` (spike evidence). The spike report records seven bounded synthetic transport scenarios passing in three executions; this backlog did not rerun it. Production authentication, persistence, TipTap and browser acceptance remain unproven. Remove only status:ready, add only status:claimed; retain documentation, task, area:api, area:docs and all unrelated labels. Before execution re-read both files on the branch (or on `main` if merged); if the ADR status changed, record the actual status; if unavailable, leave pending rather than invent evidence. | same issue read-back plus branch file/commit SHA read before write |
 
 Associations for the E block: #9/#13/#16 → v0.2; #10/#12/#14/#15 → shared v0.2–v0.5;
 #11 → shared multi-canvas v0.2–v0.4; #17/#18/#19 → #6 shared self-hosting gate for v0.2–v0.5.
@@ -388,13 +406,13 @@ Targets #24–#31, one body edit each. Final owned block is:
 State: active; PR draft (unmerged), pending maintainer review. Not released or approved.
 Issue: <mapped actual issue link>. Release association: <E association above>.
 Remote evidence: <exact full current head SHA>; <check names/statuses from that SHA>.
-Local audit (supplied, not a remote fix claim): <verbatim applicable audit note above>.
+Review note (not a remote fix claim): <applicable sanitized note from the table above>.
 Remaining gates: combined feature integration, applicable role matrix, previous-release
 upgrade/fresh install, browser evidence and maintainer review. No checkbox completion inferred.
 <!-- wooble-release-backlog:tracking:end -->
 ```
 
-Resolve these placeholders deterministically from the PR table. #27's audit line is `Separate
+Resolve these placeholders deterministically from the PR table, then run the sanitization pre-write check. #27's audit line is `Separate
 multi-canvas write-rule decision remains open; original #11 scope unchanged.` #30 additionally
 states `Stacked on #26; base currently fix/issue-10-access-guard-default-deny. Closing reference
 is empty while non-default-based; recheck after any retarget/head move.` No review request,
@@ -405,10 +423,18 @@ Use `gh pr edit <n> --repo Dityath/Wooble --body-file <safely-composed-file>` fo
 ### C — four existing draft release-card bodies and one status change
 
 Preserve user journey, every criterion, dependency/boundary text and the shared gate verbatim.
-Append the same owned tracking markers. Use **draft content IDs**, not a new implementation
-item. `gh project item-edit --id <DI-content-id> --body <safely-passed-body>` is the draft-body
-operation; pass body through a process argument or use a GraphQL JSON variables file, never
-shell command interpolation. CLI help must be checked by executor before choosing its route.
+Append the same owned tracking markers (sanitized per the protocol above). Use **draft content
+IDs**, not a new implementation item.
+
+`gh project item-edit --id <DI-content-id> --body <text>` **replaces the whole draft body**.
+Therefore: (1) read the current body as JSON and keep it verbatim before and after the owned
+block; compose the full new body (original + owned block) in a script and call the CLI with an
+args array (for example Python `subprocess.run([...])` without a shell), or preferably the
+GraphQL `updateProjectV2DraftIssue` mutation with a variables file (`gh api graphql -F` /
+`--input`); never a shell string; (2) check the composed body's size against the argv limit
+and prefer the variables file when large; (3) abort if the pre-write body differs from the
+captured one; (4) read back and diff the text outside the markers byte-for-byte. The executor
+checks CLI help before choosing its route.
 
 | Card | Exact owned-section content to resolve after issue creation |
 | --- | --- |
@@ -461,7 +487,7 @@ Slug references to `#n` mean existing issues; other slugs resolve after creation
 | `v0.4/schema-access-evidence` | [Task] Verify database diagram conflicts permissions and multi-canvas persistence | Task; area:testing, area:api | #10, #11, #14, #15, v0.4/postgresql-import, v0.4/schema-visual-editing, v0.4/schema-reading-export |
 | `v0.5/thread-lifecycle` | [Feature] Persist contextual comment threads replies and resolve states | Feature; area:api, area:data | #10, #12, #15 |
 | `v0.5/object-anchors` | [Feature] Navigate canvas and model comments with stable object anchors | Feature; area:web | v0.5/thread-lifecycle, v0.3/contract-identity, v0.4/schema-identity-layout |
-| `v0.5/text-anchors` | [Feature] Keep documentation comment anchors attached through concurrent edits | Feature; area:web, area:api | #16, v0.2/coedit-presence, v0.5/thread-lifecycle |
+| `v0.5/text-anchors` | [Feature] Keep documentation comment anchors attached through concurrent edits | Feature; area:web, area:api | #16, v0.2/coedit-presence, v0.2/markdown-fidelity, v0.2/sync-access, v0.5/thread-lifecycle |
 | `v0.5/mentions-inbox` | [Feature] Mention eligible teammates with an access-checked in-app inbox | Feature; area:api, area:web | #10, v0.5/thread-lifecycle, v0.5/object-anchors |
 | `v0.5/comments-access-evidence` | [Task] Verify comment access and editor behavior when anchors change | Task; area:testing, area:api | #10, #12, #14, #15, v0.5/object-anchors, v0.5/text-anchors, v0.5/mentions-inbox |
 
@@ -476,8 +502,8 @@ numbers are available; then add the resolved map inside the owned tracking block
 
 ### shared/multi-canvas-write-rule — proposed body
 
-**Outcome:** A member placing a readable entity on another fictional team board can understand
-whether that action affects source editors, under one written, reviewed access rule.
+**Outcome:** Placement on another canvas can change who may edit the object, so one written,
+reviewed access rule states who may edit it afterwards.
 
 **Scope:** Product/access decision only. Origin #11/#27; preserve their original read-before-
 placement acceptance. No runtime implementation, exploit details or change to #11's scope.
@@ -506,7 +532,7 @@ v0.2 prerequisite reused by v0.3/v0.4. **Status:** needs-triage; open product de
 without re-bootstrapping over newer edits or losing original Markdown.
 
 **Scope:** Durable model, bootstrap, persistence/recovery and deletion/undo retention only;
-domain/Zod/db/API alignment. Implement the reviewed #16 ADR, not a new representation choice.
+domain/Zod/db/API alignment. Implement the #16 ADR once accepted by the maintainer, not a new representation choice.
 
 **Acceptance:**
 - [ ] Workspace/object/field identity addresses one document across all authorized canvases.
@@ -514,6 +540,12 @@ domain/Zod/db/API alignment. Implement the reviewed #16 ADR, not a new represent
 - [ ] Durable state and Markdown mirror recover after interruption; presence is never durable content.
 - [ ] Define retention, deletion, workspace cascade and undo restoration with #12 integration.
 - [ ] Checked-in migrations preserve existing documents; isolated upgrade and concurrent-bootstrap tests.
+- [ ] Two-connection deadlock test against canvas placement add/remove/undo, following the ADR's global lock order.
+- [ ] Undo/restore re-projects the Markdown mirror and the typed exclusion; this is a precondition of enabling sync.
+- [ ] Add an INDEX on workspace_id; bootstrap runs at READ COMMITTED or as a single-statement upsert.
+- [ ] Single-writer negative test: metadata.documentation has no writer other than the designated projection.
+- [ ] Single-instance enforcement gate: sync stays disabled unless exactly one API instance is guaranteed.
+- [ ] Size and count limits come from the ADR's limits table; this issue does not restate them.
 
 **Permissions/API context:** Guests/viewers read only; permitted editors write; managers/admins
 follow established authority; outsiders/signed-out non-guests denied. Derive workspace/object
@@ -525,7 +557,7 @@ recovery/rollback and retention, never rewrite released migrations or bootstrap 
 **Verify:** Q, S, A; future durable-document bootstrap/restart/retention tests in apps/api/tests,
 and extend #15 upgrade fixtures, not duplicate its harness.
 
-**Dependencies:** #16 approved ADR, #12, #15. **Release association:** v0.2 criteria 2/3,
+**Dependencies:** #16 ADR accepted by maintainer, #12, #15. **Release association:** v0.2 criteria 2/3,
 representation dependency and shared data gate. **Status:** needs-triage; ADR/data dependencies.
 
 ### v0.2/sync-access — proposed body
@@ -533,7 +565,7 @@ representation dependency and shared data gate. **Status:** needs-triage; ADR/da
 **Outcome:** Only currently authorized peers synchronize an entity document, and legacy writes
 cannot silently overwrite concurrent collaborative content.
 
-**Scope:** ADR-approved transport/sync authorization, input validation, revocation, limits and
+**Scope:** ADR-specified transport/sync authorization, input validation, revocation, limits and
 legacy documentation PATCH compatibility. Separate from durable storage and editor UI.
 
 **Acceptance:**
@@ -543,6 +575,15 @@ legacy documentation PATCH compatibility. Separate from durable storage and edit
 - [ ] Revocation/recheck errors fail closed before further live data; cover logout and role changes.
 - [ ] Legacy replacement requires a base hash; stale replacement returns 409 without losing either draft.
 - [ ] Integrate #12's field/history rules; unrelated canvas undo cannot revert collaborative text.
+- [ ] Reject a missing or non-allowlisted Origin on the WebSocket upgrade.
+- [ ] Size and rate checks run before any database lookup or decode; values come from the ADR's limits table.
+- [ ] Awareness clientIDs are owned by the server per connection; a peer cannot claim another's.
+- [ ] Per-commit content validation and sanitization before persisting an update.
+- [ ] Served state never includes deleted history.
+- [ ] Deny when the resource is missing (indistinguishable from forbidden).
+- [ ] First extract the write-eligibility function from accessGuard so HTTP and live routes share one rule.
+- [ ] Blocking open decision: persisted link-viewer rows after link sharing is disabled.
+- [ ] Define proxy-header trust for guest connection caps; no client-supplied address is trusted unvalidated.
 
 **Permissions/API context:** Test link guest, viewer, editor, manager, admin, outsider and
 signed-out non-guest through the real live/legacy routes, including wrong workspace/canvas and
@@ -562,7 +603,7 @@ under apps/api/tests, later B via v0.2/release-evidence.
 **Outcome:** Two permitted editors co-edit the same documentation, see document viewers and
 identifiable carets/selections, and recover from disconnect without a lost-save overwrite.
 
-**Scope:** TipTap integration with ADR-approved sync; not #9's existing slash-menu/safety fixes.
+**Scope:** TipTap integration with the accepted ADR's sync; not #9's existing slash-menu/safety fixes.
 Document presence distinct from canvas cursors; read-only UI and schema-version compatibility.
 
 **Acceptance:**
@@ -583,7 +624,7 @@ unsupported content and unsent drafts during version/reconnect changes, respecti
 schema-drift journeys, integrated with A evidence from sync issue.
 
 **Dependencies:** #9, #16, v0.2/durable-documents, v0.2/sync-access.
-**Release association:** v0.2 criteria 3/4/5. **Status:** needs-triage; approved sync pending.
+**Release association:** v0.2 criteria 3/4/5. **Status:** needs-triage; ADR acceptance pending.
 
 ### v0.2/markdown-fidelity — proposed body
 
@@ -632,7 +673,7 @@ existing harnesses. Do not create another CI or upgrade-harness task.
 editor, manager, admin and outsider/signed-out non-guest, wrong-context objects and live revocation.
 
 **Migration/data risk:** Disposable databases only; preserve prior content and collect evidence
-before cleanup. Reuse #15 and resolve its deterministic/pre-drop finding rather than assume fixed.
+before cleanup. Reuse #15 and meet its deterministic/pre-drop evidence requirement rather than assume it is met.
 
 **Verify:** Q, S, W, A, B, G; future apps/web/e2e collaborative-document release suite and #15
 upgrade seed extensions. #6/self-hosting checklist remains a maintainer gate.
@@ -764,7 +805,7 @@ transport/access concepts; **do not assume automatic CRDT merging of structured 
 - [ ] Conflict retains both useful drafts; reconnect restores persisted state and exposes recovery.
 - [ ] Section rename/delete and incompatible schema versions have defined presence/conflict outcomes.
 
-**Permissions/API context:** Guests/viewers read only with ADR-approved awareness privacy;
+**Permissions/API context:** Guests/viewers read only with the accepted ADR's awareness privacy;
 editor/manager/admin mutations authorized for current connection/canvas/workspace; outsiders denied.
 Revocation/recheck failure closes access and does not broadcast private section names.
 
@@ -998,13 +1039,13 @@ orphan recovery and open/resolved browser tests.
 **Outcome:** A comment on selected documentation text stays attached during permitted concurrent
 edits; an orphan remains visible and recoverable rather than disappearing.
 
-**Scope:** ADR-compatible collaborative text positions (Y.RelativePosition if Yjs is approved),
+**Scope:** ADR-compatible collaborative text positions (Y.RelativePosition if Yjs is accepted),
 selection/anchor resolution and orphan recovery. No competing durable document model.
 
 **Acceptance:**
 - [ ] Selected passage uses stable collaborative positions, not brittle character offsets alone.
 - [ ] Concurrent nearby editing and reconnect preserve the intended passage/context.
-- [ ] Deletion/schema drift creates a visible recoverable orphan with a defined reattach outcome.
+- [ ] Deletion/schema drift creates a visible recoverable orphan with a defined reattach outcome; cross-reference v0.2/markdown-fidelity (mirror and import changes) and v0.2/sync-access (revocation) for orphan recovery.
 - [ ] Comments never prevent normal editing or cause canvas undo to revert collaborative text.
 
 **Permissions/API context:** Guests/viewers read allowed anchors/threads, not create/reattach;
@@ -1017,7 +1058,7 @@ anchor data through migration/delete/restore and never silently rewrite text to 
 **Verify:** Q, S, W, A, B; future concurrent text-anchor movement/deletion/reattach/reconnect
 fixtures and apps/web/e2e journey, including normal editor operation with comments.
 
-**Dependencies:** #16, v0.2/coedit-presence, v0.5/thread-lifecycle.
+**Dependencies:** #16, v0.2/coedit-presence, v0.2/markdown-fidelity, v0.2/sync-access, v0.5/thread-lifecycle.
 **Release association:** v0.5 criteria 1/2/6. **Status:** needs-triage; collaborative positions pending.
 
 ### v0.5/mentions-inbox — proposed body
@@ -1079,10 +1120,10 @@ v0.5/mentions-inbox. **Release association:** v0.5 criteria 5/6/shared gate.
 ### Execution order, read-back and write log
 
 1. Re-snapshot PR/issue/card state and preserve all originals locally (no sensitive bodies in logs).
-2. Deduplicate the 22 proposals by slug/title against all open/closed issues, then create only missing
+2. Obtain user acceptance of the cross-reference side effect, then deduplicate the 22 proposals by slug/title against all open/closed issues, then create only missing
    proposals with table labels and complete bodies. Log actual returned URLs/numbers, not estimates.
 3. Resolve every new-slug dependency to that map, using read-before-write owned block updates.
-4. Update E/P blocks and authorized delta labels, rechecking #16's observed local artifact first.
+4. Update E/P blocks and authorized delta labels, re-reading the ADR and spike files on their branch first.
 5. Append four C card blocks, then set only v0.2 Status. Verify exactly five draft items and unchanged v0.6.
 
 Creation uses `gh issue create --repo Dityath/Wooble --title <exact-title> --body-file <body-file>`
@@ -1099,7 +1140,7 @@ Log schema for downstream executor (no writes logged as done by this task):
 
 On retry, skip equal blocks/labels/status and existing slug matches. If a read-back fails,
 stop and report; do not compensate by closing/deleting/recreating. Document #16 pending rather
-than invent evidence. Read-back commands are checks, not claims that this task executed writes.
+than invent evidence. Record user acceptance of the cross-reference side effect before step 2. Read-back commands are checks, not claims that this task executed writes.
 
 ### Explicitly out of authorization
 
@@ -1126,22 +1167,23 @@ Yjs recovery tests; if adopting collaboration, use Yjs-aware undo instead of com
 undoRedo and reconcile document history with canvas activity/undo before replacing storage.
 
 #16 asks for the larger collaboration-sync ADR/spike, including reviewed transport, persistence,
-limits, retention, legacy base-hash compatibility and reusable positions. Its local work is
-active and may be claimed while unmerged; approval is still pending. At the initial revision
-file search, `collaboration-sync.md` was not yet visible. During verification, another agent's
-`docs/spikes/2026-10-13-collaboration-sync.md` appeared and was read; it is untracked/local,
-not a merged ADR. It establishes observable task activity without inventing a human assignee.
+limits, retention, legacy base-hash compatibility and reusable positions. The ADR is committed at
+`docs/decisions/collaboration-sync.md` with status **Proposed** on the unmerged branch
+`prompt-1/4-collaboration-roadmap`; it is not accepted until the maintainer reviews and merges
+it. Its limit values live in that ADR's limits table and are not duplicated in issue bodies.
+The spike evidence is committed at `docs/spikes/2026-10-13-collaboration-sync.md`. Together they
+establish observable task activity without inventing a human assignee.
 
-**Local spike evidence, attributed to T1:** the report records Bun 1.3.14, Elysia 1.4.30,
+**Spike evidence, as recorded in the spike report:** Bun 1.3.14, Elysia 1.4.30,
 Yjs 13.6.33, y-protocols 1.0.7 and lib0 0.2.119, with direct MIT license checks. It reports
 seven bounded scenarios passing in three actual executions: binary editor exchange, late join,
 synthetic reader enforcement, concurrent disconnected edits, another reconnect, sanitized
-presence/removal and bounded malformed-input rejection. T2 read the report; **T2 did not execute
+presence/removal and bounded malformed-input rejection. This backlog **did not execute
 the spike or independently certify those results**. The report explicitly excludes real
 authentication/authorization, durable persistence/crash recovery, TipTap rich-text integration,
 browser journeys, multi-instance/load guarantees and exhaustive hostile-input resilience.
-These boundaries belong in #16's tracking block. A full local ADR may subsequently appear;
-read its actual artifact/SHA rather than fabricate a completion or merge claim.
+These boundaries belong in #16's tracking block. Re-read the ADR's status and commit before
+recording it, rather than fabricating an acceptance or merge claim.
 
 ## v0.6 historical coverage note (not an authorized edit)
 
@@ -1152,7 +1194,7 @@ card, dates and status are left completely untouched; its roadmap criteria remai
 
 ## Limits of this snapshot
 
-- Live GitHub and local audit are different evidence sources. Supplied local findings were not
+- Live GitHub and local audit are different evidence sources. Audit-brief notes were not
   independently re-run here; author-reported checks/reviews are not approvals or remote fixes.
 - If a head/base moves, re-fetch check `head_sha` and PR mapping; missing required runs become
   UNKNOWN. SHA-specific success still does not establish integrated release coverage.
@@ -1160,7 +1202,7 @@ card, dates and status are left completely untouched; its roadmap criteria remai
 - No future feature suite, disposable database, browser, Docker, spike or deployment journey
   was run by this docs task. Verify profiles specify future work only. Docs lint/format checks
   are reported in the task handoff, not turned into feature evidence.
-- #16's local artifact/results need the other agent and maintainer review. This task scopes
+- #16's ADR (Proposed) and spike results need maintainer review. This document scopes
   dependent proposals but does not accept a representation or change persisted code.
 - Card links are body prose links. They do not create Project implementation items or native
   issue/card relations; maintain them with marker-aware sync rather than claim linkage is impossible.
@@ -1168,5 +1210,5 @@ card, dates and status are left completely untouched; its roadmap criteria remai
   resolves real numbers after deduplication and creation; no plan row is already executed.
 - Dates remain targets, not promises or invented volunteer commitments. Claimed activity does
   not assign anyone. Self-hosting/GHCR publishing and release acceptance need a maintainer.
-- Only this document is edited by T2, uncommitted; unrelated or concurrent docs/spikes from
-  another agent must be preserved and reported separately during final worktree verification.
+- This document changes only this file; unrelated docs and spikes on the branch must be
+  preserved and reported separately during final worktree verification.
