@@ -12,6 +12,7 @@ on:
       - "bun.lock"
       - "package.json"
       - "scripts/selfhost-smoke.ts"
+      - "scripts/selfhost-*.test.ts"
       - "scripts/selfhost-cli-check.ts"
       - "scripts/selfhost-image-check.ts"
       - "deploy/wooble"
@@ -54,6 +55,10 @@ jobs:
           sed -i "s/^WOOBLE_COMPOSE_PROJECT_NAME=.*/WOOBLE_COMPOSE_PROJECT_NAME=wooble-p1-3-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/" .env.selfhost
           sed -i "s|^WOOBLE_ORIGIN=.*|WOOBLE_ORIGIN=https://localhost:18083|" .env.selfhost
           sed -i "s/^WOOBLE_HTTP_PORT=.*/WOOBLE_HTTP_PORT=18083/" .env.selfhost
+      - name: Run self-host regression suites
+        run: >-
+          bun test scripts/selfhost-compose.test.ts scripts/selfhost-cli.test.ts
+          scripts/selfhost-image-check.test.ts scripts/selfhost-browser-config.test.ts
       - name: Check self-host operator CLI invariants
         run: bun scripts/selfhost-cli-check.ts
       - name: Check build context and API image backup exclusions
