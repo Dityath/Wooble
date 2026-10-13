@@ -24,7 +24,7 @@ function loadConfig(origin: string, ignoreHttpsErrors?: string) {
 function listSpecFiles(configFile: string, extraEnv: Record<string, string>): Set<string> {
   const env = {
     ...process.env,
-    BROWSER_TEST_DATABASE_URL: "postgres://placeholder:placeholder@127.0.0.1:1/placeholder",
+    BROWSER_TEST_DATABASE_URL: "postgres://placeholder:placeholder@127.0.0.1:1/browser_journeys_placeholder",
     ...extraEnv,
   };
   delete env.SELFHOST_BROWSER_IGNORE_HTTPS_ERRORS;
