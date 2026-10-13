@@ -47,7 +47,7 @@ Each release must upgrade from the previous one without losing content. Two chec
 
 The `DATABASE_URL` user needs the `CREATEDB` privilege on a disposable instance. Never use the production app user for tests.
 
-Run API tests with `bun test tests/*.test.ts` from `apps/api`. A bare `bun test`, or a filter such as `tests`, also picks up the ignored `apps/api/dist/tests` build output.
+Run API tests with `bun run test` (which runs `bun test ./tests/`) or `bun test tests/*.test.ts` from `apps/api`. A bare `bun test`, or a substring filter such as `tests`, also picks up the ignored `apps/api/dist/tests` build output.
 
 `apps/api/scripts/test-isolated.sh` does not work this way. It uses a fixed default database name (`architecture_canvas_test`, overridable with `TEST_DB_NAME`) and recreates it with `DROP DATABASE IF EXISTS ... WITH (FORCE)`, which ends any session connected to it. Two runs against the same instance and name drop each other's database, so give each run its own `TEST_DB_NAME` or instance.
 

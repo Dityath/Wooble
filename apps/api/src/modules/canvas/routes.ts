@@ -35,7 +35,7 @@ import {
   type Api,
 } from "../../lib/auth";
 import { listCanvasEvents, recordCanvasEvent } from "./activity";
-import { applyNextUndo } from "./undo";
+import { applyNextUndo, retryOnLockConflict } from "./undo";
 import { captureDeleteHooks } from "./undo-registry";
 
 const placementColumns = {
@@ -848,38 +848,41 @@ export function canvasRoutes(app: Api) {
     const params = canvasIdParamsSchema.safeParse(context.params);
     if (!params.success) return badRequest(context, "Canvas ID must be a UUID");
     const actor = requireActor(context.actor);
-    const result = await db.transaction(async (tx) => {
-      const [canvas] = await tx
-        .select({ id: canvases.id })
-        .from(canvases)
-        .where(eq(canvases.id, params.data.canvasId))
-        .for("update")
-        .limit(1);
-      if (!canvas) return { kind: "not-found" as const };
-      const outcome = await applyNextUndo(tx, canvas.id, actor);
-      if (!outcome.undoneEvent && !outcome.skipped.length) return { kind: "nothing" as const };
-      if (!outcome.undoneEvent) {
-        // No-op-only walks are honestly reported as "nothing undone"; only
-        // collaborator conflicts deserve the explicit refusal.
-        if (!outcome.skipped.some((item) => item.reason === "conflict")) return { kind: "nothing" as const };
-        return { kind: "conflict" as const, skipped: outcome.skipped };
-      }
-      await recordCanvasEvent(tx, {
-        canvasId: canvas.id,
-        actor,
-        action: "canvas.undo",
-        targetType: outcome.undoneEvent.targetType,
-        targetId: outcome.undoneEvent.targetId,
-        targetName: outcome.undoneEvent.targetName,
-        metadata: {
-          undoOf: outcome.undoneEvent.id,
-          undoneAction: outcome.undoneEvent.action,
-          skipped: outcome.skipped,
-        },
-      });
-      await tx.update(canvases).set({ updatedAt: new Date() }).where(eq(canvases.id, canvas.id));
-      return { kind: "undone" as const, action: outcome.undoneEvent.action, skipped: outcome.skipped };
-    });
+    // A deadlock or serialization abort reruns the whole transaction (503 if it keeps failing), never a 500.
+    const result = await retryOnLockConflict(() =>
+      db.transaction(async (tx) => {
+        const [canvas] = await tx
+          .select({ id: canvases.id })
+          .from(canvases)
+          .where(eq(canvases.id, params.data.canvasId))
+          .for("update")
+          .limit(1);
+        if (!canvas) return { kind: "not-found" as const };
+        const outcome = await applyNextUndo(tx, canvas.id, actor);
+        if (!outcome.undoneEvent && !outcome.skipped.length) return { kind: "nothing" as const };
+        if (!outcome.undoneEvent) {
+          // No-op-only walks are honestly reported as "nothing undone"; only
+          // collaborator conflicts deserve the explicit refusal.
+          if (!outcome.skipped.some((item) => item.reason === "conflict")) return { kind: "nothing" as const };
+          return { kind: "conflict" as const, skipped: outcome.skipped };
+        }
+        await recordCanvasEvent(tx, {
+          canvasId: canvas.id,
+          actor,
+          action: "canvas.undo",
+          targetType: outcome.undoneEvent.targetType,
+          targetId: outcome.undoneEvent.targetId,
+          targetName: outcome.undoneEvent.targetName,
+          metadata: {
+            undoOf: outcome.undoneEvent.id,
+            undoneAction: outcome.undoneEvent.action,
+            skipped: outcome.skipped,
+          },
+        });
+        await tx.update(canvases).set({ updatedAt: new Date() }).where(eq(canvases.id, canvas.id));
+        return { kind: "undone" as const, action: outcome.undoneEvent.action, skipped: outcome.skipped };
+      }),
+    );
     if (result.kind === "not-found") return notFound(context, "Canvas not found");
     if (result.kind === "nothing") return { undone: false };
     if (result.kind === "conflict") {

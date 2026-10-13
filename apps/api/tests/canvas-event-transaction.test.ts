@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { asc, eq, sql } from "drizzle-orm";
-import { canvasEvents, db, entities, pool } from "@wooble/db";
+import { canvases, canvasEvents, db, entities, pool } from "@wooble/db";
 import { createApp } from "../src/app";
-import { withCanvasLocks } from "../src/modules/canvas/activity";
+import { CanvasLockContention, withCanvasLocks } from "../src/modules/canvas/activity";
+import { applyNextUndo, retryOnLockConflict } from "../src/modules/canvas/undo";
 import { resetLoginAttempts } from "../src/modules/auth/routes";
 import { apiClient } from "./support/client";
 
@@ -30,6 +31,11 @@ async function joinAsEditor(owner: Owner, canvasId: string) {
   const token = await api.invite(owner.session, `/api/canvases/${canvasId}/invitations`, "editor");
   expect((await api.json("POST", `/api/invitations/${token}/accept`, guest.session)).status).toBe(200);
   return guest;
+}
+
+async function joinExisting(owner: Owner, canvasId: string, guest: Owner, role: "editor" | "viewer" = "editor") {
+  const token = await api.invite(owner.session, `/api/canvases/${canvasId}/invitations`, role);
+  expect((await api.json("POST", `/api/invitations/${token}/accept`, guest.session)).status).toBe(200);
 }
 
 async function eventsFor(canvasId: string, action?: string) {
@@ -554,18 +560,18 @@ describe("undo through two canvases that show the same object", () => {
       await splitHistory(shared, kind, first, second);
       const objectId = kind === "entity" ? shared.service : shared.connectionId;
       const url = kind === "entity" ? `/api/entities/${objectId}` : `/api/connections/${objectId}`;
+      // The PATCH comes from a second editor of both canvases and changes a field neither undo touches. Its event
+      // is the other actor's, and the field-level conflict scan finds no overlap in either order, so the outcome
+      // does not depend on which request gets the lock first.
+      const editor = await joinAsEditor(shared.owner, shared.canvasA);
+      await joinExisting(shared.owner, shared.canvasB, editor);
       const { blocker, pid } = await lockRow(table, objectId);
       let requests: Promise<Response>[] = [];
       try {
         requests = [
           undoVia(shared, shared.canvasA)(),
           undoVia(shared, shared.canvasB)(),
-          api.request(
-            "PATCH",
-            url,
-            shared.owner.session,
-            kind === "entity" ? { description: "Edited" } : { description: "Edited" },
-          ),
+          api.request("PATCH", url, editor.session, { description: "Edited" }),
         ];
         await waitForBlocked(pid, 3);
       } finally {
@@ -573,8 +579,200 @@ describe("undo through two canvases that show the same object", () => {
       }
       const responses = await Promise.all(requests);
       expect(responses.map((response) => response.status)).toEqual([200, 200, 200]);
-      const current = (await currentObject(shared)) as { description: string | null } | undefined;
-      expect(current?.description).toBe("Edited");
+      for (const response of responses.slice(0, 2))
+        expect((await response.json()) as UndoResult).toMatchObject({ undone: true, action: `${kind}.updated` });
+      const current = (await currentObject(shared)) as unknown as {
+        description: string | null;
+        metadata: Record<string, unknown>;
+      };
+      expect(current.description).toBe("Edited");
+      expectBothReverted(current);
     });
   }
+});
+
+describe("undo lock conflicts", () => {
+  async function lockEntities(ids: string[]) {
+    const blocker: PoolClient = await connect();
+    await blocker.query("begin");
+    for (const id of ids) await blocker.query("select id from entities where id = $1 for update", [id]);
+    const { rows } = await blocker.query("select pg_backend_pid() as pid");
+    return { blocker, pid: Number(rows[0].pid) };
+  }
+
+  it("lets two undos walk no-op candidates over the same two entities in opposite order", async () => {
+    const base = await setup();
+    const canvasB = await api.createCanvas(base.owner.session, base.owner.workspaceId);
+    await placeOnCanvas(base.owner.session, canvasB, base.service);
+    await placeOnCanvas(base.owner.session, canvasB, base.database);
+    const e1 = base.service;
+    const e2 = base.database;
+    const patch = async (id: string, body: Record<string, unknown>) =>
+      expect((await api.request("PATCH", `/api/entities/${id}`, base.owner.session, body)).status).toBe(200);
+    await patch(e1, { name: "One" });
+    await patch(e2, { name: "Two" });
+    await patch(e1, { description: "d1" });
+    await patch(e2, { description: "d2" });
+    const pick = async (canvasId: string, target: string, field: string) => {
+      const rows = (await eventsFor(canvasId, "entity.updated")).filter(
+        (row) => row.targetId === target && field in ((row.metadata as { previous: object }).previous ?? {}),
+      );
+      expect(rows).toHaveLength(1);
+      return rows[0];
+    };
+    // Canvas A: newest is a no-op on E1, the older one a real change to E2.
+    // Canvas B: newest is a no-op on E2, the older one a real change to E1.
+    const keep = new Set([
+      (await pick(base.canvasId, e2, "name")).id,
+      (await pick(base.canvasId, e1, "description")).id,
+      (await pick(canvasB, e1, "name")).id,
+      (await pick(canvasB, e2, "description")).id,
+    ]);
+    for (const row of await db.select().from(canvasEvents).where(eq(canvasEvents.action, "entity.updated"))) {
+      if (!keep.has(row.id)) await pool.query("delete from canvas_events where id = $1", [row.id]);
+    }
+    // Make the "newest" events no-ops: their recorded previous description is what is stored now.
+    await pool.query(
+      `update canvas_events set metadata = jsonb_set(metadata, '{previous,description}', $2::jsonb)
+       where canvas_id = $1 and target_id = $3 and action = 'entity.updated'
+         and (metadata->'previous') ? 'description'`,
+      [base.canvasId, JSON.stringify("d1"), e1],
+    );
+    await pool.query(
+      `update canvas_events set metadata = jsonb_set(metadata, '{previous,description}', $2::jsonb)
+       where canvas_id = $1 and target_id = $3 and action = 'entity.updated'
+         and (metadata->'previous') ? 'description'`,
+      [canvasB, JSON.stringify("d2"), e2],
+    );
+
+    // Holding both rows makes each walk's first object lock (if it took one) wait; a walk that locked its no-op
+    // candidate would then deadlock with the other walk as soon as both are released. The walks run without the
+    // route's deadlock retry so a 40P01 would fail this test instead of being absorbed.
+    const actor = {
+      id: base.owner.user.id,
+      name: base.owner.user.name,
+      email: base.owner.user.email,
+      systemRole: "user" as const,
+    };
+    const walk = (canvasId: string) =>
+      db.transaction(async (tx) => {
+        await tx.select({ id: canvases.id }).from(canvases).where(eq(canvases.id, canvasId)).for("update");
+        return applyNextUndo(tx, canvasId, actor);
+      });
+    const { blocker, pid } = await lockEntities([e1, e2]);
+    let walks: Promise<Awaited<ReturnType<typeof walk>>>[] = [];
+    try {
+      walks = [walk(base.canvasId), walk(canvasB)];
+      await waitForBlocked(pid, 2);
+    } finally {
+      await release(blocker);
+    }
+    for (const outcome of await Promise.all(walks)) {
+      expect(outcome.undoneEvent?.action).toBe("entity.updated");
+      expect(outcome.skipped.map((item) => item.reason)).toEqual(["no-op"]);
+    }
+    const names = Object.fromEntries(
+      (await graph(base.owner.session, base.canvasId)).entities.map((entity) => [entity.id, entity.name]),
+    );
+    expect(names[e1]).toBe("Orders API");
+    expect(names[e2]).toBe("Orders DB");
+  });
+
+  it("retries a deadlock or serialization abort and then answers with retryable contention", async () => {
+    const abort = (code: string, wrapped: boolean) => {
+      const inner = Object.assign(new Error("aborted"), { code });
+      return wrapped ? Object.assign(new Error("Failed query"), { cause: inner }) : inner;
+    };
+    let calls = 0;
+    expect(
+      await retryOnLockConflict(async () => {
+        calls += 1;
+        if (calls === 1) throw abort("40P01", true);
+        if (calls === 2) throw abort("40001", false);
+        return "done";
+      }),
+    ).toBe("done");
+    expect(calls).toBe(3);
+
+    let attempts = 0;
+    const error = await retryOnLockConflict(async () => {
+      attempts += 1;
+      throw abort("40P01", true);
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(CanvasLockContention);
+    expect((error as CanvasLockContention).status).toBe(503);
+    expect(attempts).toBe(3);
+
+    // Anything else is not retried.
+    let other = 0;
+    const failure = await retryOnLockConflict(async () => {
+      other += 1;
+      throw abort("23503", false);
+    }).catch((caught: unknown) => caught);
+    expect(failure).not.toBeInstanceOf(CanvasLockContention);
+    expect(other).toBe(1);
+  });
+
+  it("refuses an undo whose actor lost write access to the shared entity while it waited for the lock", async () => {
+    const base = await setup();
+    const canvasB = await api.createCanvas(base.owner.session, base.owner.workspaceId);
+    const canvasC = await api.createCanvas(base.owner.session, base.owner.workspaceId, "Third");
+    await placeOnCanvas(base.owner.session, canvasB, base.service);
+    const editor = await joinAsEditor(base.owner, base.canvasId);
+    await joinExisting(base.owner, canvasB, editor);
+    await joinExisting(base.owner, canvasC, editor, "viewer");
+    expect(
+      (await api.request("PATCH", `/api/entities/${base.service}`, editor.session, { name: "Editor rename" })).status,
+    ).toBe(200);
+
+    // NO KEY UPDATE blocks the undo's FOR UPDATE but not the placement's foreign key (KEY SHARE).
+    const blocker: PoolClient = await connect();
+    await blocker.query("begin");
+    await blocker.query("select id from entities where id = $1 for no key update", [base.service]);
+    const { rows } = await blocker.query("select pg_backend_pid() as pid");
+    const pid = Number(rows[0].pid);
+    let undo: Promise<Response> | undefined;
+    try {
+      undo = api.request("POST", `/api/canvases/${base.canvasId}/undo`, editor.session);
+      await waitForBlocked(pid, 1);
+      // Committed while the undo waits: the editor is only a viewer of this canvas.
+      await pool.query("insert into canvas_nodes (canvas_id, entity_id) values ($1, $2)", [canvasC, base.service]);
+    } finally {
+      await release(blocker);
+    }
+    const response = await undo;
+    expect(response?.status).toBe(409);
+    expect((await response?.json()) as { error: string }).toMatchObject({ error: "undo_conflict" });
+    const [row] = await db.select({ name: entities.name }).from(entities).where(eq(entities.id, base.service));
+    expect(row.name).toBe("Editor rename");
+    const [event] = (await eventsFor(base.canvasId, "entity.updated")).filter(
+      (item) => item.actorUserId !== null && item.undoneAt === null,
+    );
+    expect(event).toBeDefined();
+  });
+
+  it("keeps a placement committed on another canvas while entity.created is undone", async () => {
+    const base = await setup();
+    const canvasB = await api.createCanvas(base.owner.session, base.owner.workspaceId);
+    const fresh = await api.createNode(base.owner.session, base.canvasId, { name: "Fresh", x: 900 });
+    // An open transaction that has inserted (not yet committed) a placement of the entity on another canvas.
+    const placer: PoolClient = await connect();
+    await placer.query("begin");
+    await placer.query("insert into canvas_nodes (canvas_id, entity_id) values ($1, $2)", [canvasB, fresh]);
+    const { rows } = await placer.query("select pg_backend_pid() as pid");
+    let undo: Promise<Response> | undefined;
+    try {
+      undo = api.request("POST", `/api/canvases/${base.canvasId}/undo`, base.owner.session);
+      await waitForBlocked(Number(rows[0].pid), 1);
+    } finally {
+      await release(placer);
+    }
+    const response = await undo;
+    expect(response?.status).toBe(200);
+    expect((await response?.json()) as UndoResult).toMatchObject({ undone: true, action: "entity.created" });
+    // The entity survives, still placed on the other canvas; only this canvas's placement went away.
+    const placements = await pool.query("select canvas_id from canvas_nodes where entity_id = $1", [fresh]);
+    expect(placements.rows.map((row: { canvas_id: string }) => row.canvas_id)).toEqual([canvasB]);
+    expect(await db.select({ id: entities.id }).from(entities).where(eq(entities.id, fresh))).toHaveLength(1);
+  });
 });

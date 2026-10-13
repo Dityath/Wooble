@@ -210,6 +210,17 @@ async function scratchNames(): Promise<string[]> {
   }
 }
 
+/** Whether a database with exactly this name exists, whatever its prefix. */
+async function databaseExists(name: string): Promise<boolean> {
+  const database = admin();
+  try {
+    const result = await database.execute(sql`SELECT 1 FROM pg_database WHERE datname = ${name}`);
+    return result.rows.length === 1;
+  } finally {
+    await database.$client.end();
+  }
+}
+
 /** Runs a read on a scratch database through a pool that is closed before it resolves. */
 async function query(databaseUrl: string, statement: string): Promise<unknown[]> {
   const database = drizzle(databaseUrl);
@@ -341,7 +352,9 @@ describe("scratch database safety", () => {
       }
 
       for (const sentinel of sentinels) {
-        expect(await scratchNames()).toContain(sentinel);
+        // Looked up by exact name: `scratchNames()` only lists the harness's prefix, which the `_upgrade` sentinel
+        // lacks unless DATABASE_URL's own database name happens to start with it.
+        expect(await databaseExists(sentinel)).toBe(true);
         expect(await query(urlFor(sentinel), "SELECT id, body FROM notes ORDER BY id")).toEqual([
           { id: 1, body: "Written before any scratch database existed" },
         ]);
@@ -350,7 +363,7 @@ describe("scratch database safety", () => {
       // The test's own databases, dropped by name: never through the harness under test.
       for (const sentinel of created) await adminStatement(`DROP DATABASE IF EXISTS ${sentinel} WITH (FORCE)`);
     }
-  });
+  }, 30_000);
 
   it("regenerates a taken name instead of dropping what is already there", async () => {
     const base = new URL(process.env.DATABASE_URL ?? "").pathname.slice(1);

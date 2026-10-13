@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import {
   canvases,
   canvasConnections,
@@ -10,6 +10,8 @@ import {
 } from "@wooble/db";
 import type { ConnectionPath, ConnectionType, EntityMetadata, EntityType } from "@wooble/domain";
 import { canvasRole, objectAccess, type Actor } from "../../lib/auth";
+import { postgresErrorCode } from "../../lib/http-error";
+import { CanvasLockContention } from "./activity";
 import { isUpdateEventMetadataV2, type PreviousMetadataEntry } from "./event-metadata";
 import { isExternalMetadataKey, listNonReversibleActions, restoreDeleteHooks, type Transaction } from "./undo-registry";
 
@@ -57,6 +59,26 @@ export interface UndoSkippedEvent {
   reason: UndoSkipReason;
 }
 
+const MAX_UNDO_ATTEMPTS = 3;
+
+/**
+ * Runs a whole undo transaction again when PostgreSQL aborts it as a deadlock victim (40P01) or serialization
+ * failure (40001). Every attempt is a fresh transaction, so nothing of the aborted one survives. After
+ * `MAX_UNDO_ATTEMPTS` the request fails with `CanvasLockContention` (503, retryable), the same answer the
+ * entity/connection PATCH routes give when their canvas set keeps changing, never a 500.
+ */
+export async function retryOnLockConflict<T>(work: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await work();
+    } catch (error) {
+      const code = postgresErrorCode(error);
+      if (code !== "40P01" && code !== "40001") throw error;
+      if (attempt >= MAX_UNDO_ATTEMPTS) throw new CanvasLockContention();
+    }
+  }
+}
+
 export interface UndoOutcome {
   /** The event that was actually reversed and marked undone, if any. */
   undoneEvent: CanvasEventRow | null;
@@ -73,6 +95,14 @@ export interface UndoOutcome {
  * Undo never grants more than the actor may do now: candidates whose original
  * write rule the actor no longer satisfies are skipped as "conflict" (see
  * `undoAuthorized`) and stay un-undone.
+ *
+ * Lock order: the caller holds the requested canvas row FOR UPDATE; the undo then takes at most the shared
+ * entity/connection rows it writes, FOR UPDATE until commit, after its own canvas row (the order PATCH uses).
+ * Candidates are judged on unlocked reads and only a candidate that needs a real write locks its object (re-reading
+ * and re-checking write access and the no-op test under the lock), so walking past no-op candidates never holds
+ * locks and two undos walking the same objects in opposite order cannot form a cycle. A candidate that turns into
+ * a no-op after its lock was granted keeps that one lock, so a rare cycle remains possible; the route retries
+ * the whole transaction on 40P01/40001 (`retryOnLockConflict`) and answers 503 if that keeps failing.
  */
 export async function applyNextUndo(tx: Transaction, canvasId: string, actor: Actor): Promise<UndoOutcome> {
   const actorId = actor.id;
@@ -103,7 +133,12 @@ export async function applyNextUndo(tx: Transaction, canvasId: string, actor: Ac
       skipped.push({ action: candidate.action, targetName: candidate.targetName, reason: "conflict" });
       continue;
     }
-    const changed = await applyUndo(tx, candidate);
+    const changed = await applyUndo(tx, candidate, actor);
+    if (changed === "refused") {
+      // Edit access was lost while waiting for the object lock; nothing was written for this candidate.
+      skipped.push({ action: candidate.action, targetName: candidate.targetName, reason: "conflict" });
+      continue;
+    }
     await markUndone(tx, candidate.id);
     if (!changed) {
       skipped.push({ action: candidate.action, targetName: candidate.targetName, reason: "no-op" });
@@ -148,6 +183,15 @@ async function undoAuthorized(tx: Transaction, actor: Actor, event: CanvasEventR
 }
 
 /**
+ * Entities among `ids` that still exist, read with FOR KEY SHARE so a concurrent delete cannot slip between this
+ * check and the restore that re-inserts rows referencing them (which would fail the foreign key with a 500).
+ * A delete already in flight makes this wait, then see the row gone.
+ */
+async function existingEntities(tx: Transaction, ids: string[]): Promise<Array<{ id: string }>> {
+  return tx.select({ id: entities.id }).from(entities).where(inArray(entities.id, ids)).for("key share");
+}
+
+/**
  * State-based guard for events that can no longer be reversed regardless of
  * who changed what since. Restoring a deleted connector requires both endpoint
  * entities to still exist; a collaborator's own undo may have removed one, and
@@ -163,7 +207,7 @@ async function undoBlockedByCurrentState(tx: Transaction, event: CanvasEventRow)
       (id): id is string => typeof id === "string",
     );
     if (!endpointIds.length) return false;
-    const existing = await tx.select({ id: entities.id }).from(entities).where(inArray(entities.id, endpointIds));
+    const existing = await existingEntities(tx, endpointIds);
     return existing.length !== endpointIds.length;
   }
   if (event.action === "entity.deleted") {
@@ -189,7 +233,7 @@ async function undoBlockedByCurrentState(tx: Transaction, event: CanvasEventRow)
     );
     const toCheck = [...endpointIds].filter((id) => !restored.has(id));
     if (!toCheck.length) return false;
-    const existing = await tx.select({ id: entities.id }).from(entities).where(inArray(entities.id, toCheck));
+    const existing = await existingEntities(tx, toCheck);
     return existing.length !== toCheck.length;
   }
   if (event.action === "canvas.auto_neat") {
@@ -203,7 +247,7 @@ async function undoBlockedByCurrentState(tx: Transaction, event: CanvasEventRow)
       ),
     ];
     if (!entityIds.length) return false;
-    const existing = await tx.select({ id: entities.id }).from(entities).where(inArray(entities.id, entityIds));
+    const existing = await existingEntities(tx, entityIds);
     return existing.length !== entityIds.length;
   }
   if (event.action === "placement.updated") {
@@ -217,7 +261,7 @@ async function undoBlockedByCurrentState(tx: Transaction, event: CanvasEventRow)
       ...new Set(entries.map((entry) => entry?.from?.entityId).filter((id): id is string => typeof id === "string")),
     ];
     if (restoredIds.length) {
-      const existing = await tx.select({ id: entities.id }).from(entities).where(inArray(entities.id, restoredIds));
+      const existing = await existingEntities(tx, restoredIds);
       if (existing.length !== restoredIds.length) return true;
     }
     // Placements this event added (from: null) get deleted by the undo.
@@ -436,7 +480,7 @@ function overlaps(a: AffectedObjects, b: AffectedObjects): boolean {
  * rows. Returns whether the reversal actually changed anything; a `false`
  * result means the event's objects were already gone, so the undo is a no-op.
  */
-async function applyUndo(tx: Transaction, event: CanvasEventRow): Promise<boolean> {
+async function applyUndo(tx: Transaction, event: CanvasEventRow, actor: Actor): Promise<boolean | "refused"> {
   const metadata = (event.metadata ?? {}) as Record<string, unknown>;
   switch (event.action) {
     case "placement.updated": {
@@ -478,48 +522,28 @@ async function applyUndo(tx: Transaction, event: CanvasEventRow): Promise<boolea
       return deleteConnection(tx, event.canvasId, requireTargetId(event));
     case "entity.updated": {
       const entityId = requireTargetId(event);
-      // Lock order: canvas row(s) first (the route holds the requested canvas), then this shared entity row, the
-      // same as PATCH /api/entities/:id. Held to commit so the read-modify-write cannot lose a concurrent undo or
-      // edit that reached the entity through another canvas; taken FOR UPDATE up front (never FOR SHARE first) so
-      // event recording cannot need a lock upgrade.
+      // No-op candidates must stay lock-free (see the lock order on applyNextUndo): decide on an unlocked read.
+      const [seen] = await tx.select().from(entities).where(eq(entities.id, entityId)).limit(1);
+      if (!seen || !entityRestore(seen, metadata)) return false;
+      // A write is needed. Lock order: canvas row(s) first (the route holds the requested canvas), then this shared
+      // entity row, the same as PATCH /api/entities/:id. Held to commit so the read-modify-write cannot lose a
+      // concurrent undo or edit that reached the entity through another canvas; taken FOR UPDATE up front (never
+      // FOR SHARE first) so event recording cannot need a lock upgrade.
       const [current] = await tx.select().from(entities).where(eq(entities.id, entityId)).for("update").limit(1);
       if (!current) return false;
-      const currentMetadata = (current.metadata ?? {}) as Record<string, unknown>;
-      let next: { type: EntityType; name: string; description: string | null };
-      let nextMetadata: Record<string, unknown>;
-      if (isUpdateEventMetadataV2(metadata)) {
-        next = {
-          type: v2String(metadata, "type", current.type) as EntityType,
-          name: v2String(metadata, "name", current.name),
-          description: v2Description(metadata, current.description),
-        };
-        nextMetadata = applyPreviousMetadata(currentMetadata, metadata.previousMetadata);
-      } else {
-        next = {
-          type: previousField<EntityType>(metadata, "type", current.type),
-          name: previousField<string>(metadata, "name", current.name),
-          description: previousNullableField(metadata, "description"),
-        };
-        nextMetadata = legacyMetadata(
-          currentMetadata,
-          previousField<Record<string, unknown>>(metadata, "metadata", current.metadata as Record<string, unknown>),
-        );
-      }
-      if (
-        current.type === next.type &&
-        current.name === next.name &&
-        current.description === next.description &&
-        JSON.stringify(sortKeys(currentMetadata)) === JSON.stringify(sortKeys(nextMetadata))
-      )
-        return false;
+      // The wait may have let a placement on a canvas the actor cannot edit commit; judge write access again.
+      if (!(await undoAuthorized(tx, actor, event))) return "refused";
+      const plan = entityRestore(current, metadata);
+      // Became a no-op while waiting for the lock: nothing to write.
+      if (!plan) return false;
       await tx
         .update(entities)
-        .set({ ...next, metadata: nextMetadata as EntityMetadata, updatedAt: new Date() })
+        .set({ ...plan.next, metadata: plan.nextMetadata as EntityMetadata, updatedAt: new Date() })
         .where(eq(entities.id, entityId));
       return true;
     }
     case "connection.updated":
-      return undoConnectionUpdated(tx, event.canvasId, requireTargetId(event), metadata);
+      return undoConnectionUpdated(tx, event, actor, requireTargetId(event), metadata);
     case "canvas.updated": {
       // Restore only the fields this event changed so collaborators' edits to
       // other canvas fields survive the undo.
@@ -644,6 +668,84 @@ async function restorePlacements(tx: Transaction, canvasId: string, placements: 
     });
 }
 
+/** The values an entity.updated undo would write over `current`, or null when they equal what is stored. */
+function entityRestore(
+  current: typeof entities.$inferSelect,
+  metadata: Record<string, unknown>,
+): {
+  next: { type: EntityType; name: string; description: string | null };
+  nextMetadata: Record<string, unknown>;
+} | null {
+  const currentMetadata = (current.metadata ?? {}) as Record<string, unknown>;
+  let next: { type: EntityType; name: string; description: string | null };
+  let nextMetadata: Record<string, unknown>;
+  if (isUpdateEventMetadataV2(metadata)) {
+    next = {
+      type: v2String(metadata, "type", current.type) as EntityType,
+      name: v2String(metadata, "name", current.name),
+      description: v2Description(metadata, current.description),
+    };
+    nextMetadata = applyPreviousMetadata(currentMetadata, metadata.previousMetadata);
+  } else {
+    next = {
+      type: previousField<EntityType>(metadata, "type", current.type),
+      name: previousField<string>(metadata, "name", current.name),
+      description: previousNullableField(metadata, "description"),
+    };
+    nextMetadata = legacyMetadata(
+      currentMetadata,
+      previousField<Record<string, unknown>>(metadata, "metadata", current.metadata as Record<string, unknown>),
+    );
+  }
+  if (
+    current.type === next.type &&
+    current.name === next.name &&
+    current.description === next.description &&
+    JSON.stringify(sortKeys(currentMetadata)) === JSON.stringify(sortKeys(nextMetadata))
+  )
+    return null;
+  return { next, nextMetadata };
+}
+
+/** The values a connection.updated undo would write over `current`, or null when they equal what is stored. */
+function connectionRestore(
+  current: typeof connections.$inferSelect,
+  metadata: Record<string, unknown>,
+): {
+  next: { type: ConnectionType; label: string; description: string | null };
+  nextMetadata: Record<string, unknown>;
+} | null {
+  const currentMetadata = (current.metadata ?? {}) as Record<string, unknown>;
+  let next: { type: ConnectionType; label: string; description: string | null };
+  let nextMetadata: Record<string, unknown>;
+  if (isUpdateEventMetadataV2(metadata)) {
+    next = {
+      type: v2String(metadata, "type", current.type) as ConnectionType,
+      label: v2String(metadata, "label", current.label),
+      description: v2Description(metadata, current.description),
+    };
+    nextMetadata = applyPreviousMetadata(currentMetadata, metadata.previousMetadata);
+  } else {
+    next = {
+      type: previousField<ConnectionType>(metadata, "type", current.type),
+      label: previousField<string>(metadata, "label", current.label),
+      description: previousNullableField(metadata, "description"),
+    };
+    nextMetadata = legacyMetadata(
+      currentMetadata,
+      previousField<Record<string, unknown>>(metadata, "metadata", current.metadata),
+    );
+  }
+  if (
+    current.type === next.type &&
+    current.label === next.label &&
+    current.description === next.description &&
+    JSON.stringify(sortKeys(currentMetadata)) === JSON.stringify(sortKeys(nextMetadata))
+  )
+    return null;
+  return { next, nextMetadata };
+}
+
 async function deleteEntitySubtree(tx: Transaction, canvasId: string, entityId: string): Promise<boolean> {
   const placements = await tx
     .select({ entityId: canvasNodes.entityId, parentEntityId: canvasNodes.parentEntityId })
@@ -667,6 +769,10 @@ async function deleteEntitySubtree(tx: Transaction, canvasId: string, entityId: 
       .delete(canvasConnections)
       .where(and(eq(canvasConnections.canvasId, canvasId), inArray(canvasConnections.connectionId, linkIds)));
   await tx.delete(canvasNodes).where(and(eq(canvasNodes.canvasId, canvasId), inArray(canvasNodes.entityId, entityIds)));
+  // Lock each shared row before asking whether another canvas still shows it: a placement or link insert takes
+  // KEY SHARE on the row it references, so it either finishes first (and is seen below) or waits until we commit
+  // (and then fails its foreign key instead of being silently cascade-deleted with the row). Ascending id order.
+  await lockRows(tx, connections, connections.id, linkIds);
   for (const id of linkIds) {
     const [stillUsed] = await tx
       .select({ id: canvasConnections.connectionId })
@@ -675,6 +781,7 @@ async function deleteEntitySubtree(tx: Transaction, canvasId: string, entityId: 
       .limit(1);
     if (!stillUsed) await tx.delete(connections).where(eq(connections.id, id));
   }
+  await lockRows(tx, entities, entities.id, entityIds);
   for (const id of entityIds) {
     const [stillPlaced] = await tx
       .select({ id: canvasNodes.entityId })
@@ -693,6 +800,7 @@ async function deleteConnection(tx: Transaction, canvasId: string, connectionId:
     .where(and(eq(canvasConnections.canvasId, canvasId), eq(canvasConnections.connectionId, connectionId)))
     .returning({ connectionId: canvasConnections.connectionId });
   if (!removed) return false;
+  await lockRows(tx, connections, connections.id, [connectionId]);
   const [stillUsed] = await tx
     .select({ id: canvasConnections.connectionId })
     .from(canvasConnections)
@@ -701,6 +809,17 @@ async function deleteConnection(tx: Transaction, canvasId: string, connectionId:
   if (!stillUsed) await tx.delete(connections).where(eq(connections.id, connectionId));
   await touchCanvas(tx, canvasId);
   return true;
+}
+
+/** Row-locks the given ids in ascending order (see deleteEntitySubtree for why). */
+async function lockRows(
+  tx: Transaction,
+  table: typeof entities | typeof connections,
+  idColumn: typeof entities.id | typeof connections.id,
+  ids: string[],
+): Promise<void> {
+  if (!ids.length) return;
+  await tx.select({ id: idColumn }).from(table).where(inArray(idColumn, ids)).orderBy(asc(idColumn)).for("update");
 }
 
 async function restoreConnection(
@@ -753,10 +872,12 @@ async function restoreEntitySubtree(
 
 async function undoConnectionUpdated(
   tx: Transaction,
-  canvasId: string,
+  event: CanvasEventRow,
+  actor: Actor,
   connectionId: string,
   metadata: Record<string, unknown>,
-): Promise<boolean> {
+): Promise<boolean | "refused"> {
+  const canvasId = event.canvasId;
   if (metadata.field === "bend") {
     const bend = (metadata.previousBend ?? null) as ConnectionPath;
     const [current] = await tx
@@ -773,41 +894,18 @@ async function undoConnectionUpdated(
     await touchCanvas(tx, canvasId);
     return true;
   }
-  // Same lock order as entity.updated: canvas row first, then the shared connection row FOR UPDATE until commit
-  // (matches PATCH /api/connections/:id), so concurrent undos through different canvases serialize.
+  // Same discipline as entity.updated: decide no-ops on an unlocked read, then take the shared connection row FOR
+  // UPDATE (canvas row first, held to commit; matches PATCH /api/connections/:id) only for a real write.
+  const [seen] = await tx.select().from(connections).where(eq(connections.id, connectionId)).limit(1);
+  if (!seen || !connectionRestore(seen, metadata)) return false;
   const [current] = await tx.select().from(connections).where(eq(connections.id, connectionId)).for("update").limit(1);
   if (!current) return false;
-  const currentMetadata = (current.metadata ?? {}) as Record<string, unknown>;
-  let next: { type: ConnectionType; label: string; description: string | null };
-  let nextMetadata: Record<string, unknown>;
-  if (isUpdateEventMetadataV2(metadata)) {
-    next = {
-      type: v2String(metadata, "type", current.type) as ConnectionType,
-      label: v2String(metadata, "label", current.label),
-      description: v2Description(metadata, current.description),
-    };
-    nextMetadata = applyPreviousMetadata(currentMetadata, metadata.previousMetadata);
-  } else {
-    next = {
-      type: previousField<ConnectionType>(metadata, "type", current.type),
-      label: previousField<string>(metadata, "label", current.label),
-      description: previousNullableField(metadata, "description"),
-    };
-    nextMetadata = legacyMetadata(
-      currentMetadata,
-      previousField<Record<string, unknown>>(metadata, "metadata", current.metadata),
-    );
-  }
-  if (
-    current.type === next.type &&
-    current.label === next.label &&
-    current.description === next.description &&
-    JSON.stringify(sortKeys(currentMetadata)) === JSON.stringify(sortKeys(nextMetadata))
-  )
-    return false;
+  if (!(await undoAuthorized(tx, actor, event))) return "refused";
+  const plan = connectionRestore(current, metadata);
+  if (!plan) return false;
   await tx
     .update(connections)
-    .set({ ...next, metadata: nextMetadata })
+    .set({ ...plan.next, metadata: plan.nextMetadata })
     .where(eq(connections.id, connectionId));
   await touchCanvas(tx, canvasId);
   return true;
