@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { createApp } from "../src/app";
+import migrationJournal from "../../../packages/db/drizzle/meta/_journal.json" with { type: "json" };
+import { createApp, migrationReadiness } from "../src/app";
 import { resetLoginAttempts } from "../src/modules/auth/routes";
 
 const app = createApp();
@@ -33,10 +34,45 @@ afterAll(async () => {
 });
 
 describe("Baseline HTTP contract frozen before the Elysia migration", () => {
+  it("reports migration readiness as pending before the tracker or baseline is present", () => {
+    expect(migrationReadiness(null, null)).toEqual({
+      status: "pending",
+      applied: 0,
+      required: migrationJournal.entries.length,
+    });
+    expect(migrationReadiness(migrationJournal.entries.length - 1, null)).toEqual({
+      status: "pending",
+      applied: migrationJournal.entries.length - 1,
+      required: migrationJournal.entries.length,
+    });
+  });
+
   it("reports health with database connectivity", async () => {
     const response = await request("GET", "/health");
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ status: "ok", database: "connected" });
+    expect(await response.json()).toEqual({
+      status: "ok",
+      database: "connected",
+      version: expect.stringMatching(/^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/),
+      migrations: {
+        status: "current",
+        applied: migrationJournal.entries.length,
+        required: migrationJournal.entries.length,
+      },
+    });
+  });
+
+  it("reports the configured release version", async () => {
+    const previousVersion = process.env.WOOBLE_VERSION;
+    process.env.WOOBLE_VERSION = "9.8.7";
+    try {
+      const response = await request("GET", "/health");
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ version: "9.8.7" });
+    } finally {
+      if (previousVersion === undefined) delete process.env.WOOBLE_VERSION;
+      else process.env.WOOBLE_VERSION = previousVersion;
+    }
   });
 
   it("answers HEAD /health with 200 and an empty body", async () => {

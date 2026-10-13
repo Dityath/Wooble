@@ -36,6 +36,7 @@ services:
       API_PORT: 3001
       DATABASE_URL: postgres://wooble:${WOOBLE_DB_PASSWORD}@postgres:5432/wooble
       NODE_ENV: production
+      WOOBLE_VERSION: ${WOOBLE_VERSION:?Set WOOBLE_VERSION to a release tag}
       TRUST_PROXY: "true"
       TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-172.30.0.2/32}
       WEB_ORIGIN: ${WOOBLE_ORIGIN:?Set WOOBLE_ORIGIN to the exact browser origin}

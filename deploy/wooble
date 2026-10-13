@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Small, dependency-free operator CLI. Values are read from Compose's dotenv file
+# without evaluating it as shell code; Compose itself remains the env parser.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${WOOBLE_ENV_FILE:-$ROOT/.env.selfhost}"
+COMPOSE_BASE=( -f "$ROOT/compose.selfhost.yml" )
+
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+read_env() {
+  local key="$1"
+  [[ -f "$ENV_FILE" ]] || return 0
+  awk -v wanted="$key" 'BEGIN { FS="=" } /^[[:space:]]*#/ || NF < 2 { next } { k=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", k); if (k == wanted) { sub(/^[^=]*=/, ""); gsub(/^\"|\"$/, ""); gsub(/^\047|\047$/, ""); print; exit } }' "$ENV_FILE"
+}
+MODE="${WOOBLE_MODE:-$(read_env WOOBLE_MODE)}"
+MODE="${MODE:-local}"
+PROJECT="${WOOBLE_COMPOSE_PROJECT_NAME:-$(read_env WOOBLE_COMPOSE_PROJECT_NAME)}"
+PROJECT="${PROJECT:-wooble}"
+LEGACY_PROJECT="${WOOBLE_LEGACY_PROJECT_NAME:-$(read_env WOOBLE_LEGACY_PROJECT_NAME)}"
+VERSION="${WOOBLE_VERSION:-$(read_env WOOBLE_VERSION)}"
+case "$MODE" in
+  local|private|domain) COMPOSE_MODE="$ROOT/compose.selfhost.$MODE.yml" ;;
+  *) fail "WOOBLE_MODE must be local, private, or domain" ;;
+esac
+[[ -f "$ENV_FILE" ]] || fail "environment file not found: $ENV_FILE (copy .env.selfhost.example first)"
+[[ "$PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "invalid WOOBLE_COMPOSE_PROJECT_NAME"
+if [[ -n "$LEGACY_PROJECT" && ! "$LEGACY_PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then fail "invalid WOOBLE_LEGACY_PROJECT_NAME"; fi
+duplicates="$(awk -F= '
+  /^[[:space:]]*#/ || NF < 2 { next }
+  { key=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", key); count[key]++ }
+  END { for (key in count) if (count[key] > 1 && key ~ /^(WOOBLE_(VERSION|MODE|COMPOSE_PROJECT_NAME|LEGACY_PROJECT_NAME|ORIGIN|HTTP_PORT|BIND_ADDRESS|CADDY_HOST|DOMAIN|PROXY_SUBNET|CADDY_IP|API_IP|DB_PASSWORD)|CADDY_TRUSTED_PROXY_CIDRS|TRUSTED_PROXY_CIDRS)$/) print key }
+' "$ENV_FILE")"
+[[ -z "$duplicates" ]] || fail "duplicate self-host settings in env file: ${duplicates//$'\n'/, }"
+
+compose() {
+  docker compose --env-file "$ENV_FILE" --project-name "$PROJECT" "${COMPOSE_BASE[@]}" -f "$COMPOSE_MODE" "$@"
+}
+version_required() {
+  [[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || fail "WOOBLE_VERSION is required and must be a release version"
+}
+
+# Reuse only the known default Wooble project or a legacy project the operator
+# explicitly named. `postgres-data` is a common logical key, so the key alone
+# never identifies a Wooble volume. Names and labels are never rewritten.
+resolve_project() {
+  local volumes name labels logical owner count=0 invalid=0 chosen="" expected_name
+  volumes="$(docker volume ls --filter label=com.docker.compose.volume=postgres-data --format '{{.Name}}')" || fail "cannot discover Docker volumes"
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    labels="$(docker volume inspect --format '{{ index .Labels "com.docker.compose.volume" }}|{{ index .Labels "com.docker.compose.project" }}' "$name" 2>/dev/null)" || {
+      [[ "$name" == wooble_postgres-data || ( -n "$LEGACY_PROJECT" && "$name" == "${LEGACY_PROJECT}_postgres-data" ) ]] && invalid=$((invalid + 1))
+      continue
+    }
+    logical="${labels%%|*}"; owner="${labels#*|}"
+    if [[ "$owner" != wooble && ( -z "$LEGACY_PROJECT" || "$owner" != "$LEGACY_PROJECT" ) ]]; then continue; fi
+    expected_name="${owner}_postgres-data"
+    if [[ "$logical" != postgres-data || ! "$owner" =~ ^[a-z0-9][a-z0-9_-]*$ || "$name" != "$expected_name" ]]; then invalid=$((invalid + 1)); continue; fi
+    count=$((count + 1)); chosen="$owner"
+  done <<< "$volumes"
+  if (( invalid > 0 )); then fail "invalid matching Wooble postgres-data volume labels found; refusing to guess which volume to reuse"; fi
+  if (( count > 1 )); then fail "multiple matching Wooble postgres-data volumes found; set WOOBLE_LEGACY_PROJECT_NAME only after resolving ambiguity manually"; fi
+  if (( count == 1 )); then PROJECT="$chosen"; fi
+}
+
+ensure_version_env() { version_required; }
+backup() {
+  local dir="$ROOT/backups" stamp file
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  file="$dir/wooble-$stamp.dump"
+  (umask 077; mkdir -p "$dir") || fail "cannot create backup directory"
+  (umask 077; set -o noclobber; : > "$file") || fail "backup already exists or cannot be created: $file"
+  if ! compose exec -T postgres pg_dump -U wooble -Fc wooble > "$file"; then
+    rm -f -- "$file"
+    fail "backup failed"
+  fi
+  chmod 600 "$file"
+  printf '%s\n' "$file"
+}
+restore_dump() {
+  local file="$1"
+  compose exec -T postgres pg_restore --clean --if-exists --no-owner -U wooble -d wooble < "$file"
+}
+start_stack() { compose up -d; }
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  install|up)
+    ensure_version_env
+    resolve_project
+    compose config -q || fail "Compose configuration is invalid"
+    if [[ "$cmd" == install ]]; then
+      compose pull
+      compose run --rm migrate
+    fi
+    start_stack || fail "stack start failed; inspect with deploy/wooble diagnose"
+    ;;
+  status)
+    resolve_project
+    compose ps
+    ;;
+  diagnose)
+    resolve_project
+    printf 'mode=%s project=%s version=%s\n' "$MODE" "$PROJECT" "${VERSION:-unset}"
+    origin="$(read_env WOOBLE_ORIGIN)"
+    case "$MODE" in
+      local)
+        [[ "$origin" == https://localhost || "$origin" == https://localhost:* ]] || fail "local mode requires an HTTPS localhost origin"
+        ;;
+      private)
+        host="$(read_env WOOBLE_CADDY_HOST)"
+        bind="$(read_env WOOBLE_BIND_ADDRESS)"
+        [[ -n "$host" && -n "$bind" ]] || fail "private mode requires explicit WOOBLE_CADDY_HOST and WOOBLE_BIND_ADDRESS"
+        [[ "$origin" == "https://$host" || "$origin" == "https://$host:"* ]] || fail "private mode origin must use HTTPS and exactly match WOOBLE_CADDY_HOST"
+        ;;
+      domain)
+        domain="$(read_env WOOBLE_DOMAIN)"
+        [[ -n "$domain" && "$origin" == "https://$domain" ]] || fail "domain mode origin must exactly match https://WOOBLE_DOMAIN"
+        ;;
+    esac
+    if ! compose config -q; then fail "Compose configuration is invalid (check required env, origin, bind, and HTTPS settings)"; fi
+    if ! grep -Fq 'handle /api/*' "$ROOT/deploy/Caddyfile" || ! grep -Fq 'reverse_proxy api:3001' "$ROOT/deploy/Caddyfile"; then fail "Caddy API/WebSocket proxy route is missing"; fi
+    compose ps
+    compose exec -T api bun -e 'fetch("http://127.0.0.1:3001/health").then(async r => { const body = await r.json(); console.log(JSON.stringify(body)); if (!r.ok) process.exit(1) }).catch(() => process.exit(1))' || fail "API health check failed; inspect migration and service logs"
+    ;;
+  backup)
+    resolve_project
+    backup
+    ;;
+  restore)
+    [[ "${1:-}" == "--confirm" && -n "${2:-}" && -z "${3:-}" ]] || fail "usage: deploy/wooble restore --confirm BACKUP.dump (explicit confirmation required)"
+    file="$2"
+    [[ -f "$file" ]] || fail "backup file does not exist"
+    resolve_project
+    prebackup="$(backup)" || fail "automatic pre-restore backup failed; restore was not attempted"
+    if ! compose stop web api; then
+      start_stack || true
+      fail "could not stop web/API before restore; attempted to restart stack; pre-restore backup: $prebackup"
+    fi
+    if restore_dump "$file"; then
+      if start_stack; then printf 'restore succeeded; pre-restore backup: %s\n' "$prebackup"; else fail "restore completed but stack restart failed; pre-restore backup retained at $prebackup"; fi
+    else
+      printf 'restore failed; attempting recovery from pre-restore backup %s\n' "$prebackup" >&2
+      if restore_dump "$prebackup" && start_stack; then fail "restore failed; original data recovered and stack restarted; backup retained at $prebackup"; fi
+      fail "restore and automatic recovery failed; stack may be stopped; both backups retained, recovery backup: $prebackup"
+    fi
+    ;;
+  update)
+    [[ -n "${1:-}" && -z "${2:-}" ]] || fail "usage: deploy/wooble update <version>"
+    [[ "$1" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || fail "update version must be an exact release version"
+    [[ -f "$ENV_FILE" ]] || fail "environment file not found"
+    resolve_project
+    prebackup="$(backup)" || fail "update backup failed; update was not attempted"
+    # Keep the operator's env file untouched. A private temporary dotenv file
+    # changes only the image tag for this operation and is always discarded.
+    tmp_env="$(mktemp "${TMPDIR:-/tmp}/wooble-update.XXXXXX")"
+    trap 'rm -f -- "${tmp_env:-}"' EXIT
+    awk -v version="$1" '
+      BEGIN { done=0 }
+      {
+        key=$0
+        if (match(key, /^[[:space:]]*[^=[:space:]]+[[:space:]]*=/)) {
+          key=substr(key, RSTART, RLENGTH)
+          sub(/[[:space:]]*=$/, "", key)
+          gsub(/[[:space:]]/, "", key)
+          if (key == "WOOBLE_VERSION") { print "WOOBLE_VERSION=" version; done=1; next }
+        }
+        print
+      }
+      END { if (!done) print "WOOBLE_VERSION=" version }
+    ' "$ENV_FILE" > "$tmp_env"
+    chmod 600 "$tmp_env"
+    ENV_FILE="$tmp_env"
+    export WOOBLE_VERSION="$1"
+    compose pull api web migrate || fail "image pull failed; data unchanged; backup retained at $prebackup"
+    if compose run --rm migrate; then
+      if start_stack; then printf 'updated to %s; volume preserved; pre-update backup: %s\n' "$1" "$prebackup"; else fail "migration succeeded but stack start failed; backup retained at $prebackup; restore it with deploy/wooble restore --confirm"; fi
+    else
+      fail "migration failed; previous services/data remain available where possible; backup retained at $prebackup; restore it with deploy/wooble restore --confirm"
+    fi
+    ;;
+  *) fail "usage: deploy/wooble {install|up|status|diagnose|backup|restore --confirm BACKUP.dump|update VERSION}" ;;
+esac

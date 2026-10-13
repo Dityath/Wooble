@@ -12,9 +12,10 @@ const caddy = read("../deploy/Caddyfile");
 describe("self-host Compose contract", () => {
   test("requires a release version and has a stable overridable project name", () => {
     expect(base).toMatch(/name: \$\{WOOBLE_COMPOSE_PROJECT_NAME:-wooble\}/);
-    expect(base.match(/\$\{WOOBLE_VERSION:\?/g)).toHaveLength(3);
+    expect(base.match(/\$\{WOOBLE_VERSION:\?/g)).toHaveLength(4);
     expect(base).toMatch(/ghcr\.io\/dityath\/wooble-api:\$\{WOOBLE_VERSION:\?/);
     expect(base).toMatch(/ghcr\.io\/dityath\/wooble-web:\$\{WOOBLE_VERSION:\?/);
+    expect(base).toMatch(/WOOBLE_VERSION: \$\{WOOBLE_VERSION:\?/);
   });
 
   test("keeps API and database private and pins proxy peers to configured addresses", () => {
