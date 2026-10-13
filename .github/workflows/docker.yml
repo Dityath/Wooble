@@ -28,7 +28,6 @@ jobs:
     env:
       COMPOSE: docker compose --env-file .env.selfhost -f compose.selfhost.yml
       SMOKE_BASE_URL: http://localhost:8080
-      SMOKE_STATE: ${{ runner.temp }}/selfhost-smoke.json
     steps:
       - uses: actions/checkout@v7
         with:
@@ -39,6 +38,7 @@ jobs:
       - name: Write a throwaway environment file
         run: |
           umask 077
+          echo "SMOKE_STATE=$RUNNER_TEMP/selfhost-smoke.json" >> "$GITHUB_ENV"
           cp .env.selfhost.example .env.selfhost
           sed -i "s/^WOOBLE_DB_PASSWORD=.*/WOOBLE_DB_PASSWORD=$(openssl rand -hex 24)/" .env.selfhost
       - name: Check the Compose file
