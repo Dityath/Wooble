@@ -12,13 +12,24 @@ export interface DeleteUndoTarget {
 /**
  * Lets another subsystem (comments, collaboration, ...) save its own data when
  * an entity or connection is deleted and put it back when the delete is undone.
- * `snapshot` runs inside the delete transaction; returning `undefined` stores
- * nothing. `restore` runs inside the undo transaction after the graph rows are
- * restored and receives exactly what `snapshot` returned.
+ *
+ * - `snapshot` runs inside the delete transaction, before the rows are deleted.
+ *   Returning `undefined` stores nothing; anything else must be JSON-serialisable.
+ *   It is stored under event metadata `hooks` (keyed by hook name) and is never
+ *   exposed by the activity feed.
+ * - `restore` runs inside the undo transaction, after the graph rows are
+ *   restored, and receives exactly what `snapshot` returned. It must be
+ *   idempotent; if it throws, the whole undo is rolled back.
+ * - `target.ids` for an entity delete include the deleted subtree.
+ *
+ * Registrations are process-local: register at startup on every instance, or
+ * an instance without the hook silently skips capture and restore. Namespace
+ * external metadata keys (for example "comments.threadIds"). Registering a hook
+ * with an existing name replaces the earlier one.
  */
 export interface DeleteUndoHook {
   name: string;
-  snapshot(tx: Transaction, target: DeleteUndoTarget): Promise<unknown | undefined>;
+  snapshot(tx: Transaction, target: DeleteUndoTarget): Promise<unknown>;
   restore(tx: Transaction, target: DeleteUndoTarget, data: unknown): Promise<void>;
 }
 

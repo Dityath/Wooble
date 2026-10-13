@@ -101,6 +101,7 @@ async function record(
   actor: "owner" | "peer",
   targetId: string,
   metadata: Record<string, unknown>,
+  action: "entity.updated" | "canvas.auto_neat" = "entity.updated",
 ) {
   const [row] = await db
     .insert(canvasEvents)
@@ -108,7 +109,7 @@ async function record(
       canvasId: w.canvasId,
       actorUserId: actor === "owner" ? w.ownerId : w.peerId,
       actorName: actor,
-      action: "entity.updated",
+      action,
       targetType: "entity",
       targetId,
       targetName: "target",
@@ -157,6 +158,34 @@ describe("Undo registry", () => {
     // Once unregistered the newest event is a candidate again.
     expect((await postUndo(w.canvasId)).body).toMatchObject({ undone: true, action: "entity.updated" });
     expect((await entityRow(w.first)).name).toBe("Billing");
+  });
+
+  it("walks past a newer non-reversible event and undoes the older reversible one", async () => {
+    const w = await world();
+    await db.update(entities).set({ name: "Renamed DB" }).where(eq(entities.id, w.second));
+    const older = await record(w, "owner", w.second, {
+      version: 2,
+      fields: ["name"],
+      previous: { name: "Main DB" },
+      previousMetadata: {},
+    });
+    const newer = await record(
+      w,
+      "owner",
+      w.first,
+      { previous: { placements: [], connections: [] } },
+      "canvas.auto_neat",
+    );
+    const unregister = registerNonReversibleAction("canvas.auto_neat");
+    try {
+      expect((await postUndo(w.canvasId)).body).toMatchObject({ undone: true, action: "entity.updated" });
+    } finally {
+      unregister();
+    }
+    const rows = await db.select().from(canvasEvents).where(eq(canvasEvents.canvasId, w.canvasId));
+    expect(rows.find((row) => row.id === older.id)?.undoneAt).not.toBeNull();
+    expect(rows.find((row) => row.id === newer.id)?.undoneAt).toBeNull();
+    expect((await entityRow(w.second)).name).toBe("Main DB");
   });
 
   it("never restores or conflicts on externally managed metadata keys", async () => {
@@ -226,5 +255,96 @@ describe("Undo registry", () => {
     }
     // With no hook registered nothing is captured.
     expect(await db.transaction((tx) => captureDeleteHooks(tx, { kind: "entity", ids: [w.first] }))).toEqual({});
+  });
+
+  it("stores delete hook snapshots on the real delete events and restores them on undo", async () => {
+    const w = await world();
+    const restores: Array<{ target: DeleteUndoTarget; data: unknown }> = [];
+    const unregister = registerDeleteUndoHook({
+      name: "fake-comments",
+      async snapshot(_tx, target) {
+        return { kind: target.kind, count: target.ids.length };
+      },
+      async restore(_tx, target, data) {
+        restores.push({ target, data });
+      },
+    });
+    try {
+      const connectionResponse = await request(
+        "POST",
+        `/api/canvases/${w.canvasId}/connections`,
+        { cookie },
+        { sourceEntityId: w.first, targetEntityId: w.second, type: "rest" },
+      );
+      expect(connectionResponse.status).toBe(201);
+      const { id: connectionId } = (await connectionResponse.json()) as { id: string };
+      await db.update(canvasEvents).set({ undoneAt: new Date() }).where(eq(canvasEvents.canvasId, w.canvasId));
+
+      expect(
+        (await request("DELETE", `/api/canvases/${w.canvasId}/connections/${connectionId}`, { cookie })).status,
+      ).toBe(200);
+      const [connectionEvent] = await db
+        .select()
+        .from(canvasEvents)
+        .where(and(eq(canvasEvents.canvasId, w.canvasId), eq(canvasEvents.action, "connection.deleted")));
+      expect(((connectionEvent?.metadata ?? {}) as Record<string, unknown>).hooks).toEqual({
+        "fake-comments": { kind: "connection", count: 1 },
+      });
+      expect((await postUndo(w.canvasId)).body).toMatchObject({ undone: true, action: "connection.deleted" });
+      expect(restores.at(-1)).toEqual({
+        target: { kind: "connection", ids: [connectionId] },
+        data: { kind: "connection", count: 1 },
+      });
+
+      expect((await request("DELETE", `/api/canvases/${w.canvasId}/entities/${w.second}`, { cookie })).status).toBe(
+        200,
+      );
+      const [entityEvent] = await db
+        .select()
+        .from(canvasEvents)
+        .where(and(eq(canvasEvents.canvasId, w.canvasId), eq(canvasEvents.action, "entity.deleted")));
+      expect(((entityEvent?.metadata ?? {}) as Record<string, unknown>).hooks).toEqual({
+        "fake-comments": { kind: "entity", count: 1 },
+      });
+      restores.length = 0;
+      expect((await postUndo(w.canvasId)).body).toMatchObject({ undone: true, action: "entity.deleted" });
+      expect(restores).toEqual([{ target: { kind: "entity", ids: [w.second] }, data: { kind: "entity", count: 1 } }]);
+      expect((await entityRow(w.second)).name).toBe("Main DB");
+    } finally {
+      unregister();
+    }
+  });
+
+  it("rolls the whole undo back when a restore hook throws", async () => {
+    const w = await world();
+    const unregister = registerDeleteUndoHook({
+      name: "fake-failing",
+      async snapshot() {
+        return { saved: true };
+      },
+      async restore() {
+        throw new Error("restore failed");
+      },
+    });
+    try {
+      expect((await request("DELETE", `/api/canvases/${w.canvasId}/entities/${w.second}`, { cookie })).status).toBe(
+        200,
+      );
+      const undone = await postUndo(w.canvasId);
+      expect(undone.status).toBeGreaterThanOrEqual(500);
+      expect(await db.select().from(entities).where(eq(entities.id, w.second))).toHaveLength(0);
+      const [event] = await db
+        .select()
+        .from(canvasEvents)
+        .where(and(eq(canvasEvents.canvasId, w.canvasId), eq(canvasEvents.action, "entity.deleted")));
+      expect(event?.undoneAt).toBeNull();
+      const undoEvents = await db
+        .select()
+        .from(canvasEvents)
+        .where(and(eq(canvasEvents.canvasId, w.canvasId), eq(canvasEvents.action, "canvas.undo")));
+      expect(undoEvents).toHaveLength(0);
+    } finally {
+      unregister();
+    }
   });
 });

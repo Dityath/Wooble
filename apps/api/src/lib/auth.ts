@@ -93,25 +93,36 @@ export function clientIp(context: {
   }
   return context.server?.requestIP(context.request)?.address ?? "127.0.0.1";
 }
-export async function workspaceRole(actor: Actor, workspaceId: string): Promise<"manager" | "member" | null> {
+/** Anything that can run selects: the shared client or a transaction. */
+export type SelectExecutor = Pick<typeof db, "select">;
+
+export async function workspaceRole(
+  actor: Actor,
+  workspaceId: string,
+  executor: SelectExecutor = db,
+): Promise<"manager" | "member" | null> {
   if (actor.systemRole === "admin") return "manager";
-  const [row] = await db
+  const [row] = await executor
     .select({ role: workspaceMembers.role })
     .from(workspaceMembers)
     .where(and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, actor.id)))
     .limit(1);
   return row?.role ?? null;
 }
-export async function canvasRole(actor: Actor, canvasId: string): Promise<"manager" | "editor" | "viewer" | null> {
-  const [canvas] = await db
+export async function canvasRole(
+  actor: Actor,
+  canvasId: string,
+  executor: SelectExecutor = db,
+): Promise<"manager" | "editor" | "viewer" | null> {
+  const [canvas] = await executor
     .select({ workspaceId: canvases.workspaceId, shareMode: canvases.shareMode })
     .from(canvases)
     .where(eq(canvases.id, canvasId))
     .limit(1);
   if (!canvas) return null;
-  const workspace = await workspaceRole(actor, canvas.workspaceId);
+  const workspace = await workspaceRole(actor, canvas.workspaceId, executor);
   if (workspace === "manager") return "manager";
-  const [row] = await db
+  const [row] = await executor
     .select({ role: canvasMembers.role })
     .from(canvasMembers)
     .where(and(eq(canvasMembers.canvasId, canvasId), eq(canvasMembers.userId, actor.id)))
@@ -174,39 +185,44 @@ export async function objectAccess(
   kind: ObjectKind,
   objectId: string,
   mode: "read" | "write",
+  executor: SelectExecutor = db,
 ): Promise<"allowed" | "denied" | "missing"> {
   const [object] =
     kind === "entity"
-      ? await db.select({ workspaceId: entities.workspaceId }).from(entities).where(eq(entities.id, objectId)).limit(1)
-      : await db
+      ? await executor
+          .select({ workspaceId: entities.workspaceId })
+          .from(entities)
+          .where(eq(entities.id, objectId))
+          .limit(1)
+      : await executor
           .select({ workspaceId: connections.workspaceId })
           .from(connections)
           .where(eq(connections.id, objectId))
           .limit(1);
   if (!object) return "missing";
-  if ((await workspaceRole(actor, object.workspaceId)) === "manager") return "allowed";
+  if ((await workspaceRole(actor, object.workspaceId, executor)) === "manager") return "allowed";
   const canvasIds = (
     kind === "entity"
-      ? await db
+      ? await executor
           .select({ canvasId: canvasNodes.canvasId })
           .from(canvasNodes)
           .innerJoin(canvases, eq(canvases.id, canvasNodes.canvasId))
           .where(and(eq(canvasNodes.entityId, objectId), eq(canvases.workspaceId, object.workspaceId)))
-      : await db
+      : await executor
           .select({ canvasId: canvasConnections.canvasId })
           .from(canvasConnections)
           .innerJoin(canvases, eq(canvases.id, canvasConnections.canvasId))
           .where(and(eq(canvasConnections.connectionId, objectId), eq(canvases.workspaceId, object.workspaceId)))
   ).map((row) => row.canvasId);
   if (!canvasIds.length) return "denied";
-  const memberships = await db
+  const memberships = await executor
     .select({ canvasId: canvasMembers.canvasId, role: canvasMembers.role })
     .from(canvasMembers)
     .where(and(eq(canvasMembers.userId, actor.id), inArray(canvasMembers.canvasId, canvasIds)));
   const roles = new Map(memberships.map((row) => [row.canvasId, row.role]));
   if (mode === "write") return canvasIds.every((id) => roles.get(id) === "editor") ? "allowed" : "denied";
   if (canvasIds.some((id) => roles.has(id))) return "allowed";
-  const [shared] = await db
+  const [shared] = await executor
     .select({ id: canvases.id })
     .from(canvases)
     .where(and(inArray(canvases.id, canvasIds), eq(canvases.shareMode, "link")))

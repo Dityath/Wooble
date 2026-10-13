@@ -1,10 +1,21 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { EntityMetadata } from "@wooble/domain";
 import { createApp } from "../src/app";
 import { resetLoginAttempts } from "../src/modules/auth/routes";
-import { canvasEvents, canvasNodes, connections, db, entities, users } from "@wooble/db";
+import {
+  canvasEvents,
+  canvasMembers,
+  canvasNodes,
+  canvases,
+  connections,
+  db,
+  entities,
+  users,
+  workspaceMembers,
+} from "@wooble/db";
 import { registerExternalMetadataKey } from "../src/modules/canvas/undo-registry";
+import { apiClient } from "./support/client";
 
 const app = createApp();
 
@@ -1810,5 +1821,111 @@ describe("Canvas undo of version 2 update events is field and key level", () => 
       .where(eq(canvasEvents.id, older.id));
     await undoByCookie(world.canvasId, cookie);
     expect((await entityRow(world.service)).name).toBe("Second");
+  });
+});
+
+describe("Canvas undo re-checks the current write rules", () => {
+  const api = apiClient();
+
+  async function setup() {
+    resetLoginAttempts();
+    const owner = await api.register("Undo Auth Owner");
+    const member = await api.register("Undo Auth Member");
+    return { owner, member };
+  }
+
+  async function join(owner: { session: string }, member: { session: string }, canvasId: string, role: "editor") {
+    const token = await api.invite(owner.session, `/api/canvases/${canvasId}/invitations`, role);
+    expect((await api.request("POST", `/api/invitations/${token}/accept`, member.session)).status).toBe(200);
+  }
+
+  async function undoAs(session: string, canvasId: string) {
+    const response = await api.request("POST", `/api/canvases/${canvasId}/undo`, session);
+    return { status: response.status, body: (await response.json()) as UndoConflictBody & { undone?: boolean } };
+  }
+
+  async function shareModeOf(canvasId: string) {
+    const [row] = await db.select({ shareMode: canvases.shareMode }).from(canvases).where(eq(canvases.id, canvasId));
+    return row?.shareMode;
+  }
+
+  /** The owner publishes by link, then a canvas manager unpublishes it, leaving an undoable shareMode event. */
+  async function unpublishedByManager() {
+    const { owner, member } = await setup();
+    const canvasId = await api.createCanvas(owner.session, owner.workspaceId, "Auth canvas");
+    await db
+      .insert(workspaceMembers)
+      .values({ workspaceId: owner.workspaceId, userId: member.user.id, role: "manager" });
+    expect((await api.request("PATCH", `/api/canvases/${canvasId}`, owner.session, { shareMode: "link" })).status).toBe(
+      200,
+    );
+    expect(
+      (await api.request("PATCH", `/api/canvases/${canvasId}`, member.session, { shareMode: "restricted" })).status,
+    ).toBe(200);
+    return { owner, member, canvasId };
+  }
+
+  it("does not let a demoted manager undo a shareMode change", async () => {
+    const { owner, member, canvasId } = await unpublishedByManager();
+    // Demoted from workspace manager to a plain member who keeps editor access to this canvas.
+    await db
+      .update(workspaceMembers)
+      .set({ role: "member" })
+      .where(and(eq(workspaceMembers.workspaceId, owner.workspaceId), eq(workspaceMembers.userId, member.user.id)));
+    await db.insert(canvasMembers).values({ canvasId, userId: member.user.id, role: "editor" });
+
+    const result = await undoAs(member.session, canvasId);
+    expect(result.status).toBe(409);
+    expect(result.body.skipped).toEqual([
+      { action: "canvas.updated", targetName: expect.any(String), reason: "conflict" },
+    ]);
+    expect(await shareModeOf(canvasId)).toBe("restricted");
+    const [event] = await db
+      .select()
+      .from(canvasEvents)
+      .where(and(eq(canvasEvents.canvasId, canvasId), eq(canvasEvents.actorUserId, member.user.id)));
+    expect(event?.undoneAt).toBeNull();
+  });
+
+  it("still lets a current manager undo a shareMode change", async () => {
+    const { member, canvasId } = await unpublishedByManager();
+    const result = await undoAs(member.session, canvasId);
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ undone: true, action: "canvas.updated" });
+    expect(await shareModeOf(canvasId)).toBe("link");
+  });
+
+  /** An editor renames a node, then the owner also places it on a second canvas. */
+  async function renamedThenShared() {
+    const { owner, member } = await setup();
+    const first = await api.createCanvas(owner.session, owner.workspaceId, "Auth first");
+    const second = await api.createCanvas(owner.session, owner.workspaceId, "Auth second");
+    const node = await api.createNode(owner.session, first, { name: "Original" });
+    await join(owner, member, first, "editor");
+    expect((await api.request("PATCH", `/api/entities/${node}`, member.session, { name: "Renamed" })).status).toBe(200);
+    await db.insert(canvasNodes).values({ canvasId: second, entityId: node });
+    return { owner, member, first, second, node };
+  }
+
+  async function entityName(id: string) {
+    const [row] = await db.select({ name: entities.name }).from(entities).where(eq(entities.id, id));
+    return row?.name;
+  }
+
+  it("does not let an editor undo a rename after the node also appears where they have no role", async () => {
+    const { member, first, node } = await renamedThenShared();
+    const result = await undoAs(member.session, first);
+    expect(result.status).toBe(409);
+    expect(result.body.skipped).toEqual([{ action: "entity.updated", targetName: "Renamed", reason: "conflict" }]);
+    expect(await entityName(node)).toBe("Renamed");
+  });
+
+  it("still lets the editor undo the rename once they have the editor role on every canvas showing it", async () => {
+    const { owner, member, first, second, node } = await renamedThenShared();
+    await join(owner, member, second, "editor");
+    const result = await undoAs(member.session, first);
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ undone: true, action: "entity.updated" });
+    expect(await entityName(node)).toBe("Original");
   });
 });

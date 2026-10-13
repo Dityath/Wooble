@@ -856,7 +856,7 @@ export function canvasRoutes(app: Api) {
         .for("update")
         .limit(1);
       if (!canvas) return { kind: "not-found" as const };
-      const outcome = await applyNextUndo(tx, canvas.id, actor.id);
+      const outcome = await applyNextUndo(tx, canvas.id, actor);
       if (!outcome.undoneEvent && !outcome.skipped.length) return { kind: "nothing" as const };
       if (!outcome.undoneEvent) {
         // No-op-only walks are honestly reported as "nothing undone"; only

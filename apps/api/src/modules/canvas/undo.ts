@@ -7,13 +7,12 @@ import {
   connections,
   entities,
   type CanvasEventAction,
-  type db,
 } from "@wooble/db";
 import type { ConnectionPath, ConnectionType, EntityMetadata, EntityType } from "@wooble/domain";
+import { canvasRole, objectAccess, type Actor } from "../../lib/auth";
 import { isUpdateEventMetadataV2, type PreviousMetadataEntry } from "./event-metadata";
-import { isExternalMetadataKey, listNonReversibleActions, restoreDeleteHooks } from "./undo-registry";
+import { isExternalMetadataKey, listNonReversibleActions, restoreDeleteHooks, type Transaction } from "./undo-registry";
 
-type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type CanvasEventRow = typeof canvasEvents.$inferSelect;
 
 interface PlacementSnapshot {
@@ -70,8 +69,13 @@ export interface UndoOutcome {
  * that would no longer change the canvas are marked undone and reported as
  * no-ops; selection keeps walking back until an event actually changes the
  * graph or the trail is exhausted.
+ *
+ * Undo never grants more than the actor may do now: candidates whose original
+ * write rule the actor no longer satisfies are skipped as "conflict" (see
+ * `undoAuthorized`) and stay un-undone.
  */
-export async function applyNextUndo(tx: Transaction, canvasId: string, actorId: string): Promise<UndoOutcome> {
+export async function applyNextUndo(tx: Transaction, canvasId: string, actor: Actor): Promise<UndoOutcome> {
+  const actorId = actor.id;
   const rows = await tx
     .select()
     .from(canvasEvents)
@@ -90,7 +94,7 @@ export async function applyNextUndo(tx: Transaction, canvasId: string, actorId: 
   const skipped: UndoSkippedEvent[] = [];
   for (const [index, candidate] of rows.entries()) {
     if (candidate.actorUserId !== actorId) continue;
-    const blocked = await undoBlockedByCurrentState(tx, candidate);
+    const blocked = !(await undoAuthorized(tx, actor, candidate)) || (await undoBlockedByCurrentState(tx, candidate));
     const affected = await affectedObjectsFor(tx, candidate);
     const conflicted =
       !blocked &&
@@ -108,6 +112,39 @@ export async function applyNextUndo(tx: Transaction, canvasId: string, actorId: 
     return { undoneEvent: candidate, skipped };
   }
   return { undoneEvent: null, skipped };
+}
+
+/**
+ * Re-applies the existing write rules (lib/auth.ts) to the data an undo writes,
+ * using the transaction so it sees the same state the undo will change:
+ * - canvas.updated: the canvas PATCH rule, canvas manager only (accessGuard
+ *   treats PATCH /api/canvases/:canvasId as managerOnly; workspace managers and
+ *   system admins resolve to canvas manager in canvasRole).
+ * - entity.updated, connection.updated (non-bend): the objectAccess "write"
+ *   decision the entity/connection routes enforce, which covers every canvas in
+ *   the workspace that now shows the object. A missing object passes through to
+ *   the undo's own no-op handling.
+ * Everything else needs no extra check: bend, placement and auto-neat undos
+ * only touch this canvas, which the route already requires a non-viewer role
+ * for. entity.created/connection.created undo only deletes rows no other canvas
+ * places, and entity.deleted/connection.deleted undo only inserts missing rows
+ * (on conflict do nothing) and this canvas's placements/links, so shared rows
+ * that other canvases show are never overwritten.
+ */
+async function undoAuthorized(tx: Transaction, actor: Actor, event: CanvasEventRow): Promise<boolean> {
+  switch (event.action) {
+    case "canvas.updated":
+      return (await canvasRole(actor, event.canvasId, tx)) === "manager";
+    case "entity.updated":
+      return !event.targetId || (await objectAccess(actor, "entity", event.targetId, "write", tx)) !== "denied";
+    case "connection.updated": {
+      const metadata = (event.metadata ?? {}) as Record<string, unknown>;
+      if (metadata.field === "bend") return true;
+      return !event.targetId || (await objectAccess(actor, "connection", event.targetId, "write", tx)) !== "denied";
+    }
+    default:
+      return true;
+  }
 }
 
 /**
