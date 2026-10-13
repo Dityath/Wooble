@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version to build for a non-publishing dry run (for example 0.2.0)
+        description: Version tag to build for a non-publishing dry run (for example v0.2.0)
         required: true
         type: string
 
@@ -35,10 +35,10 @@ jobs:
           set -euo pipefail
           if [[ "$EVENT_NAME" == push ]]; then
             [[ "$REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "Tag must be vMAJOR.MINOR.PATCH" >&2; exit 1; }
-            version="${REF_NAME#v}"
+            version="$REF_NAME"
             publish=true
           else
-            [[ "$INPUT_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "Manual version must be MAJOR.MINOR.PATCH" >&2; exit 1; }
+            [[ "$INPUT_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "Manual version must be vMAJOR.MINOR.PATCH" >&2; exit 1; }
             version="$INPUT_VERSION"
             publish=false
           fi
@@ -107,6 +107,8 @@ jobs:
           docker run --rm --entrypoint sh wooble-api:test -c 'test -s /usr/share/doc/wooble/THIRD_PARTY_NOTICES.txt && test -f /app/packages/db/drizzle/meta/_journal.json && find /app/packages/db/drizzle -name "*.sql" -print -quit | grep -q .'
           docker run --rm --entrypoint sh wooble-web:test -c 'test -s /usr/share/doc/wooble/THIRD_PARTY_NOTICES.txt && test -s /srv/index.html'
       - name: Smoke API and static assets from the built images
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
           docker network create wooble-release-smoke
@@ -116,21 +118,28 @@ jobs:
             sleep 1
           done
           docker run --rm --network wooble-release-smoke -e DATABASE_URL=postgres://wooble:smoke-only@wooble-release-db:5432/wooble wooble-api:test bun run --cwd packages/db migrate
-          docker run -d --name wooble-release-api --network wooble-release-smoke -p 127.0.0.1:43001:3001 -e API_PORT=3001 -e DATABASE_URL=postgres://wooble:smoke-only@wooble-release-db:5432/wooble -e NODE_ENV=production -e WEB_ORIGIN=http://localhost:43002 -e TRUST_PROXY=false wooble-api:test
+          docker run -d --name wooble-release-api --network wooble-release-smoke --network-alias api -p 127.0.0.1:43001:3001 -e API_PORT=3001 -e DATABASE_URL=postgres://wooble:smoke-only@wooble-release-db:5432/wooble -e NODE_ENV=production -e WOOBLE_VERSION="$VERSION" -e WEB_ORIGIN=http://localhost:43002 -e TRUST_PROXY=false wooble-api:test
           docker run -d --name wooble-release-web --network wooble-release-smoke -p 127.0.0.1:43002:80 -e WOOBLE_CADDY_SITE=:80 -e WOOBLE_CADDY_TLS= -e CADDY_TRUSTED_PROXY_CIDRS=127.0.0.1/32 wooble-web:test
           for attempt in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:43001/health >/dev/null && curl -fsS http://127.0.0.1:43002/ >/tmp/wooble-index.html; then break; fi
             sleep 1
           done
           curl -fsS http://127.0.0.1:43001/health | grep -q '"status":"ok"'
+          curl -fsS http://127.0.0.1:43002/health | jq -e --arg version "$VERSION" '.version == $version and .status == "ok"' >/dev/null
           asset="$(sed -n 's/.*src="\([^"]*\.js\)".*/\1/p' /tmp/wooble-index.html | head -1)"
           test -n "$asset"
           curl -fsS "http://127.0.0.1:43002$asset" >/dev/null
       - name: Rehearse v0.1.0 source bootstrap and same-volume migration upgrade
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
+          git rev-parse --verify 'v0.1.0^{commit}' >/dev/null
           mkdir -p "$RUNNER_TEMP/wooble-v010"
           git archive v0.1.0 | tar -x -C "$RUNNER_TEMP/wooble-v010"
+          test -f "$RUNNER_TEMP/wooble-v010/deploy/Dockerfile"
+          test -f "$RUNNER_TEMP/wooble-v010/compose.selfhost.yml"
+          find "$RUNNER_TEMP/wooble-v010/packages/db/drizzle" -name '*.sql' -print -quit | grep -q .
           docker volume create wooble-release-upgrade-data >/dev/null
           docker run -d --name wooble-upgrade-db -v wooble-release-upgrade-data:/var/lib/postgresql/data --network wooble-release-smoke -e POSTGRES_USER=wooble -e POSTGRES_PASSWORD=upgrade-only -e POSTGRES_DB=wooble postgres:16-alpine
           for attempt in $(seq 1 60); do
@@ -139,13 +148,20 @@ jobs:
           done
           docker buildx build --platform "${{ matrix.platform }}" --load --target api -t wooble-api:v0.1.0 -f "$RUNNER_TEMP/wooble-v010/deploy/Dockerfile" "$RUNNER_TEMP/wooble-v010"
           docker run --rm --network wooble-release-smoke -e DATABASE_URL=postgres://wooble:upgrade-only@wooble-upgrade-db:5432/wooble wooble-api:v0.1.0 bun run --cwd packages/db migrate
-          docker exec wooble-upgrade-db psql -U wooble -d wooble -v ON_ERROR_STOP=1 -c 'CREATE TABLE upgrade_fixture (value text NOT NULL); INSERT INTO upgrade_fixture VALUES ($tag$preserved$tag$);'
+          docker run -d --name wooble-old-api --network wooble-release-smoke -p 127.0.0.1:43003:3001 -e DATABASE_URL=postgres://wooble:upgrade-only@wooble-upgrade-db:5432/wooble -e NODE_ENV=production -e WEB_ORIGIN=http://localhost:43003 wooble-api:v0.1.0
+          SMOKE_BASE_URL=http://localhost:43003 SMOKE_STATE="$RUNNER_TEMP/wooble-upgrade-state.json" bun scripts/selfhost-smoke.ts setup
+          docker rm -f wooble-old-api
           docker run --rm --network wooble-release-smoke -e DATABASE_URL=postgres://wooble:upgrade-only@wooble-upgrade-db:5432/wooble wooble-api:test bun run --cwd packages/db migrate
-          docker exec wooble-upgrade-db psql -U wooble -d wooble -tAc 'SELECT value FROM upgrade_fixture' | grep -qx preserved
+          docker run -d --name wooble-new-api --network wooble-release-smoke -p 127.0.0.1:43003:3001 -e API_PORT=3001 -e DATABASE_URL=postgres://wooble:upgrade-only@wooble-upgrade-db:5432/wooble -e NODE_ENV=production -e WOOBLE_VERSION="$VERSION" -e WEB_ORIGIN=http://localhost:43003 -e TRUST_PROXY=false wooble-api:test
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:43003/health | jq -e --arg version "$VERSION" '.version == $version and .status == "ok"' >/dev/null; then break; fi
+            sleep 1
+          done
+          SMOKE_BASE_URL=http://localhost:43003 SMOKE_STATE="$RUNNER_TEMP/wooble-upgrade-state.json" bun scripts/selfhost-smoke.ts verify
       - name: Clean smoke resources
         if: always()
         run: |
-          docker rm -f wooble-release-web wooble-release-api wooble-release-db wooble-upgrade-db >/dev/null 2>&1 || true
+          docker rm -f wooble-release-web wooble-release-api wooble-release-db wooble-upgrade-db wooble-old-api wooble-new-api >/dev/null 2>&1 || true
           docker volume rm wooble-release-upgrade-data >/dev/null 2>&1 || true
           docker network rm wooble-release-smoke >/dev/null 2>&1 || true
 
@@ -179,4 +195,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.validate.outputs.version }}
-        run: gh release create "v$VERSION" --draft --generate-notes
+        run: gh release create "$VERSION" --draft --generate-notes
