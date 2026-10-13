@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight, Layers3, LogOut, Menu, Plus, Settings2, Shar
 import type { ArchitectureEntity } from "@wooble/domain";
 import { CanvasShareDialog } from "../features/workspace/canvas-share-dialog";
 import { EntityKindIcon } from "../features/canvas/architecture-nodes";
+import { clearAllDocumentationDrafts } from "../features/inspector/documentation/drafts";
 import { api, type CanvasGraph } from "../lib/api";
 import { useAppearance } from "../lib/use-appearance";
 import { Separator } from "./ui";
@@ -133,9 +134,13 @@ export function AppShell({
               setSignOutError("");
               try {
                 await api.logout();
+                // Purged before and after leaving: an open documentation editor writes its unsaved text as a draft
+                // when it unmounts with the page, and that must not outlive the session.
+                clearAllDocumentationDrafts();
                 queryClient.clear();
                 setOpenMenu(null);
                 await navigate({ to: "/login" });
+                clearAllDocumentationDrafts();
               } catch (error) {
                 setSignOutError(error instanceof Error ? error.message : "Could not sign out. Try again.");
               } finally {

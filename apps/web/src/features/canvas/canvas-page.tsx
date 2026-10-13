@@ -38,6 +38,7 @@ import { AppShell } from "../../components/app-shell";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogTitle,
   Button,
   Tooltip,
@@ -408,6 +409,10 @@ function CanvasEditor({
   const [undoNotice, setUndoNotice] = useState<string | null>(null);
   const [deleteRequest, setDeleteRequest] = useState<{ serial: number } | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [documentationUnsaved, setDocumentationUnsaved] = useState(false);
+  const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
+  const keepEditingRef = useRef<HTMLButtonElement>(null);
+  const detailsDialogRef = useRef<HTMLDivElement>(null);
   const [detailSection, setDetailSection] = useState<"overview" | "documentation" | "schema" | "contract">("overview");
   const [activityOpen, setActivityOpen] = useState(false);
   const queryClient = useQueryClient();
@@ -1076,8 +1081,18 @@ function CanvasEditor({
           />
         )}
       </div>
-      <Dialog open={detailsOpen && Boolean(selectedEntityId || selectedConnectionId)} onOpenChange={setDetailsOpen}>
+      <Dialog
+        open={detailsOpen && Boolean(selectedEntityId || selectedConnectionId)}
+        onOpenChange={(open) => {
+          if (!open && documentationUnsaved) {
+            setCloseConfirmOpen(true);
+            return;
+          }
+          setDetailsOpen(open);
+        }}
+      >
         <DialogContent
+          ref={detailsDialogRef}
           className="canvas-details-dialog"
           aria-describedby={undefined}
           onEscapeKeyDown={(event) => {
@@ -1098,8 +1113,47 @@ function CanvasEditor({
               mode="details"
               detailSection={detailSection}
               onSelectDetailSection={setDetailSection}
+              onUnsavedDocumentationChange={setDocumentationUnsaved}
             />
           )}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={closeConfirmOpen && documentationUnsaved} onOpenChange={setCloseConfirmOpen}>
+        <DialogContent
+          className="inspector-delete-dialog"
+          role="alertdialog"
+          aria-describedby="close-unsaved-description"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            keepEditingRef.current?.focus();
+          }}
+          onCloseAutoFocus={(event) => {
+            // Back into the details dialog (its editor when there is one), not to wherever focus was before.
+            const details = detailsDialogRef.current;
+            if (!details) return;
+            event.preventDefault();
+            (details.querySelector<HTMLElement>("[contenteditable='true']") ?? details).focus();
+          }}
+        >
+          <DialogTitle>Close with unsaved documentation?</DialogTitle>
+          <DialogDescription id="close-unsaved-description">
+            Your changes are not saved yet. The text is kept on this device and will be offered again when you open this
+            item's documentation.
+          </DialogDescription>
+          <div className="inspector-delete-actions">
+            <Button ref={keepEditingRef} variant="secondary" onClick={() => setCloseConfirmOpen(false)}>
+              Keep editing
+            </Button>
+            <Button
+              onClick={() => {
+                setCloseConfirmOpen(false);
+                setDocumentationUnsaved(false);
+                setDetailsOpen(false);
+              }}
+            >
+              Close
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
