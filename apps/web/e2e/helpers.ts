@@ -102,3 +102,25 @@ export async function shareCanvasByLink(request: APIRequestContext, cookieValue:
   });
   if (!response.ok()) throw new Error(`link share failed: ${await response.text()}`);
 }
+
+/** The signed-in person's user id, as the server reports it for this session. */
+export async function currentUserId(request: APIRequestContext, cookieValue: string): Promise<string> {
+  const response = await request.get("/api/auth/me", { headers: authHeaders(cookieValue) });
+  if (!response.ok()) throw new Error(`me failed (${response.status()}): ${await response.text()}`);
+  return ((await response.json()) as { id: string }).id;
+}
+
+/** Changes an existing canvas member's role through the real API, as the canvas owner. */
+export async function setCanvasMemberRole(
+  request: APIRequestContext,
+  ownerCookieValue: string,
+  canvasId: string,
+  userId: string,
+  role: "editor" | "viewer",
+) {
+  const response = await request.patch(`/api/canvases/${canvasId}/members/${userId}`, {
+    headers: authHeaders(ownerCookieValue),
+    data: { role },
+  });
+  if (!response.ok()) throw new Error(`member role change failed (${response.status()}): ${await response.text()}`);
+}
