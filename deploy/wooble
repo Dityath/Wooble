@@ -40,13 +40,16 @@ duplicates="$(awk -F= '
 compose() {
   docker compose --env-file "$ENV_FILE" --project-name "$PROJECT" "${COMPOSE_BASE[@]}" -f "$COMPOSE_MODE" "$@"
 }
+compose_config_check() {
+  compose config -q >/dev/null 2>&1 || fail "Compose configuration is invalid; check WOOBLE_VERSION, WOOBLE_ORIGIN, WOOBLE_BIND_ADDRESS, WOOBLE_DB_PASSWORD, and mode-specific settings"
+}
 version_required() {
   [[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || fail "WOOBLE_VERSION is required and must be a release version"
 }
 
-# Reuse only the known default Wooble project or a legacy project the operator
+# Reuse only the selected Compose project or a legacy project the operator
 # explicitly named. `postgres-data` is a common logical key, so the key alone
-# never identifies a Wooble volume. Names and labels are never rewritten.
+# never identifies a Wooble volume. The selected project is never rewritten.
 resolve_project() {
   local volumes name labels logical owner count=0 invalid=0 chosen="" expected_name
   volumes="$(docker volume ls --filter label=com.docker.compose.volume=postgres-data --format '{{.Name}}')" || fail "cannot discover Docker volumes"
@@ -57,23 +60,30 @@ resolve_project() {
       continue
     }
     logical="${labels%%|*}"; owner="${labels#*|}"
-    if [[ "$owner" != wooble && ( -z "$LEGACY_PROJECT" || "$owner" != "$LEGACY_PROJECT" ) ]]; then continue; fi
+    if [[ "$owner" != "$PROJECT" && ( -z "$LEGACY_PROJECT" || "$owner" != "$LEGACY_PROJECT" ) ]]; then continue; fi
     expected_name="${owner}_postgres-data"
     if [[ "$logical" != postgres-data || ! "$owner" =~ ^[a-z0-9][a-z0-9_-]*$ || "$name" != "$expected_name" ]]; then invalid=$((invalid + 1)); continue; fi
     count=$((count + 1)); chosen="$owner"
   done <<< "$volumes"
   if (( invalid > 0 )); then fail "invalid matching Wooble postgres-data volume labels found; refusing to guess which volume to reuse"; fi
-  if (( count > 1 )); then fail "multiple matching Wooble postgres-data volumes found; set WOOBLE_LEGACY_PROJECT_NAME only after resolving ambiguity manually"; fi
-  if (( count == 1 )); then PROJECT="$chosen"; fi
+  if (( count > 1 )); then fail "multiple matching Wooble postgres-data volumes found; set WOOBLE_COMPOSE_PROJECT_NAME to the intended project and resolve legacy ambiguity manually"; fi
+  if (( count == 1 )) && [[ "$chosen" != "$PROJECT" ]]; then
+    fail "legacy volume belongs to project '$chosen'; set WOOBLE_COMPOSE_PROJECT_NAME=$chosen explicitly to reuse it"
+  fi
 }
 
 ensure_version_env() { version_required; }
 backup() {
-  local dir="$ROOT/backups" stamp file
+  local dir="$ROOT/backups" stamp file suffix=0
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-  file="$dir/wooble-$stamp.dump"
   (umask 077; mkdir -p "$dir") || fail "cannot create backup directory"
-  (umask 077; set -o noclobber; : > "$file") || fail "backup already exists or cannot be created: $file"
+  while :; do
+    file="$dir/wooble-$stamp-$$-$suffix.dump"
+    if [[ -e "$file" ]]; then suffix=$((suffix + 1)); continue; fi
+    (umask 077; set -o noclobber; : > "$file") && break
+    [[ -e "$file" ]] || fail "cannot create backup file"
+    suffix=$((suffix + 1))
+  done
   if ! compose exec -T postgres pg_dump -U wooble -Fc wooble > "$file"; then
     rm -f -- "$file"
     fail "backup failed"
@@ -111,7 +121,7 @@ case "$cmd" in
   install|up)
     ensure_version_env
     resolve_project
-    compose config -q || fail "Compose configuration is invalid"
+    compose_config_check
     if [[ "$cmd" == install ]]; then
       compose pull
       compose run --rm migrate
@@ -143,7 +153,7 @@ case "$cmd" in
         [[ -n "$domain" && "$origin" == "https://$domain" ]] || fail "domain mode origin must exactly match https://WOOBLE_DOMAIN"
         ;;
     esac
-    if ! compose config -q; then fail "Compose configuration is invalid (check required env, origin, bind, and HTTPS settings)"; fi
+    compose_config_check
     if ! grep -Fq 'handle /api/*' "$ROOT/deploy/Caddyfile" || ! grep -Fq 'reverse_proxy api:3001' "$ROOT/deploy/Caddyfile"; then fail "Caddy API/WebSocket proxy route is missing"; fi
     compose ps
     compose exec -T api bun -e 'fetch("http://127.0.0.1:3001/health").then(async r => { const body = await r.json(); console.log(JSON.stringify(body)); if (!r.ok) process.exit(1) }).catch(() => process.exit(1))' || fail "API health check failed; inspect migration and service logs"
@@ -184,11 +194,9 @@ case "$cmd" in
     [[ -n "${1:-}" && -z "${2:-}" ]] || fail "usage: deploy/wooble update <version>"
     [[ "$1" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || fail "update version must be an exact release version"
     [[ -f "$ENV_FILE" ]] || fail "environment file not found"
-    resolve_project
-    prebackup="$(backup)" || fail "update backup failed; update was not attempted"
-    # Keep the operator's env file untouched. A private temporary dotenv file
-    # changes only the image tag for this operation and is always discarded.
-    tmp_env="$(mktemp "${TMPDIR:-/tmp}/wooble-update.XXXXXX")"
+    [[ ! -L "$ENV_FILE" ]] || fail "update requires a regular env file so its version can be persisted safely"
+    original_env="$ENV_FILE"
+    tmp_env="$(umask 077; mktemp "${original_env}.update.XXXXXX")" || fail "cannot prepare a safe env-file update"
     trap 'rm -f -- "${tmp_env:-}"' EXIT
     awk -v version="$1" '
       BEGIN { done=0 }
@@ -203,15 +211,27 @@ case "$cmd" in
         print
       }
       END { if (!done) print "WOOBLE_VERSION=" version }
-    ' "$ENV_FILE" > "$tmp_env"
+    ' "$original_env" > "$tmp_env" || fail "cannot prepare a safe env-file update"
     chmod 600 "$tmp_env"
+    resolve_project
+    prebackup="$(backup)" || fail "update backup failed; update was not attempted"
     ENV_FILE="$tmp_env"
     export WOOBLE_VERSION="$1"
     compose pull api web migrate || fail "image pull failed; data unchanged; backup retained at $prebackup"
     if compose run --rm migrate; then
-      if start_stack; then printf 'updated to %s; volume preserved; pre-update backup: %s\n' "$1" "$prebackup"; else fail "migration succeeded but stack start failed; backup retained at $prebackup; restore it with deploy/wooble restore --confirm"; fi
+      if start_stack; then
+        if mv -f "$tmp_env" "$original_env"; then
+          tmp_env=""
+          trap - EXIT
+          printf 'updated to %s; version persisted; volume preserved; pre-update backup: %s\n' "$1" "$prebackup"
+        else
+          fail "stack started at the new version but could not persist WOOBLE_VERSION; original env file remains unchanged; backup retained at $prebackup"
+        fi
+      else
+        fail "migration succeeded but stack start failed; original version retained; backup retained at $prebackup; restore it with deploy/wooble restore --confirm"
+      fi
     else
-      fail "migration failed; previous services/data remain available where possible; backup retained at $prebackup; restore it with deploy/wooble restore --confirm"
+      fail "migration failed; original version retained; previous services/data remain available where possible; backup retained at $prebackup; restore it with deploy/wooble restore --confirm"
     fi
     ;;
   *) fail "usage: deploy/wooble {install|up|status|diagnose|backup|restore --confirm BACKUP.dump|update VERSION}" ;;
