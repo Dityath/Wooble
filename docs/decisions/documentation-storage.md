@@ -6,6 +6,35 @@ The v0.2.0 roadmap asks for a collaborative document representation before repla
 
 Markdown-first keeps existing API consumers, entity reading pages, exports, and activity history compatible. It also limits the editor to constructs that can be saved as Markdown. Opening, focusing, or moving the cursor must not canonicalize or save a document. Only an actual edit schedules a write; supported block syntax may then be normalized. Tables use compact rows and plain URLs remain plain to avoid artificial length growth. Unsupported images, footnotes, YAML front matter, and raw HTML use source editing with a warning instead of silent conversion. No database field or migration changes in this increment.
 
+## 2026-10-13: Unsaved drafts
+
+Context: a reload, a crashed tab, a rejected save, or a lost session could destroy documentation that was typed but not saved. The Markdown field and API contract are unchanged by this decision.
+
+Options considered:
+
+- **`localStorage`:** synchronous, survives reloads and restarts, scoped to the origin, and already the app's only client storage pattern (`lib/use-appearance.ts`).
+- **`sessionStorage`:** lost when the tab closes, which is exactly when a draft is most useful.
+- **IndexedDB:** larger quota, but asynchronous and heavier than 20,000-character Markdown strings need.
+- **Server-side drafts:** would sync across devices, but needs a schema, migration, API and access rules for text the server may be rejecting. Deferred with the collaborative representation.
+
+Decision: `localStorage`, under the key `wooble:draft:v1:<userId>:<kind>:<objectId>`, with each segment URI-encoded. The user is in the key so another account on a shared browser never sees a draft; kind (`entity` or `connection`) is in it because entities and connections share the documentation field but not ids; the object id keeps drafts apart per object. Encoding stops an id containing `:` from forging another key. The `v1` prefix lets a later shape change migrate rather than misread. Drafts expire after 7 days.
+
+When drafts are written and cleared:
+
+- A draft is written when the editor holds unsaved text, including text over the 20,000-character limit, and when the editor closes with an unsaved edit. A blank draft removes the entry.
+- It is cleared when that exact text saves, when the user discards it, when it matches the saved text, or when a save returns 403.
+- A 401, a 400/422, and network or server errors keep the draft.
+- Sign-out and a password change remove every documentation draft on the device. A session that merely expires keeps the draft for the same user.
+- Reads and writes never throw: a full or blocked store only costs the draft.
+
+Recovery is explicit. The editor offers the draft with Restore and Discard and never injects it, so a stale draft cannot silently overwrite newer saved text. It is offered only after the current user is known and the canvas allows editing, because the key depends on the user and a viewer must not be offered an edit.
+
+A 403 clears the draft because access was removed deliberately: keeping text the user may no longer write would resurface it later in an editor they cannot use. A 401 keeps it because the same user can sign in again and save.
+
+Limits: drafts are per browser and device, are removed by clearing browser data, and are not synced. Edits made in the autosave window right before sign-out can be lost. This does not add co-editing; updates remain last-write-wins.
+
+The server remains the source of truth for authorization. A draft is client-held text, not permission; every save is checked by the API against the current role, and the client never uses a stored draft to decide who may write.
+
 ## Follow-up issue draft: choose the collaborative representation
 
 Before replacing Markdown storage:
