@@ -241,24 +241,40 @@ describe("self-host CLI safety", () => {
     expect(readFileSync(f.log, "utf8")).toContain("--project-name wooble_archive");
   });
 
-  it("preserves an explicit project across up, backup, restore, and update despite a Wooble volume", () => {
-    const operations = [
-      (f: ReturnType<typeof fixture>) => f.run("up"),
-      (f: ReturnType<typeof fixture>) => f.run("backup"),
-      (f: ReturnType<typeof fixture>) => f.run("restore", "--confirm", f.backupFile),
-      (f: ReturnType<typeof fixture>) => f.run("update", "2.0.0"),
-    ];
-    for (const operation of operations) {
-      const f = fixture({
-        project: "isolated-install",
-        volumes: "wooble_postgres-data",
-        inspect: "postgres-data|wooble",
-      });
-      expect(operation(f).status).toBe(0);
-      const calls = readFileSync(f.log, "utf8");
-      expect(calls).toContain("--project-name isolated-install");
-      expect(calls).not.toContain("--project-name wooble");
-    }
+  const isolatedProjectFixture = () =>
+    fixture({
+      project: "isolated-install",
+      volumes: "wooble_postgres-data",
+      inspect: "postgres-data|wooble",
+    });
+  const expectIsolatedProject = (f: ReturnType<typeof fixture>) => {
+    const calls = readFileSync(f.log, "utf8");
+    expect(calls).toContain("--project-name isolated-install");
+    expect(calls).not.toContain("--project-name wooble");
+  };
+
+  it("preserves an explicit project for up despite a Wooble volume", () => {
+    const f = isolatedProjectFixture();
+    expect(f.run("up").status).toBe(0);
+    expectIsolatedProject(f);
+  });
+
+  it("preserves an explicit project for backup despite a Wooble volume", () => {
+    const f = isolatedProjectFixture();
+    expect(f.run("backup").status).toBe(0);
+    expectIsolatedProject(f);
+  });
+
+  it("preserves an explicit project for restore despite a Wooble volume", () => {
+    const f = isolatedProjectFixture();
+    expect(f.run("restore", "--confirm", f.backupFile).status).toBe(0);
+    expectIsolatedProject(f);
+  });
+
+  it("preserves an explicit project for update despite a Wooble volume", () => {
+    const f = isolatedProjectFixture();
+    expect(f.run("update", "2.0.0").status).toBe(0);
+    expectIsolatedProject(f);
   });
 
   it("refuses to use a named legacy project's volume until the configured project matches it", () => {
