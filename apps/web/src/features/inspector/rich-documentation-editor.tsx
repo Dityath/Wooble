@@ -31,6 +31,11 @@ export interface RichDocumentationProps {
   onUnsavedChange?: (unsaved: boolean) => void;
 }
 
+/** The older draft above the fresh edits, with a blank line between; either part may be empty. */
+function combine(older: string, fresh: string): string {
+  return [older.trim(), fresh].filter((part) => part !== "").join("\n\n");
+}
+
 function describeAge(savedAt: number): string {
   const minutes = Math.max(0, Math.round((Date.now() - savedAt) / 60_000));
   if (minutes < 1) return "a moment ago";
@@ -82,11 +87,17 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
   const loaded = useRef(value);
   const pending = useRef<string | undefined>(undefined);
   const edited = useRef(false);
-  // A recovery offer is open. Rule: while it is, nothing writes to or clears this object's draft slot, because the slot
-  // still holds the older draft the user has not decided about. Fresh edits made before the offer appeared stay in the
-  // editor (and may autosave to the server). Discard removes the older draft and then keeps the fresh edits as the
-  // draft; Restore puts the older draft above the fresh edits, so neither text is lost.
+  // A recovery offer is open. Rule: while it is, NOTHING is sent to the server for this object (no autosave, blur or
+  // unmount save) and nothing writes to or clears its draft slot, because the slot still holds the older draft the user
+  // has not decided about. Fresh edits made before the offer appeared stay in the read-only editor, unsaved.
+  // Discard removes the older draft, then autosave resumes with the fresh edits; Restore puts the older draft above the
+  // fresh edits (blank line between) and autosaves that. "Fresh" is the editor's current document compared with
+  // `offerBase`, the saved document when the offer opened. If the editor closes with the offer open and fresh edits, the
+  // combined text (older draft, blank line, fresh edits) becomes the draft, so the next mount offers both.
   const offerOpen = useRef(false);
+  const offerBase = useRef("");
+  const offerDraft = useRef("");
+  const restoreButton = useRef<HTMLButtonElement>(null);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
   // The latest document once the user has edited it; undefined before the first edit.
   const [doc, setDoc] = useState<string>();
@@ -95,11 +106,15 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
   const [error, setError] = useState<SaveFailure>();
   const [accessLost, setAccessLost] = useState(false);
   const [recovery, setRecovery] = useState<DocumentationDraft>();
+  // The open offer was made while the editor held edits that are not saved.
+  const [offerHasFreshEdits, setOfferHasFreshEdits] = useState(false);
+  // Bumped when an offer is resolved, so the autosave that was held back starts again.
+  const [resumeTick, setResumeTick] = useState(0);
   // Bumped when focus should return to the editor after a control that held it went away.
   const [focusRequest, setFocusRequest] = useState(0);
 
   const commit = useCallback((next: string) => {
-    if (locked.current) return;
+    if (locked.current || offerOpen.current) return;
     if (next === lastSubmitted.current) {
       // Nothing new to save, and a document that matches the saved one has no failed save to report.
       if (next === lastSaved.current) setError(undefined);
@@ -137,6 +152,7 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
           locked.current = true;
           if (target) clearDraft(target.userId, target.kind, target.objectId);
           setAccessLost(true);
+          offerOpen.current = false;
           setRecovery(undefined);
           setError(failure);
           return;
@@ -176,7 +192,7 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
    */
   const show = useCallback((next: string) => {
     const handle = editor.current;
-    if (!handle || handle.hasFocus() || latest.current !== lastSaved.current) return false;
+    if (!handle || offerOpen.current || handle.hasFocus() || latest.current !== lastSaved.current) return false;
     const replaced = handle.replace(next).trim();
     loaded.current = next;
     pending.current = undefined;
@@ -204,7 +220,13 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
     // changed, so nothing is saved. The draft is written first, so the text survives a failed or interrupted save.
     return () => {
       const target = locationRef.current;
-      if (target && !locked.current && !offerOpen.current && edited.current && latest.current !== lastSaved.current)
+      if (offerOpen.current) {
+        // Nothing is sent while the offer is open. Fresh edits are kept next to the older draft instead of replacing it.
+        if (target && !locked.current && edited.current && latest.current !== offerBase.current)
+          writeDraft(target.userId, target.kind, target.objectId, combine(offerDraft.current, latest.current));
+        return;
+      }
+      if (target && !locked.current && edited.current && latest.current !== lastSaved.current)
         writeDraft(target.userId, target.kind, target.objectId, latest.current);
       commit(latest.current);
     };
@@ -215,9 +237,14 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
   const kind = location?.kind;
   const objectId = location?.objectId;
   useEffect(() => {
-    const offer = (draftToOffer: DocumentationDraft | undefined) => {
+    const offer = (draftToOffer: DocumentationDraft | undefined, hasFresh = false) => {
       offerOpen.current = draftToOffer !== undefined;
+      offerBase.current = lastSaved.current;
+      offerDraft.current = draftToOffer?.markdown.trim() ?? "";
+      setOfferHasFreshEdits(draftToOffer !== undefined && hasFresh);
       setRecovery(draftToOffer);
+      // A withdrawn offer lets the autosave that was held back run.
+      if (draftToOffer === undefined) setResumeTick((count) => count + 1);
     };
     const target = userId === undefined || !kind || objectId === undefined ? undefined : { userId, kind, objectId };
     if (!target || locked.current) {
@@ -248,14 +275,15 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
       offer(undefined);
       return;
     }
-    offer(found);
+    offer(found, fresh);
   }, [userId, kind, objectId]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: resumeTick only restarts the autosave that an open offer held back.
   useEffect(() => {
     if (doc === undefined) return;
     const timer = setTimeout(() => commit(doc), AUTOSAVE_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [doc, commit]);
+  }, [doc, commit, resumeTick]);
 
   // Documentation changed elsewhere replaces the editor's document only while the user is not working on it. An update
   // that arrives while the editor has focus is shown when the user leaves it without an edit. Otherwise the editor keeps
@@ -276,6 +304,10 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
     if (!show(value)) pending.current = value;
   }, [value, show]);
 
+  // Keystrokes were dropped when the editor went read-only, so the offer takes the focus when it follows typing.
+  useEffect(() => {
+    if (recovery && (offerHasFreshEdits || editor.current?.hasFocus())) restoreButton.current?.focus();
+  }, [recovery, offerHasFreshEdits]);
   useEffect(() => {
     if (focusRequest > 0) editor.current?.focus();
   }, [focusRequest]);
@@ -287,13 +319,15 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
   const restoreDraft = () => {
     const handle = editor.current;
     const found = recovery;
+    // Read before the offer closes: fresh edits are what the read-only editor holds beyond the document the offer saw.
+    const fresh = edited.current && latest.current !== offerBase.current ? latest.current : "";
     offerOpen.current = false;
     setRecovery(undefined);
+    setResumeTick((count) => count + 1);
     setFocusRequest((count) => count + 1);
     if (!handle || !found) return;
     // Fresh edits typed while the offer was pending stay: the older draft goes above them instead of replacing them.
-    const fresh = edited.current && latest.current !== lastSaved.current ? latest.current : "";
-    const restored = [found.markdown.trim(), fresh].filter((part) => part !== "").join("\n\n");
+    const restored = combine(found.markdown, fresh);
     // Restoring is an edit like any other: it autosaves, and shows the over-limit notice when it is too long. A draft
     // of deleted documentation restores to empty documentation.
     handleChange(handle.replace(fresh ? restored : found.markdown));
@@ -310,6 +344,7 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
         writeDraft(target.userId, target.kind, target.objectId, latest.current);
     }
     setRecovery(undefined);
+    setResumeTick((count) => count + 1);
     setFocusRequest((count) => count + 1);
   };
   // A manual retry also covers a failure that is not retried by itself, such as an ended session.
@@ -388,13 +423,15 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
         notice={
           <>
             {recovery && (
-              <p className="documentation-notice is-recovery" role="status">
+              <p className="documentation-notice is-recovery" role="alert">
                 <CircleAlert size={15} aria-hidden="true" />
                 <span>
                   {recovery.markdown.trim() === "" ? "Deleted documentation" : "Unsaved documentation"} from{" "}
-                  {describeAge(recovery.savedAt)} was kept on this device. Restore or discard it to keep editing.
+                  {describeAge(recovery.savedAt)} was kept on this device. Editing is paused. Restore or discard it to
+                  keep editing.
+                  {offerHasFreshEdits && " Restoring puts the earlier draft above what you typed."}
                 </span>
-                <button type="button" onClick={restoreDraft}>
+                <button ref={restoreButton} type="button" onClick={restoreDraft}>
                   Restore
                 </button>
                 <button type="button" onClick={discardDraft}>

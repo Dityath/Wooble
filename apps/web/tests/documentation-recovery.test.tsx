@@ -221,10 +221,58 @@ describe("documentation drafts", () => {
       expect(draftOf()?.markdown).toContain("Saved more");
     });
 
-    it("does not overwrite the older draft when the editor unmounts with the offer open", async () => {
+    it("keeps the combined text (older draft above fresh text) as the draft when the editor unmounts with the offer open", async () => {
+      const { view, onSave } = await pendingLocation();
+      view.unmount();
+      expect(draftOf()?.markdown).toBe("Older text\n\nSaved more");
+      expect(onSave).not.toHaveBeenCalled();
+    });
+
+    it("says that Restore keeps the typed text, and moves focus to Restore", async () => {
+      await pendingLocation();
+      const offer = await findPrompt();
+      expect(offer.getAttribute("role")).toBe("alert");
+      expect(offer.textContent).toContain("Editing is paused.");
+      expect(offer.textContent).toContain("Restoring puts the earlier draft above what you typed.");
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Restore" }));
+    });
+
+    it("sends nothing while the offer is open, and Restore saves the older draft plus the fresh text afterwards", async () => {
+      const { onSave } = await pendingLocation();
+      await act(async () => new Promise((resolve) => setTimeout(resolve, AUTOSAVE_DELAY_MS + 100)));
+      await blurDocumentation();
+      expect(onSave).not.toHaveBeenCalled();
+      expect(draftOf()?.markdown).toBe("Older text");
+
+      const autosave = await autosaveAfter(async () => {
+        await act(async () => screen.getByRole("button", { name: "Restore" }).click());
+      });
+      expect(documentation().textContent).toBe("Older textSaved more");
+      expect(onSave).not.toHaveBeenCalled();
+      await autosave();
+      expect(onSave.mock.calls).toEqual([["Older text\n\nSaved more"]]);
+    });
+
+    it("keeps both texts when the editor closes during the offer and is opened again", async () => {
       const { view } = await pendingLocation();
       view.unmount();
-      expect(draftOf()?.markdown).toBe("Older text");
+      const onSave = mock(reject(500));
+      await renderDocumentation({ value: "Saved", onSave, draft: location });
+      const offer = await findPrompt();
+      expect(offer.textContent).toContain("Unsaved documentation");
+      await act(async () => screen.getByRole("button", { name: "Restore" }).click());
+      expect(documentation().textContent).toContain("Older text");
+      expect(documentation().textContent).toContain("Saved more");
+    });
+
+    it("Discard keeps the fresh text and autosaves it", async () => {
+      const { onSave } = await pendingLocation();
+      const autosave = await autosaveAfter(async () => {
+        await act(async () => screen.getByRole("button", { name: "Discard saved copy" }).click());
+      });
+      expect(onSave).not.toHaveBeenCalled();
+      await autosave();
+      expect(onSave.mock.calls).toEqual([["Saved more"]]);
     });
   });
 
@@ -264,7 +312,9 @@ describe("documentation draft recovery", () => {
     const onSave = mock(async (_value: string) => {});
     await renderDocumentation({ value: "Saved text", onSave, draft: location });
     const offer = await findPrompt();
-    expect(offer.getAttribute("role")).toBe("status");
+    expect(offer.getAttribute("role")).toBe("alert");
+    expect(offer.textContent).toContain("Editing is paused.");
+    expect(offer.textContent).not.toContain("above what you typed");
     expect(offer.textContent).toContain("Unsaved documentation from a moment ago was kept on this device.");
     expect(offer.textContent).toContain("Restore or discard it to keep editing.");
     expect(documentation().textContent).toBe("Saved text");
@@ -281,6 +331,23 @@ describe("documentation draft recovery", () => {
     await autosave();
     expect(onSave.mock.calls).toEqual([["Draft text"]]);
     await waitFor(() => expect(draftOf()).toBeNull());
+  });
+
+  it("keeps a remote update pending while a plain offer is open and shows it after Discard and leaving the editor", async () => {
+    writeDraft("user-a", "entity", "entity-1", "Draft text");
+    const onSave = mock(async (_value: string) => {});
+    const view = await renderDocumentation({ value: "Saved", onSave, draft: location });
+    await findPrompt();
+    view.rerender(<RichDocumentation value="Changed elsewhere" onSave={onSave} draft={location} />);
+    await act(async () => {});
+    expect(documentation().textContent).toBe("Saved");
+    expect(document.activeElement).not.toBe(screen.getByRole("button", { name: "Restore" }));
+
+    await act(async () => screen.getByRole("button", { name: "Discard saved copy" }).click());
+    expect(documentation().textContent).toBe("Saved");
+    await blurDocumentation();
+    await waitFor(() => expect(documentation().textContent).toBe("Changed elsewhere"));
+    expect(onSave).not.toHaveBeenCalled();
   });
 
   it("shows the over-limit state for a restored draft that is too long", async () => {
