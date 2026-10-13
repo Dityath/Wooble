@@ -231,7 +231,7 @@ Owners `v0.3/contract-identity`, `v0.3/contract-authoring`; no rich AsyncAPI edi
 | --- | --- | --- | --- |
 | Members can create, reply to, resolve, and reopen threads on entities, connections, documentation text, contract operations or sections, and database tables or columns. A comment indicator leads to the exact object or the closest remaining context when its anchor changes. | no feature issue | `v0.5/thread-lifecycle`, `v0.5/object-anchors`, `v0.5/text-anchors` | no issue exists; stable identities and anchor decisions pending |
 | Canvas comments use an unobtrusive pin or contextual marker similar to a design review. Text comments stay attached to the selected passage as concurrent edits change nearby content; orphaned anchors are visible and recoverable rather than silently lost. | #16 text model dependency only | `v0.5/object-anchors`, `v0.5/text-anchors` | no implementation issue; depends on v0.2–v0.4 identities |
-| `@mention` searches only people eligible for the context. Mentioned people receive a discoverable in-app notification or inbox entry and can open the thread if they still have access. No mention leaks private content to an unauthorized account. | no feature issue | `v0.5/mentions-inbox` | no issue exists; eligibility and inbox planned only |
+| Mention search covers only people eligible for the context. Mentioned people receive a discoverable in-app notification or inbox entry and can open the thread if they still have access. No mention leaks private content to an unauthorized account. | no feature issue | `v0.5/mentions-inbox` | no issue exists; eligibility and inbox planned only |
 | Thread authorship, creation and edit time, resolve state, and replies persist. The UI distinguishes open from resolved discussions and lets readers find both without overwhelming the canvas or reading surface. | no feature issue | `v0.5/thread-lifecycle`, `v0.5/object-anchors` | no issue exists; persistence and UI planned only |
 | Comment and mention routes enforce the current workspace/canvas/object access rules. Editors and higher roles can comment; viewers and link-shared guests can read authorized threads but cannot write. A guest is never granted write access simply by opening a shared link. | #10/#26 prerequisite only | `v0.5/thread-lifecycle`, `v0.5/mentions-inbox`, `v0.5/comments-access-evidence` | no feature issue; prerequisite draft does not establish new routes |
 | Existing documentation, contracts, and schema diagrams remain editable with comments present. Moving or deleting an anchor has a defined outcome tested in the affected editor. | #12 undo prerequisite | `v0.5/object-anchors`, `v0.5/text-anchors`, `v0.5/comments-access-evidence` | no implementation issue; orphan/delete/restore behavior pending |
@@ -356,11 +356,11 @@ before writing; GitHub's edit CLI has no atomic compare-and-swap, so minimize th
 on conflict. Use JSON input/output and `--body-file`; never interpolate bodies into a shell.
 
 **Sanitize carried-over text.** Any text copied into an owned block (audit notes, maintainer
-notes, PR titles) is stripped of `@` mentions, closing keywords (`Closes`/`Fixes`/`Resolves`
+notes, PR titles) is stripped of user mentions (any `@` character), closing keywords (`Closes`/`Fixes`/`Resolves`
 followed by an issue reference, in any case or tense; #30's original body already contains one,
 which must not be copied) and HTML comments other than the exact owned markers. **Pre-write
 check, per appended block and new body:** fail and stop if it matches a closing keyword followed
-by `#N`/`owner/repo#N`/an issue URL, or contains any `@`. Log the check result.
+by `#N`/`owner/repo#N`/an issue URL, or contains any `@` character anywhere. Failing only on `@` outside code spans is not acceptable: no `@` may appear anywhere in a publishable block or body. Log the check result.
 
 **Cross-reference side effect (needs user acceptance before execution).** A `#N` reference in an
 edited issue, PR or card body creates a timeline cross-reference event (not a comment or
@@ -384,7 +384,7 @@ Keep slugs too, so retries are idempotent. No numbers are preallocated; do not i
 | #10, #11, #13, #14, #15, #17, #18, #19 | `State: active; PR draft (unmerged), pending maintainer review.` Link the mapped PR using the exact full SHA/table above and correct release association below; append the applicable note from the regression-requirement table above (sanitized). For #11 explicitly preserve original read-before-placement scope and link the separate decision without redefining it. Remove only status:ready; add only status:claimed. Preserve all other labels. | `gh issue view <n> --repo Dityath/Wooble --json number,title,body,labels,assignees,milestone,projectItems,updatedAt` |
 | #9 | `State: active editor branch/local safety work; no PR, unmerged, pending review. v0.2 criterion 1 and paste/safety part of criterion 2. Remaining collaboration/import/export implementation is linked by slugs; storage unchanged in this increment.` Preserve acceptance; no label change. | same issue read-back |
 | #12 | `State: remote branch exists; no PR, unmerged. Shared event/undo prerequisite for v0.2–v0.5. Do not conflate later feature hooks with completion of this scope.` No label change. | same issue read-back |
-| #16 | Append `State: ADR committed with status Proposed on an unmerged branch, pending maintainer review; not an accepted collaboration model.` Link both repo paths on branch `prompt-1/4-collaboration-roadmap`: `docs/decisions/collaboration-sync.md` (ADR) and `docs/spikes/2026-10-13-collaboration-sync.md` (spike evidence). The spike report records seven bounded synthetic transport scenarios passing in three executions; this backlog did not rerun it. Production authentication, persistence, TipTap and browser acceptance remain unproven. Remove only status:ready, add only status:claimed; retain documentation, task, area:api, area:docs and all unrelated labels. Before execution re-read both files on the branch (or on `main` if merged); if the ADR status changed, record the actual status; if unavailable, leave pending rather than invent evidence. | same issue read-back plus branch file/commit SHA read before write |
+| #16 | Append `State: ADR committed with status Proposed on an unmerged branch, pending maintainer review; not an accepted collaboration model.` Link both repo paths on branch `prompt-1/4-collaboration-roadmap`: `docs/decisions/collaboration-sync.md` (ADR) and `docs/spikes/2026-10-13-collaboration-sync.md` (spike evidence). The spike report records seven bounded synthetic transport scenarios passing in three executions plus a post-scrub rerun; this backlog did not rerun it. Production authentication, persistence, TipTap and browser acceptance remain unproven. Remove only status:ready, add only status:claimed; retain documentation, task, area:api, area:docs and all unrelated labels. Before execution re-read both files on the branch (or on `main` if merged); if the ADR status changed, record the actual status; if unavailable, leave pending rather than invent evidence. | same issue read-back plus branch file/commit SHA read before write |
 
 Associations for the E block: #9/#13/#16 → v0.2; #10/#12/#14/#15 → shared v0.2–v0.5;
 #11 → shared multi-canvas v0.2–v0.4; #17/#18/#19 → #6 shared self-hosting gate for v0.2–v0.5.
@@ -535,7 +535,7 @@ without re-bootstrapping over newer edits or losing original Markdown.
 domain/Zod/db/API alignment. Implement the #16 ADR once accepted by the maintainer, not a new representation choice.
 
 **Acceptance:**
-- [ ] Workspace/object/field identity addresses one document across all authorized canvases.
+- [ ] Identity (object_kind, object_id, field) addresses one document across all authorized canvases; workspace_id is derived and verified on commit.
 - [ ] Server-side first bootstrap is atomic under a lock; preserve original Markdown and hash.
 - [ ] Durable state and Markdown mirror recover after interruption; presence is never durable content.
 - [ ] Define retention, deletion, workspace cascade and undo restoration with #12 integration.
@@ -543,7 +543,7 @@ domain/Zod/db/API alignment. Implement the #16 ADR once accepted by the maintain
 - [ ] Two-connection deadlock test against canvas placement add/remove/undo, following the ADR's global lock order.
 - [ ] Undo/restore re-projects the Markdown mirror and the typed exclusion; this is a precondition of enabling sync.
 - [ ] Add an INDEX on workspace_id; bootstrap runs at READ COMMITTED or as a single-statement upsert.
-- [ ] Single-writer negative test: metadata.documentation has no writer other than the designated projection.
+- [ ] Single-writer negative test: no route writes metadata.documentation except through the collab interface, covering every write path including PATCH entity/connection, canvas undo/restore (entity and connection), and the delete-route snapshot restore. This issue owns the interface and the undo/restore integration; v0.2/sync-access owns gating legacy PATCH through it.
 - [ ] Single-instance enforcement gate: sync stays disabled unless exactly one API instance is guaranteed.
 - [ ] Size and count limits come from the ADR's limits table; this issue does not restate them.
 
@@ -570,6 +570,8 @@ legacy documentation PATCH compatibility. Separate from durable storage and edit
 
 **Acceptance:**
 - [ ] Resolve the object, workspace and authorized canvas context on the registered live route.
+- [ ] Exposes authorizeFrame(sessionContext, docIdentity, capability) and a kind-agnostic room/awareness API; Markdown bootstrap/mirror is a plug-in for the documentation field.
+- [ ] Legacy documentation PATCH is gated through the collab interface owned by v0.2/durable-documents (single-writer rule).
 - [ ] Read-only peers receive allowed content; mutation attempts cannot alter it; awareness privacy follows #16.
 - [ ] Validate/cap updates and sanitize awareness; enforce connection/memory limits and visible recovery.
 - [ ] Revocation/recheck errors fail closed before further live data; cover logout and role changes.
@@ -607,6 +609,7 @@ identifiable carets/selections, and recover from disconnect without a lost-save 
 Document presence distinct from canvas cursors; read-only UI and schema-version compatibility.
 
 **Acceptance:**
+- [ ] The client sync provider is isolated behind a single adapter module.
 - [ ] Concurrent editing converges; refresh/reconnect restores content and pending work visibly.
 - [ ] Show permitted current viewers and editor carets/selections; remove stale presence on leave.
 - [ ] Use Yjs-aware undo if adopted by ADR; disable competing StarterKit undoRedo in that mode.
@@ -814,7 +817,7 @@ durable state; no implicit destructive structured merge.
 
 **Verify:** Q, W, A, B; future two-member contract conflict/reconnect/section-presence tests.
 
-**Dependencies:** #16, v0.2/sync-access, v0.3/contract-identity, v0.3/contract-authoring.
+**Dependencies:** #16, v0.2/sync-access (consumes its authorizeFrame and room/awareness interface, not room internals), v0.3/contract-identity, v0.3/contract-authoring.
 **Release association:** v0.3 criterion 5. **Status:** needs-triage; conflict model not decided.
 
 ### v0.3/contract-access-evidence — proposed body
@@ -1058,7 +1061,7 @@ anchor data through migration/delete/restore and never silently rewrite text to 
 **Verify:** Q, S, W, A, B; future concurrent text-anchor movement/deletion/reattach/reconnect
 fixtures and apps/web/e2e journey, including normal editor operation with comments.
 
-**Dependencies:** #16, v0.2/coedit-presence, v0.2/markdown-fidelity, v0.2/sync-access, v0.5/thread-lifecycle.
+**Dependencies:** #16, v0.2/coedit-presence, v0.2/markdown-fidelity, v0.2/sync-access (consumes its authorizeFrame and room/awareness interface, not room internals), v0.5/thread-lifecycle.
 **Release association:** v0.5 criteria 1/2/6. **Status:** needs-triage; collaborative positions pending.
 
 ### v0.5/mentions-inbox — proposed body

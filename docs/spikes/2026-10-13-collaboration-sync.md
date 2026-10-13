@@ -10,11 +10,11 @@ including two actual reruns. This is evidence, not a production implementation o
   package manifest, lockfile, application source, test, migration, or database was changed.
 - Requested sandbox was absent. Created and preserved
   `$SPIKE_DIR`, an external temporary directory.
-- A previous, differently named sandbox, `wooble-p1-4-spike` beside it, existed
+- A previously created sandbox, beside it, existed
   with `package.json`, `bun.lock`, `src/client.ts`, `src/server.ts`, and `tests/`.
   Its directory and manifest were inspected, but none of its files were modified,
   deleted, executed, or relied upon as test evidence.
-- Initial `git status --short`: `?? docs/release-backlog.md`. That file belongs to
+- Initial `git status --short` at the time of the run (both files have since been committed on the branch): `?? docs/release-backlog.md`. That file belongs to
   the release backlog work and was preserved. No commit, GitHub write, or package publication.
 - `bun --version` returned **1.3.14**, matching the root `packageManager` and `bun.lock`.
   Platform: **darwin/arm64**. Repository `bun.lock` resolves Elysia to **1.4.30**,
@@ -180,7 +180,7 @@ verify-evidence.mjs  3f2fabe542340eb50fe255e384456508287ec8aa770e53f78fb7dac29da
 
 Running it without an argument exits 2 with a usage message.
 
-Final worktree inventory showed only the untracked release backlog file
+At the time of the run (both files have since been committed on the branch), the final worktree inventory showed only the untracked release backlog file
 and `?? docs/spikes/` (this document). Tracked `git diff --name-only`
 is empty. Listener inspection after completed tests shows no listener on 41424.
 
