@@ -31,24 +31,23 @@ export function parseWebOrigins(env: Env): string[] | undefined {
       );
     return undefined;
   }
-  return entries.map((entry) => {
+  return entries.map((entry, index) => {
+    const label = `WEB_ORIGIN entry ${index + 1}`;
     let url: URL;
     try {
       url = new URL(entry);
     } catch {
-      throw new ConfigError(
-        `WEB_ORIGIN entry "${entry}" is not a URL. Use an origin such as https://wooble.example.com.`,
-      );
+      throw new ConfigError(`${label} is not a valid URL. Use an origin such as https://wooble.example.com.`);
     }
     if ((url.protocol !== "http:" && url.protocol !== "https:") || entry.includes("*"))
-      throw new ConfigError(`WEB_ORIGIN entry "${entry}" must be a single http or https origin, without wildcards.`);
+      throw new ConfigError(`${label} must use http or https and must not contain wildcards.`);
     if (url.username || url.password || url.pathname !== "/" || url.search || url.hash || entry.endsWith("/"))
       throw new ConfigError(
-        `WEB_ORIGIN entry "${entry}" must be an exact origin such as ${url.origin}, without a path, query, or trailing slash.`,
+        `${label} must be an exact origin without credentials, a path, a query, a fragment, or a trailing slash.`,
       );
     if (production && url.protocol === "http:" && !loopbackHosts.has(url.hostname))
       throw new ConfigError(
-        `WEB_ORIGIN entry "${entry}" uses plain HTTP on an address other than this machine. Session cookies are Secure ` +
+        `${label} uses plain HTTP on an address other than this machine. Session cookies are Secure ` +
           "in production, so browsers would not keep the sign-in. Serve Wooble over HTTPS, or use a localhost address " +
           "through an SSH tunnel. See docs/self-hosting.md.",
       );

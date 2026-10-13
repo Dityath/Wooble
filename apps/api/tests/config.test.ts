@@ -28,7 +28,31 @@ describe("WEB_ORIGIN", () => {
       "ftp://wooble.example.com",
       "wooble.example.com",
     ])
-      expect(() => parseWebOrigins({ WEB_ORIGIN: entry })).toThrow(`WEB_ORIGIN entry "${entry}"`);
+      expect(() => parseWebOrigins({ WEB_ORIGIN: entry })).toThrow("WEB_ORIGIN entry 1");
+  });
+
+  it("redacts rejected origins and embedded secrets while identifying the entry and reason", () => {
+    const cases = [
+      { origin: "https://bad-secret.example.com:invalid", secret: "bad-secret", reason: "not a valid URL" },
+      { origin: "https://user:password-token@wooble.example.com", secret: "password-token", reason: "credentials" },
+      { origin: "https://wooble.example.com?token=query-token", secret: "query-token", reason: "query" },
+      { origin: "https://wooble.example.com#token=fragment-token", secret: "fragment-token", reason: "fragment" },
+    ];
+
+    for (const { origin, secret, reason } of cases) {
+      let message = "";
+      try {
+        parseWebOrigins({ WEB_ORIGIN: `https://valid.example.com,${origin}` });
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+
+      expect(message).toContain("WEB_ORIGIN");
+      expect(message).toContain("entry 2");
+      expect(message).toContain(reason);
+      expect(message).not.toContain(origin);
+      expect(message).not.toContain(secret);
+    }
   });
 
   it("refuses plain HTTP on another machine in production, where sign-in cookies are Secure", () => {
@@ -69,6 +93,21 @@ describe("runtime configuration", () => {
     ]);
     const withSecret = runtimeConfigErrors({ ...production, WEB_ORIGIN: "http://192.0.2.10:8080" });
     expect(withSecret.join("\n")).not.toContain("secret-value");
+    expect(withSecret.join("\n")).toContain("WEB_ORIGIN entry 1");
+    expect(withSecret.join("\n")).toContain("plain HTTP");
+  });
+
+  it("keeps production startup guards for missing settings and invalid values", () => {
+    expect(runtimeConfigErrors({ NODE_ENV: "production" })).toEqual([
+      expect.stringContaining("WEB_ORIGIN must be set"),
+      expect.stringContaining("DATABASE_URL must be set"),
+    ]);
+    expect(
+      runtimeConfigErrors({ ...production, WEB_ORIGIN: "https://wooble.example.com", TRUST_PROXY: "yes" }),
+    ).toEqual(['TRUST_PROXY must be "true" or "false".']);
+    expect(runtimeConfigErrors({ ...production, WEB_ORIGIN: "https://wooble.example.com", API_PORT: "65536" })).toEqual(
+      ["API_PORT must be a port number between 1 and 65535."],
+    );
   });
 
   it("allows development without a database URL or proxy setting", () => {
