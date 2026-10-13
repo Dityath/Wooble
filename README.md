@@ -107,7 +107,7 @@ Email ownership is not verified in this local implementation, and there is no em
 
 The seed creates a separate fictional **Example Engineering** workspace, visible to system admins until they add members. Its **Enterprise Architecture** canvas contains Core Identity and Operations Platform systems, web frontends, API gateways, Go and Rust services, PostgreSQL and SQLite databases, REST and gRPC calls, database connections, and a cross system REST link.
 
-Canvas placement changes are saved through `PUT /api/canvases/:canvasId/placements`. The `GET /api/canvases/:canvasId/graph` response joins the visual placements with shared entities and first class connections. Protocol contracts and database schema details can be edited manually. Automated import and synchronization are future work.
+Canvas placement changes are saved through `PUT /api/canvases/:canvasId/placements`. Placing an entity that is not yet on the canvas requires being able to read it already, through a workspace manager role or a canvas that shows it. The `GET /api/canvases/:canvasId/graph` response joins the visual placements with shared entities and first class connections. Protocol contracts and database schema details can be edited manually. Automated import and synchronization are future work.
 
 ## API routes
 
