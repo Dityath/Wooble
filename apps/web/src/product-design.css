@@ -403,6 +403,7 @@ p { text-wrap: pretty; }
 .documentation-toolbar { display: flex; min-height: 48px; align-items: center; gap: 16px; padding: 8px 0; }
 .documentation-toolbar-status { flex: 1 1 auto; min-width: 0; }
 .documentation-save-state { display: inline-flex; align-items: center; gap: 7px; color: var(--wooble-muted); font-size: 12px; font-weight: 500; white-space: nowrap; }
+.documentation-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .documentation-save-state:not(:empty)::before { content: ""; width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--wooble-primary); }
 .documentation-save-state[data-state="unsaved"]::before { background: var(--wooble-accent); }
 .documentation-save-state[data-state="saving"]::before { background: var(--wooble-muted); animation: documentation-saving 1s ease-in-out infinite alternate; }
@@ -418,9 +419,9 @@ p { text-wrap: pretty; }
 .documentation-mode-toggle:focus-visible { border-color: var(--wooble-primary); box-shadow: var(--focus-ring); }
 .documentation-notice { --tone: var(--wooble-warning); display: flex; align-items: flex-start; gap: 10px; margin: 0 0 8px; padding: 11px 14px; border: 1px solid color-mix(in srgb, var(--tone) 32%, transparent); border-radius: 10px; color: var(--wooble-ink); background: color-mix(in srgb, var(--tone) 8%, var(--wooble-panel)); font-size: 13px; line-height: 1.5; }
 .documentation-notice.is-error { --tone: var(--wooble-danger); align-items: center; }
-.documentation-notice.is-recovery { align-items: center; }.documentation-notice.is-recovery > svg { margin-top: 0; }
+.documentation-notice.is-recovery { align-items: center; flex-wrap: wrap; }.documentation-notice.is-recovery > svg { margin-top: 0; }
 .documentation-notice > svg { flex: 0 0 auto; margin-top: 2px; color: var(--tone); }.documentation-notice.is-error > svg { margin-top: 0; }
-.documentation-notice > span { flex: 1 1 auto; min-width: 0; }
+.documentation-notice > span { flex: 1 1 auto; min-width: 0; }.documentation-notice:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .documentation-notice button { flex: 0 0 auto; height: 28px; padding: 0 11px; border: 1px solid color-mix(in srgb, var(--tone) 40%, transparent); border-radius: 7px; outline: none; color: var(--wooble-ink); background: var(--wooble-panel); font-size: 12px; font-weight: 600; transition: background-color .15s; }
 .documentation-notice button:hover { background: color-mix(in srgb, var(--tone) 12%, var(--wooble-panel)); }.documentation-notice button:focus-visible { box-shadow: var(--focus-ring); }
 /* The document itself stays frameless, so this ring is the only thing that says the editor is focused. An outline

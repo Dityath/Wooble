@@ -1,12 +1,14 @@
 import { CircleAlert } from "lucide-react";
-import { Component, lazy, type ReactNode, Suspense, useMemo, useState } from "react";
+import { Component, lazy, type ReactNode, Suspense, useMemo } from "react";
 import { type EditorLoader, loadEditor } from "./documentation/editor-loader";
 import { MarkdownContent } from "./documentation/markdown-content";
 import type { RichDocumentationProps } from "./rich-documentation-editor";
 
 export { MarkdownContent } from "./documentation/markdown-content";
 
-let sharedEditor = lazy(loadEditor);
+const sharedEditor = lazy(loadEditor);
+
+const reloadPage = () => window.location.reload();
 
 /** Catches a failed editor chunk (offline, or a deploy removed it) so the inspector and the page keep working. */
 class EditorLoadBoundary extends Component<{ fallback: ReactNode; children: ReactNode }, { failed: boolean }> {
@@ -20,28 +22,29 @@ class EditorLoadBoundary extends Component<{ fallback: ReactNode; children: Reac
 }
 
 /**
- * Mount the save lifecycle together with the editor, after its chunk has loaded. `load` exists for tests; it must stay
- * stable between renders.
+ * Mount the save lifecycle together with the editor, after its chunk has loaded. `load` and `reload` exist for tests;
+ * `load` must stay stable between renders.
+ *
+ * A failed chunk is not retried in place: browsers remember a failed dynamic import of the same address, so only a page
+ * reload can recover. Unsaved documentation survives it (the draft, and the warning before leaving).
  */
-export function RichDocumentation({ load = loadEditor, ...props }: RichDocumentationProps & { load?: EditorLoader }) {
-  const [attempt, setAttempt] = useState(0);
-  const Editor = useMemo(() => {
-    if (load !== loadEditor) return lazy(load);
-    // React.lazy caches a rejected import, so a retry replaces the shared component. Once loaded, later mounts render
-    // the editor without suspending again.
-    if (attempt > 0) sharedEditor = lazy(loadEditor);
-    return sharedEditor;
-  }, [load, attempt]);
+export function RichDocumentation({
+  load = loadEditor,
+  reload = reloadPage,
+  ...props
+}: RichDocumentationProps & { load?: EditorLoader; reload?: () => void }) {
+  const Editor = useMemo(() => (load === loadEditor ? sharedEditor : lazy(load)), [load]);
   return (
     <EditorLoadBoundary
-      key={attempt}
       fallback={
         <section className="documentation-card" aria-label="Documentation">
           <p className="documentation-notice is-error" role="alert">
             <CircleAlert size={15} aria-hidden="true" />
-            <span>The documentation editor could not load.</span>
-            <button type="button" onClick={() => setAttempt((current) => current + 1)}>
-              Retry
+            <span>
+              The documentation editor could not load. Reload the page to try again. The documentation is shown below.
+            </span>
+            <button type="button" onClick={reload}>
+              Reload
             </button>
           </p>
           <MarkdownContent value={props.value} />

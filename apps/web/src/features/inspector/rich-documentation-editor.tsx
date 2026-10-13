@@ -8,10 +8,14 @@ import {
   readDraft,
   writeDraft,
 } from "./documentation/drafts";
-import { MarkdownContent } from "./documentation/markdown-content";
-import { classifySaveError, type SaveFailure, tooLongMessage } from "./documentation/save-errors";
+import {
+  classifySaveError,
+  OVER_LIMIT_MESSAGE,
+  removeCharactersMessage,
+  type SaveFailure,
+} from "./documentation/save-errors";
 
-const AUTOSAVE_DELAY_MS = 900;
+export const AUTOSAVE_DELAY_MS = 900;
 // Mirrors `documentation: z.string().trim().max(20000)` in the API contracts, which do not export the limit.
 const MAX_DOCUMENTATION_LENGTH = 20_000;
 
@@ -47,8 +51,9 @@ function describeAge(savedAt: number): string {
  * writes equivalent syntax in one canonical form. Opening or leaving documentation without an edit never saves it.
  *
  * With `draft`, every unsaved edit is also kept in local storage until a save succeeds, so a reload, a crash or a
- * rejected save does not lose it. A failed save is handled by its status: a 403 ends editing, other rejections do not
- * offer a pointless retry, and network or server failures can be retried.
+ * rejected save does not lose it. A failed save is handled by its status: a 403 keeps the text visible but read-only,
+ * other rejections do not offer a pointless retry, and network or server failures (and an ended session, once the user
+ * has signed in again) can be retried by hand.
  */
 export function RichDocumentation({ value, onSave, draft: location, onUnsavedChange }: RichDocumentationProps) {
   const editor = useRef<DocumentationEditorHandle>(null);
@@ -72,6 +77,7 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
   const rejected = useRef<string | undefined>(undefined);
   // Write access ended (403): nothing is saved or drafted any more.
   const locked = useRef(false);
+  const failureNotice = useRef<HTMLParagraphElement>(null);
   // The `value` the editor last loaded, and a newer one it has not shown yet because the user was in the editor.
   const loaded = useRef(value);
   const pending = useRef<string | undefined>(undefined);
@@ -82,8 +88,10 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
   const [saved, setSaved] = useState("");
   const [savesInFlight, setSavesInFlight] = useState(0);
   const [error, setError] = useState<SaveFailure>();
-  const [readOnly, setReadOnly] = useState(false);
+  const [accessLost, setAccessLost] = useState(false);
   const [recovery, setRecovery] = useState<DocumentationDraft>();
+  // Bumped when focus should return to the editor after a control that held it went away.
+  const [focusRequest, setFocusRequest] = useState(0);
 
   const commit = useCallback((next: string) => {
     if (locked.current) return;
@@ -112,16 +120,20 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
         // Co-editing is last-write-wins in this increment: this save lands after any update that arrived while it was
         // in flight, so that update is no longer waiting to be shown.
         pending.current = undefined;
-        // A newer unsaved document keeps the draft, which then holds that newer text.
-        if (target && latest.current === next) clearDraft(target.userId, target.kind, target.objectId);
+        // The draft follows the latest text: cleared when it is what was saved, rewritten when the user went on (or back
+        // to the previously saved text) while this save was in flight.
+        if (target) {
+          if (latest.current === next) clearDraft(target.userId, target.kind, target.objectId);
+          else writeDraft(target.userId, target.kind, target.objectId, latest.current);
+        }
       } catch (cause) {
         const failure = classifySaveError(cause);
         if (failure.kind === "forbidden") {
           locked.current = true;
           if (target) clearDraft(target.userId, target.kind, target.objectId);
-          setReadOnly(true);
+          setAccessLost(true);
           setRecovery(undefined);
-          setError(undefined);
+          setError(failure);
           return;
         }
         // Submit it again on the next attempt, unless a newer document is already queued.
@@ -145,12 +157,11 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
     pending.current = undefined;
     if (next !== rejected.current) rejected.current = undefined;
     setDoc(next);
-    // Typing supersedes an offer to restore an older draft; the draft is overwritten below.
-    setRecovery(undefined);
     const target = locationRef.current;
     if (target && !locked.current) {
+      // Whatever a save in flight carries, the draft holds the latest text, and nothing once that is the saved text.
       if (next !== lastSaved.current) writeDraft(target.userId, target.kind, target.objectId, next);
-      else if (lastSubmitted.current === lastSaved.current) clearDraft(target.userId, target.kind, target.objectId);
+      else clearDraft(target.userId, target.kind, target.objectId);
     }
   }, []);
 
@@ -249,10 +260,19 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
     if (!show(value)) pending.current = value;
   }, [value, show]);
 
+  useEffect(() => {
+    if (focusRequest > 0) editor.current?.focus();
+  }, [focusRequest]);
+  // The notice that ends editing takes the focus from the text, which can no longer change.
+  useEffect(() => {
+    if (accessLost) failureNotice.current?.focus();
+  }, [accessLost]);
+
   const restoreDraft = () => {
     const handle = editor.current;
     const found = recovery;
     setRecovery(undefined);
+    setFocusRequest((count) => count + 1);
     if (!handle || !found) return;
     // Restoring is an edit like any other: it autosaves, and shows the over-limit notice when it is too long.
     handleChange(handle.replace(found.markdown));
@@ -263,11 +283,18 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
     const target = locationRef.current;
     if (target) clearDraft(target.userId, target.kind, target.objectId);
     setRecovery(undefined);
+    setFocusRequest((count) => count + 1);
+  };
+  // A manual retry also covers a failure that is not retried by itself, such as an ended session.
+  const retry = () => {
+    rejected.current = undefined;
+    commit(latest.current);
+    setFocusRequest((count) => count + 1);
   };
 
   const overBy = doc !== undefined ? doc.length - MAX_DOCUMENTATION_LENGTH : 0;
   // Content that is not safely saved: unsaved, in flight, failed, or over the limit.
-  const unsaved = !readOnly && doc !== undefined && (doc !== saved || savesInFlight > 0 || !!error);
+  const unsaved = !accessLost && doc !== undefined && (doc !== saved || savesInFlight > 0 || !!error);
 
   useEffect(() => {
     if (!unsaved) return;
@@ -295,30 +322,21 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
     [],
   );
 
-  if (readOnly) {
-    return (
-      <section className="documentation-card" aria-label="Documentation">
-        <p className="documentation-notice is-error" role="alert">
-          <CircleAlert size={15} aria-hidden="true" />
-          <span>You can no longer edit this documentation. Your changes could not be saved.</span>
-        </p>
-        <MarkdownContent value={value} />
-      </section>
-    );
-  }
-
-  // The dot's colour and the text a screen reader reads come from one value, so they cannot disagree. Documentation that
-  // is too long has not been sent and so is only unsaved; a failed save is what the error state is for.
+  // The visual label shows every state. Only the terminal "Saved" is announced: "Unsaved changes" and "Saving…" would
+  // repeat on every pause in typing, and a failure is announced by its own alert. Documentation that is too long has
+  // not been sent and so is only unsaved; a failed save is what the error state is for.
   const saveState =
     doc === undefined
       ? undefined
-      : error
-        ? { state: "error", label: "Save failed" }
-        : savesInFlight > 0
-          ? { state: "saving", label: "Saving…" }
-          : doc !== saved
-            ? { state: "unsaved", label: "Unsaved changes" }
-            : { state: "saved", label: "Saved" };
+      : accessLost
+        ? { state: "error", label: "Not saved" }
+        : error
+          ? { state: "error", label: "Save failed" }
+          : savesInFlight > 0
+            ? { state: "saving", label: "Saving…" }
+            : doc !== saved
+              ? { state: "unsaved", label: "Unsaved changes" }
+              : { state: "saved", label: "Saved" };
   return (
     <section className="documentation-card" aria-label="Documentation">
       <DocumentationEditor
@@ -326,38 +344,52 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
         initialMarkdown={value}
         onChange={handleChange}
         onBlur={handleBlur}
+        // The user decides about the older draft first, so typing cannot silently overwrite it.
+        readOnly={accessLost || !!recovery}
+        invalid={overBy > 0}
         status={
-          // The live region stays mounted while there is nothing to report, so the first save is announced too.
-          <span className="documentation-save-state" data-state={saveState?.state} role="status">
-            {saveState?.label ?? ""}
-          </span>
+          <>
+            <span className="documentation-save-state" data-state={saveState?.state}>
+              {saveState?.label ?? ""}
+            </span>
+            {/* Mounted while there is nothing to report, so the first "Saved" is announced too. */}
+            <span className="documentation-live" role="status">
+              {saveState?.state === "saved" ? "Saved" : ""}
+            </span>
+          </>
         }
         notice={
           <>
             {recovery && (
-              <section className="documentation-notice is-recovery" aria-label="Unsaved documentation found">
+              <p className="documentation-notice is-recovery" role="status">
                 <CircleAlert size={15} aria-hidden="true" />
-                <span>Unsaved documentation from {describeAge(recovery.savedAt)} was kept on this device.</span>
+                <span>
+                  Unsaved documentation from {describeAge(recovery.savedAt)} was kept on this device. Restore or discard
+                  it to keep editing.
+                </span>
                 <button type="button" onClick={restoreDraft}>
                   Restore
                 </button>
                 <button type="button" onClick={discardDraft}>
-                  Discard
+                  Discard saved copy
                 </button>
-              </section>
+              </p>
             )}
             {overBy > 0 && (
-              <p className="documentation-notice is-error" role="alert">
+              <p className="documentation-notice is-error">
                 <CircleAlert size={15} aria-hidden="true" />
-                <span>{tooLongMessage(overBy)}</span>
+                <span>
+                  {/* A constant sentence is announced once; the number changes with every keystroke, so it is not live. */}
+                  <span role="status">{OVER_LIMIT_MESSAGE}</span> <span>{removeCharactersMessage(overBy)}</span>
+                </span>
               </p>
             )}
             {error && (
-              <p className="documentation-notice is-error" role="alert">
+              <p ref={failureNotice} tabIndex={-1} className="documentation-notice is-error" role="alert">
                 <CircleAlert size={15} aria-hidden="true" />
                 <span>{error.message}</span>
-                {error.kind === "transient" && (
-                  <button type="button" onClick={() => commit(latest.current)}>
+                {(error.kind === "transient" || error.kind === "session") && (
+                  <button type="button" onClick={retry}>
                     Retry
                   </button>
                 )}

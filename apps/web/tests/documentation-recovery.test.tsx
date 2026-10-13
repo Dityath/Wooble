@@ -3,7 +3,11 @@ import { act, screen, waitFor } from "@testing-library/react";
 import { readDraft, writeDraft } from "../src/features/inspector/documentation/drafts";
 import type { EditorLoader } from "../src/features/inspector/documentation/editor-loader";
 import { RichDocumentation } from "../src/features/inspector/rich-documentation";
-import { RichDocumentation as LoadedEditor } from "../src/features/inspector/rich-documentation-editor";
+import {
+  AUTOSAVE_DELAY_MS,
+  RichDocumentation as LoadedEditor,
+} from "../src/features/inspector/rich-documentation-editor";
+import { FORBIDDEN_MESSAGE } from "../src/features/inspector/documentation/save-errors";
 import { ApiError } from "../src/lib/api";
 import { editorFromElement, typeInEditor } from "./support/editor";
 import { renderWithQuery } from "./support/render";
@@ -13,7 +17,15 @@ const draftOf = (target: { userId: string; kind: "entity" | "connection"; object
   readDraft(target.userId, target.kind, target.objectId);
 
 const documentation = () => screen.getByRole("textbox", { name: "Documentation" });
-const saveState = () => screen.getByRole("status").textContent;
+// The visual label shows every state; the live region (role="status") only announces "Saved".
+const saveState = () => document.querySelector(".documentation-save-state")?.textContent;
+const prompt = () => screen.queryByText(/was kept on this device/)?.closest("p") ?? null;
+const findPrompt = async () => {
+  await screen.findByText(/was kept on this device/);
+  const found = prompt();
+  if (!found) throw new Error("The recovery prompt is not shown.");
+  return found;
+};
 const blurDocumentation = () => act(async () => documentation().blur());
 const caretToEnd = () =>
   act(() => {
@@ -35,12 +47,12 @@ function pendingSaves() {
   return { onSave, settle };
 }
 
-/** Runs `edit` and returns the autosave it schedules, so a test need not wait out the 900 ms pause. */
+/** Runs `edit` and returns the autosave it schedules, so a test need not wait out the autosave pause. */
 async function autosaveAfter(edit: () => Promise<void>) {
   const realSetTimeout = globalThis.setTimeout;
   let autosave: (() => void) | undefined;
   globalThis.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
-    if (delay === 900 && typeof handler === "function") autosave = handler as () => void;
+    if (delay === AUTOSAVE_DELAY_MS && typeof handler === "function") autosave = handler as () => void;
     return realSetTimeout(handler, delay, ...args);
   }) as unknown as typeof setTimeout;
   try {
@@ -138,6 +150,27 @@ describe("documentation drafts", () => {
     expect(draftOf()).toBeNull();
   });
 
+  it("does not keep stale in-flight text in the draft when the user edits back to the saved text", async () => {
+    const { onSave, settle } = pendingSaves();
+    await renderDocumentation({ value: "Saved", onSave, draft: location });
+    await caretToEnd();
+    await typeInEditor(documentation(), "!");
+    await blurDocumentation();
+    expect(onSave.mock.calls).toEqual([["Saved!"]]);
+    await caretToEnd();
+    await act(async () => {
+      const editor = editorFromElement(documentation());
+      const end = editor.state.doc.content.size;
+      editor.commands.deleteRange({ from: end - 2, to: end - 1 });
+    });
+    expect(documentation().textContent).toBe("Saved");
+    expect(draftOf()).toBeNull();
+
+    // The save lands on the server anyway, so the text the user now has differs from it and is kept as the draft.
+    await act(async () => settle[0].resolve());
+    expect(draftOf()?.markdown).toBe("Saved");
+  });
+
   it("does not read, write or offer drafts without a draft location", async () => {
     writeDraft("user-a", "entity", "entity-1", "Older text");
     const view = await renderDocumentation({ value: "Saved", onSave: mock(async () => {}) });
@@ -187,15 +220,20 @@ describe("documentation draft recovery", () => {
     writeDraft("user-a", "entity", "entity-1", "Draft text");
     const onSave = mock(async (_value: string) => {});
     await renderDocumentation({ value: "Saved text", onSave, draft: location });
-    const prompt = await screen.findByRole("region", { name: "Unsaved documentation found" });
-    expect(prompt.textContent).toContain("Unsaved documentation from a moment ago was kept on this device.");
+    const offer = await findPrompt();
+    expect(offer.getAttribute("role")).toBe("status");
+    expect(offer.textContent).toContain("Unsaved documentation from a moment ago was kept on this device.");
+    expect(offer.textContent).toContain("Restore or discard it to keep editing.");
     expect(documentation().textContent).toBe("Saved text");
 
     const autosave = await autosaveAfter(async () => {
       await act(async () => screen.getByRole("button", { name: "Restore" }).click());
     });
     expect(documentation().textContent).toBe("Draft text");
-    expect(screen.queryByRole("region", { name: "Unsaved documentation found" })).toBeNull();
+    expect(prompt()).toBeNull();
+    // Focus returns to the editor instead of dropping to the body when the Restore button goes away.
+    expect(document.activeElement).toBe(documentation());
+    expect(documentation().getAttribute("contenteditable")).toBe("true");
     expect(saveState()).toBe("Unsaved changes");
     await autosave();
     expect(onSave.mock.calls).toEqual([["Draft text"]]);
@@ -206,7 +244,7 @@ describe("documentation draft recovery", () => {
     writeDraft("user-a", "entity", "entity-1", "x".repeat(20_005));
     await renderDocumentation({ value: "Saved", onSave: mock(async () => {}), draft: location });
     await act(async () => (await screen.findByRole("button", { name: "Restore" })).click());
-    expect((await screen.findByRole("alert")).textContent).toContain("Remove 5 characters to save.");
+    expect(await screen.findByText("Remove 5 characters to save.")).toBeTruthy();
   }, 30_000);
 
   it("describes how old the draft is", async () => {
@@ -215,9 +253,7 @@ describe("documentation draft recovery", () => {
     Date.now = () => realNow() + 3 * 60 * 60 * 1000;
     try {
       await renderDocumentation({ value: "Saved", onSave: mock(async () => {}), draft: location });
-      expect((await screen.findByRole("region", { name: "Unsaved documentation found" })).textContent).toContain(
-        "from 3 hours ago",
-      );
+      expect((await findPrompt()).textContent).toContain("from 3 hours ago");
     } finally {
       Date.now = realNow;
     }
@@ -226,40 +262,42 @@ describe("documentation draft recovery", () => {
   it("Discard removes the stored draft", async () => {
     writeDraft("user-a", "entity", "entity-1", "Draft text");
     await renderDocumentation({ value: "Saved", onSave: mock(async () => {}), draft: location });
-    await act(async () => (await screen.findByRole("button", { name: "Discard" })).click());
+    await act(async () => (await screen.findByRole("button", { name: "Discard saved copy" })).click());
     expect(draftOf()).toBeNull();
-    expect(screen.queryByRole("region", { name: "Unsaved documentation found" })).toBeNull();
+    expect(prompt()).toBeNull();
     expect(documentation().textContent).toBe("Saved");
+    expect(document.activeElement).toBe(documentation());
   });
 
   it("clears a draft that equals the saved documentation without asking", async () => {
     writeDraft("user-a", "entity", "entity-1", "Saved");
     await renderDocumentation({ value: "Saved\n", onSave: mock(async () => {}), draft: location });
     await waitFor(() => expect(draftOf()).toBeNull());
-    expect(screen.queryByRole("region", { name: "Unsaved documentation found" })).toBeNull();
+    expect(prompt()).toBeNull();
   });
 
   it("hides the prompt when the draft location goes away, and stops writing", async () => {
     writeDraft("user-a", "entity", "entity-1", "Draft text");
     const onSave = mock(async (_value: string) => {});
     const view = await renderDocumentation({ value: "Saved", onSave, draft: location });
-    await screen.findByRole("region", { name: "Unsaved documentation found" });
+    await findPrompt();
     view.rerender(<RichDocumentation value="Saved" onSave={onSave} />);
-    await waitFor(() => expect(screen.queryByRole("region", { name: "Unsaved documentation found" })).toBeNull());
+    await waitFor(() => expect(prompt()).toBeNull());
     expect(draftOf()?.markdown).toBe("Draft text");
     await caretToEnd();
     await typeInEditor(documentation(), " more");
     expect(draftOf()?.markdown).toBe("Draft text");
   });
 
-  it("withdraws the offer when the user starts typing", async () => {
+  it("keeps the editor read-only while the offer is shown, so typing cannot overwrite the older draft", async () => {
     writeDraft("user-a", "entity", "entity-1", "Draft text");
     await renderDocumentation({ value: "Saved", onSave: mock(async () => {}), draft: location });
-    await screen.findByRole("region", { name: "Unsaved documentation found" });
-    await caretToEnd();
-    await typeInEditor(documentation(), "!");
-    expect(screen.queryByRole("region", { name: "Unsaved documentation found" })).toBeNull();
-    expect(draftOf()?.markdown).toBe("Saved!");
+    await findPrompt();
+    expect(documentation().getAttribute("contenteditable")).toBe("false");
+    expect(draftOf()?.markdown).toBe("Draft text");
+
+    await act(async () => screen.getByRole("button", { name: "Discard saved copy" }).click());
+    expect(documentation().getAttribute("contenteditable")).toBe("true");
   });
 
   it("clears a draft that only differs from the documentation in Markdown syntax without asking", async () => {
@@ -273,21 +311,27 @@ describe("documentation draft recovery", () => {
 });
 
 describe("failed documentation saves", () => {
-  it("403 turns the editor read-only, clears the draft, offers no Retry and never saves again", async () => {
+  it("403 keeps the typed text visible but read-only, clears the draft, focuses the notice and never saves again", async () => {
     const onSave = mock(reject(403, "You do not have access to this resource"));
     const onUnsavedChange = mock((_unsaved: boolean) => {});
     await renderDocumentation({ value: "Server text", onSave, draft: location, onUnsavedChange });
     await caretToEnd();
     await typeAndBlur(" local");
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("You can no longer edit this documentation.");
-    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(alert.textContent).toBe(FORBIDDEN_MESSAGE);
+    expect(alert.textContent).toContain("ask a canvas manager for edit access");
+    // The editor stays mounted with the user's text, which can no longer be changed.
+    expect(documentation().textContent).toBe("Server text local");
+    expect(documentation().getAttribute("contenteditable")).toBe("false");
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
-    expect(screen.queryByText(/local/)).toBeNull();
-    expect(screen.getByText("Server text")).toBeTruthy();
+    expect(screen.getAllByText(/can no longer edit/)).toHaveLength(1);
+    expect(document.activeElement).toBe(alert);
     expect(draftOf()).toBeNull();
     expect(onUnsavedChange.mock.calls.at(-1)).toEqual([false]);
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const unload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, AUTOSAVE_DELAY_MS + 100));
     expect(onSave).toHaveBeenCalledTimes(1);
   });
 
@@ -312,7 +356,9 @@ describe("failed documentation saves", () => {
     });
     await renderDocumentation({ value: "", onSave, draft: location });
     await typeAndBlur("Bad");
-    expect((await screen.findByRole("alert")).textContent).toContain("Documentation is not valid");
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "The server rejected this documentation: Documentation is not valid. Edit it and try again.",
+    );
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     expect(draftOf()?.markdown).toBe("Bad");
     // The same content is not submitted again on blur.
@@ -326,23 +372,45 @@ describe("failed documentation saves", () => {
     await waitFor(() => expect(draftOf()).toBeNull());
   });
 
-  it("422 is permanent too", async () => {
-    await renderDocumentation({ value: "", onSave: mock(reject(422, "Unprocessable")), draft: location });
-    await typeAndBlur("Bad");
-    expect((await screen.findByRole("alert")).textContent).toContain("Unprocessable");
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  it.each([400, 404, 409, 410, 413, 418, 422])(
+    "%i is permanent: a message, no Retry, the draft kept",
+    async (status) => {
+      await renderDocumentation({ value: "", onSave: mock(reject(status, "Rejected")), draft: location });
+      await typeAndBlur("Bad");
+      expect((await screen.findByRole("alert")).textContent).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+      expect(draftOf()?.markdown).toBe("Bad");
+    },
+  );
+
+  it.each([408, 429, 500, 503])("%i is transient and can be retried", async (status) => {
+    await renderDocumentation({ value: "", onSave: mock(reject(status, "Try later")), draft: location });
+    await typeAndBlur("Later");
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(draftOf()?.markdown).toBe("Later");
   });
 
-  it("401 reports the ended session without a retry loop and keeps the draft", async () => {
-    const onSave = mock(reject(401, "Unauthorized"));
-    await renderDocumentation({ value: "", onSave, draft: location });
+  it("401 explains the ended session, keeps the draft, never retries by itself and offers a manual Retry", async () => {
+    let signedIn = false;
+    const onSave = mock(async (_value: string) => {
+      if (!signedIn) throw new ApiError("Unauthorized", 401);
+    });
+    const { user: actor } = await renderDocumentation({ value: "", onSave, draft: location });
     await typeAndBlur("Keep me");
-    expect((await screen.findByRole("alert")).textContent).toContain("Your session has ended. Sign in again to save.");
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Your session has ended. Sign in again, then choose Retry. Your text is kept on this device.",
+    );
     expect(draftOf()?.markdown).toBe("Keep me");
     expect(documentation().textContent).toBe("Keep me");
+    await act(async () => documentation().focus());
     await blurDocumentation();
     expect(onSave).toHaveBeenCalledTimes(1);
+
+    signedIn = true;
+    await actor.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(saveState()).toBe("Saved"));
+    expect(onSave).toHaveBeenCalledTimes(2);
+    expect(draftOf()).toBeNull();
   });
 
   it.each([
@@ -364,6 +432,8 @@ describe("failed documentation saves", () => {
     await waitFor(() => expect(saveState()).toBe("Saved"));
     expect(onSave).toHaveBeenCalledTimes(2);
     expect(draftOf()).toBeNull();
+    // The Retry button went away; the focus returns to the editor instead of dropping to the body.
+    expect(document.activeElement).toBe(documentation());
   });
 });
 
@@ -375,9 +445,10 @@ describe("documentation over the length limit", () => {
     await caretToEnd();
     await typeInEditor(documentation(), "b".repeat(1234));
     await blurDocumentation();
-    expect(screen.getByRole("alert").textContent).toBe(
-      "Documentation is limited to 20,000 characters of Markdown. Remove 1,233 characters to save.",
-    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText("Documentation is over the 20,000-character limit.").getAttribute("role")).toBe("status");
+    expect(screen.getByText("Remove 1,233 characters to save.").hasAttribute("role")).toBe(false);
+    expect(documentation().getAttribute("aria-invalid")).toBe("true");
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     expect(onSave).not.toHaveBeenCalled();
     expect(draftOf()?.markdown).toHaveLength(initial.length + 1234);
@@ -455,7 +526,7 @@ describe("documentation changed elsewhere after a blur-initiated save", () => {
     expect(onSave).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the update parked when the blur-initiated save fails, and shows it only after the user's text is safe", async () => {
+  it("keeps the update parked and the user's text when the blur-initiated save fails", async () => {
     const { onSave, settle } = pendingSaves();
     const view = await renderDocumentation({ value: "Original", onSave });
     await typeAndBlur(" mine");
@@ -479,50 +550,57 @@ describe("documentation changed elsewhere after a blur-initiated save", () => {
 });
 
 describe("documentation editor chunk", () => {
-  it("shows a readable fallback when the chunk fails to load and retries the import", async () => {
+  /** Like a browser: a dynamic import that failed once keeps failing for the same address until the page reloads. */
+  function failingLoader() {
     const calls: number[] = [];
     const load: EditorLoader = () => {
       calls.push(calls.length);
-      if (calls.length === 1) return Promise.reject(new Error("Failed to fetch dynamically imported module"));
-      return Promise.resolve({ default: LoadedEditor });
+      return Promise.reject(new Error("Failed to fetch dynamically imported module"));
     };
+    return { load, calls };
+  }
+
+  it("shows a readable fallback when the chunk fails to load, and Reload reloads the page", async () => {
+    const { load, calls } = failingLoader();
+    const reload = mock(() => {});
     const consoleError = console.error;
     console.error = () => {};
     try {
       const { user: actor } = renderWithQuery(
         <div>
           <p>Sibling content</p>
-          <RichDocumentation load={load} value={"# Runbook\n\nRestart **workers**"} onSave={mock(async () => {})} />
+          <RichDocumentation
+            load={load}
+            reload={reload}
+            value={"# Runbook\n\nRestart **workers**"}
+            onSave={mock(async () => {})}
+          />
         </div>,
       );
-      expect((await screen.findByRole("alert")).textContent).toContain("The documentation editor could not load.");
+      expect((await screen.findByRole("alert")).textContent).toContain(
+        "The documentation editor could not load. Reload the page to try again. The documentation is shown below.",
+      );
       expect(screen.getByRole("heading", { name: "Runbook" })).toBeTruthy();
       expect(screen.getByText("workers").tagName).toBe("STRONG");
       expect(screen.getByText("Sibling content")).toBeTruthy();
       expect(screen.queryByRole("textbox")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
 
-      await actor.click(screen.getByRole("button", { name: "Retry" }));
-      expect(await screen.findByRole("textbox", { name: "Documentation" })).toBeTruthy();
-      expect(calls).toHaveLength(2);
-      expect(screen.queryByText("The documentation editor could not load.")).toBeNull();
+      expect(reload).not.toHaveBeenCalled();
+      await actor.click(screen.getByRole("button", { name: "Reload" }));
+      expect(reload).toHaveBeenCalledTimes(1);
+      // Reloading is the only recovery: the import is not attempted again in place.
+      expect(calls).toHaveLength(1);
       expect(screen.getByText("Sibling content")).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Runbook" })).toBeTruthy();
     } finally {
       console.error = consoleError;
     }
   });
 
-  it("stays on the fallback when the retry fails too", async () => {
-    const load: EditorLoader = () => Promise.reject(new Error("offline"));
-    const consoleError = console.error;
-    console.error = () => {};
-    try {
-      const { user: actor } = renderWithQuery(<RichDocumentation load={load} value="Notes" onSave={async () => {}} />);
-      await screen.findByRole("alert");
-      await actor.click(screen.getByRole("button", { name: "Retry" }));
-      await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
-      expect(screen.getByText("Notes")).toBeTruthy();
-    } finally {
-      console.error = consoleError;
-    }
+  it("loads the editor when the chunk is available", async () => {
+    const load: EditorLoader = () => Promise.resolve({ default: LoadedEditor });
+    renderWithQuery(<RichDocumentation load={load} value="Notes" onSave={async () => {}} />);
+    expect(await screen.findByRole("textbox", { name: "Documentation" })).toBeTruthy();
   });
 });

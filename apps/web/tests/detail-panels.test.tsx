@@ -5,6 +5,7 @@ import { CanvasActivityLog } from "../src/features/canvas/canvas-activity-log";
 import { canvasShortcutLabel, isApplePlatform } from "../src/features/canvas/canvas-shortcuts";
 import { DatabaseSchema } from "../src/features/inspector/database-schema";
 import { RichDocumentation } from "../src/features/inspector/rich-documentation";
+import { AUTOSAVE_DELAY_MS } from "../src/features/inspector/rich-documentation-editor";
 import { CanvasShareDialog } from "../src/features/workspace/canvas-share-dialog";
 import { editorFromElement, typeInEditor } from "./support/editor";
 import { FakeApi, failWith } from "./support/fake-api";
@@ -254,7 +255,12 @@ describe("rich documentation", () => {
     return rendered;
   }
   const documentation = () => screen.getByRole("textbox", { name: "Documentation" });
-  const saveStatus = () => screen.getByRole("status");
+  // The visual label shows every state; the live region (role="status") only announces "Saved".
+  const saveStatus = () => {
+    const label = document.querySelector<HTMLElement>(".documentation-save-state");
+    if (!label) throw new Error("No save state is shown.");
+    return label;
+  };
   const saveState = () => saveStatus().textContent;
   const focusDocumentation = () => act(async () => editorFromElement(documentation()).view.focus());
   const blurDocumentation = () => act(async () => documentation().blur());
@@ -279,7 +285,7 @@ describe("rich documentation", () => {
     const realSetTimeout = globalThis.setTimeout;
     let autosave: (() => void) | undefined;
     globalThis.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
-      if (delay === 900 && typeof handler === "function") autosave = handler as () => void;
+      if (delay === AUTOSAVE_DELAY_MS && typeof handler === "function") autosave = handler as () => void;
       return realSetTimeout(handler, delay, ...args);
     }) as unknown as typeof setTimeout;
     try {
@@ -287,7 +293,7 @@ describe("rich documentation", () => {
     } finally {
       globalThis.setTimeout = realSetTimeout;
     }
-    if (!autosave) throw new Error("No autosave was scheduled 900 ms after the edit.");
+    if (!autosave) throw new Error("No autosave was scheduled after the edit.");
     const run = autosave;
     return () => act(async () => run());
   }
@@ -403,6 +409,40 @@ describe("rich documentation", () => {
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     expect(onSave.mock.calls).toEqual([["Rotate the keys"], ["Rotate the keys"]]);
     expect(saveState()).toBe("Saved");
+  });
+
+  it("announces only the terminal Saved state, not every pause or a failure", async () => {
+    const { onSave, finish } = pendingSaves();
+    await renderDocumentation(<RichDocumentation value="Notes" onSave={onSave} />);
+    const live = () => document.querySelector(".documentation-live");
+    expect(live()?.getAttribute("role")).toBe("status");
+    expect(live()?.textContent).toBe("");
+    await caretToEnd();
+    await typeInEditor(documentation(), " v2");
+    expect(saveState()).toBe("Unsaved changes");
+    expect(live()?.textContent).toBe("");
+    await blurDocumentation();
+    expect(saveState()).toBe("Saving…");
+    expect(live()?.textContent).toBe("");
+    await act(async () => finish[0]());
+    expect(live()?.textContent).toBe("Saved");
+  });
+
+  it("does not announce a failed save in the polite region", async () => {
+    await renderDocumentation(
+      <RichDocumentation
+        value="Notes"
+        onSave={mock(async () => {
+          throw new Error("Documentation could not be saved");
+        })}
+      />,
+    );
+    await caretToEnd();
+    await typeInEditor(documentation(), " v2");
+    await blurDocumentation();
+    await screen.findByRole("alert");
+    expect(saveState()).toBe("Save failed");
+    expect(document.querySelector(".documentation-live")?.textContent).toBe("");
   });
 
   it("keeps the save state and its notices inside the sticky toolbar", async () => {
@@ -722,7 +762,7 @@ describe("rich documentation", () => {
 
   // Rendering and editing 20,000 characters under happy-dom takes several seconds when the editor modules are cold.
   it("does not send documentation over 20,000 characters of Markdown", async () => {
-    const limitMessage = "Documentation is limited to 20,000 characters of Markdown. Remove 1 character to save.";
+    const limitMessage = "Documentation is over the 20,000-character limit. Remove 1 character to save.";
     const onSave = mock(async (_value: string) => {});
     // Use prose-sized words so this checks the save boundary rather than linkifying a 20,000-character token.
     const initial = `${"word ".repeat(3999)}word`;
@@ -731,7 +771,12 @@ describe("rich documentation", () => {
     await caretToEnd();
     await typeInEditor(documentation(), "bc");
     await blurDocumentation();
-    expect(screen.getByRole("alert").textContent).toContain(limitMessage);
+    expect(document.querySelector(".documentation-notice.is-error")?.textContent).toBe(limitMessage);
+    // Not an assertive alert: the live part is a constant sentence, and the changing number is outside it.
+    expect(screen.queryByRole("alert")).toBeNull();
+    const live = screen.getByText("Documentation is over the 20,000-character limit.");
+    expect(live.getAttribute("role")).toBe("status");
+    expect(documentation().getAttribute("aria-invalid")).toBe("true");
     expect(saveState()).toBe("Unsaved changes");
     expect(documentation().textContent).toHaveLength(20_001);
 
@@ -742,7 +787,8 @@ describe("rich documentation", () => {
     await caretToEnd();
     await focusDocumentation();
     await actor.keyboard("{Backspace}");
-    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/Remove \d+ characters? to save/)).toBeNull());
+    expect(documentation().getAttribute("aria-invalid")).toBeNull();
     await blurDocumentation();
     await waitFor(() => expect(onSave.mock.calls).toEqual([[`${initial}b`]]));
   }, 30_000);

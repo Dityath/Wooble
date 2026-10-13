@@ -1,7 +1,16 @@
 import { Extension } from "@tiptap/core";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { Blocks, FileCode2, TriangleAlert } from "lucide-react";
-import { type ReactNode, type Ref, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type Ref,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { documentationEditorOptions, documentationExtensions } from "./extensions";
 import { looksLikeMarkdown } from "./markdown-paste";
 import { unsupportedMarkdown } from "./unsupported-markdown";
@@ -26,6 +35,8 @@ export interface DocumentationEditorHandle {
   /** The Markdown the editor writes for its document. */
   getMarkdown: () => string;
   hasFocus: () => boolean;
+  /** Moves the keyboard focus into the document. */
+  focus: () => void;
   /**
    * Replaces the document with `markdown` without calling `onChange` or adding an undo step, and returns the Markdown
    * the editor writes for the new document.
@@ -39,6 +50,10 @@ export interface DocumentationEditorProps {
   /** Called with the editor's Markdown after each change to the document, including ones the editor makes itself. */
   onChange: (markdown: string) => void;
   onBlur: () => void;
+  /** The text stays visible and selectable, but cannot be edited. */
+  readOnly?: boolean;
+  /** Marks the document as invalid for assistive technology, such as while it is over the length limit. */
+  invalid?: boolean;
   ref?: Ref<DocumentationEditorHandle>;
 }
 
@@ -50,7 +65,14 @@ export interface DocumentationEditorChrome {
 }
 
 /** An always-editable block editor for Markdown documentation. */
-function BlockDocumentationEditor({ initialMarkdown, onChange, onBlur, ref }: DocumentationEditorProps) {
+function BlockDocumentationEditor({
+  initialMarkdown,
+  onChange,
+  onBlur,
+  readOnly,
+  invalid,
+  ref,
+}: DocumentationEditorProps) {
   // The editor reads these when it is created. Keeping them stable also stops useEditor from reapplying them on every
   // render; it always calls the latest event handlers.
   const [options] = useState(() => ({
@@ -74,11 +96,24 @@ function BlockDocumentationEditor({ initialMarkdown, onChange, onBlur, ref }: Do
     onUpdate: ({ editor: updated }) => onChange(updated.getMarkdown()),
     onBlur: () => onBlur(),
   });
+  useEffect(() => {
+    // Not announced as an update: a change of mode is not an edit.
+    editor.setEditable(!readOnly, false);
+  }, [editor, readOnly]);
+  useEffect(() => {
+    const attributes = options.editorProps.attributes;
+    editor.setOptions({
+      editorProps: { attributes: invalid ? { ...attributes, "aria-invalid": "true" } : attributes },
+    });
+  }, [editor, invalid, options]);
   useImperativeHandle(
     ref,
     () => ({
       getMarkdown: () => editor.getMarkdown(),
       hasFocus: () => editor.isFocused,
+      focus: () => {
+        editor.commands.focus();
+      },
       replace(markdown) {
         editor
           .chain()
@@ -99,6 +134,8 @@ export function DocumentationEditor({
   initialMarkdown,
   onChange,
   onBlur,
+  readOnly,
+  invalid,
   ref,
   status,
   notice,
@@ -129,6 +166,10 @@ export function DocumentationEditor({
         sourceValue.current !== undefined
           ? document.activeElement === textarea.current
           : (blocks.current?.hasFocus() ?? false),
+      focus: () => {
+        if (sourceValue.current !== undefined) textarea.current?.focus();
+        else blocks.current?.focus();
+      },
       replace(markdown) {
         original.current = markdown;
         edited.current = false;
@@ -175,7 +216,7 @@ export function DocumentationEditor({
               Type <kbd>/</kbd> to insert a block. Paste Markdown to convert it.
             </span>
           )}
-          {inSource ? (
+          {readOnly ? null : inSource ? (
             !sourceWarning && (
               <button type="button" className="documentation-mode-toggle" onClick={useBlocks}>
                 <Blocks size={14} aria-hidden="true" />
@@ -208,6 +249,8 @@ export function DocumentationEditor({
           data-inline-editing="true"
           className="documentation-source"
           spellCheck={false}
+          readOnly={readOnly}
+          aria-invalid={invalid || undefined}
           value={source}
           onChange={(event) => {
             sourceValue.current = event.target.value;
@@ -255,6 +298,8 @@ export function DocumentationEditor({
               onChange(markdown);
             }}
             onBlur={onBlur}
+            readOnly={readOnly}
+            invalid={invalid}
           />
         </div>
       )}
