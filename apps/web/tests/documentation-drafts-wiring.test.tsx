@@ -1,8 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import type { QueryClient } from "@tanstack/react-query";
+import type userEvent from "@testing-library/user-event";
 import { InspectorPanel } from "../src/features/inspector/inspector-panel";
-import { draftKey, readDraft, writeDraft } from "../src/features/inspector/documentation/drafts";
+import {
+  draftKey,
+  readDraft,
+  resumeDocumentationDrafts,
+  writeDraft,
+} from "../src/features/inspector/documentation/drafts";
 import { useEditorStore } from "../src/stores/editor-store";
 import type { CanvasGraph } from "../src/lib/api";
 import { editorFromElement, typeInEditor } from "./support/editor";
@@ -13,12 +19,15 @@ import { renderRoute, renderWithQuery, testQueryClient } from "./support/render"
 
 let server: FakeApi;
 beforeEach(() => {
+  resumeDocumentationDrafts();
   localStorage.clear();
   installFakeSocket();
   server = new FakeApi().install();
   useEditorStore.setState({ selectedEntityId: null, selectedConnectionId: null, positions: {} });
 });
 afterEach(() => {
+  // Sign-out suspends drafts for the whole process; later tests (and files) start with them on.
+  resumeDocumentationDrafts();
   server.restore();
   restoreWebSocket();
   localStorage.clear();
@@ -108,6 +117,41 @@ describe("draft identity and access gate", () => {
     });
   }
 
+  it("offers nothing from a cached editor role until the access refetch resolves, then follows the result", async () => {
+    seed();
+    writeDraft(ids.user, "entity", ids.service, "My unsaved draft");
+    let release: (role: { role: string }) => void = () => {};
+    server.on("GET /api/canvases/:id/access", () => new Promise((resolve) => (release = resolve)));
+    const queryClient = testQueryClient();
+    queryClient.setQueryData(["me"], user());
+    queryClient.setQueryData(["canvas-access", ids.canvas], { role: "editor" });
+    await openDetails(queryClient);
+    await settle();
+    // The cached editor role is stale until the refetch says otherwise: nothing is read, offered or written.
+    expect(server.requests("GET", `/api/canvases/${ids.canvas}/access`)).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
+    expect(mine(ids.service)).toBe("My unsaved draft");
+
+    await act(async () => release({ role: "editor" }));
+    expect(await screen.findByRole("button", { name: "Restore" })).toBeTruthy();
+  });
+
+  it("never offers a draft when the refetch behind a cached editor role says viewer", async () => {
+    seed();
+    writeDraft(ids.user, "entity", ids.service, "My unsaved draft");
+    let release: (role: { role: string }) => void = () => {};
+    server.on("GET /api/canvases/:id/access", () => new Promise((resolve) => (release = resolve)));
+    const queryClient = testQueryClient();
+    queryClient.setQueryData(["me"], user());
+    queryClient.setQueryData(["canvas-access", ids.canvas], { role: "editor" });
+    await openDetails(queryClient);
+    await settle();
+    await act(async () => release({ role: "viewer" }));
+    await settle();
+    expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
+    expect(mine(ids.service)).toBe("My unsaved draft");
+  });
+
   it("never offers another user's draft for the same object id", async () => {
     seed();
     writeDraft(ids.otherUser, "entity", ids.service, "Grace's draft");
@@ -156,25 +200,6 @@ describe("selection change with unsaved documentation", () => {
   });
 });
 
-describe("revocation", () => {
-  it("offers no draft once access flips to viewer", async () => {
-    seed();
-    server.on("PATCH /api/entities/:id", failWith(503, "Unavailable"));
-    const queryClient = testQueryClient();
-    const view = await openDetails(queryClient);
-    await typeUntilDrafted();
-    server.on("GET /api/canvases/:id/access", { role: "viewer" });
-    await act(async () => {
-      await queryClient.invalidateQueries({ queryKey: ["canvas-access", ids.canvas] });
-    });
-    // The page replaces the editor with the read-only viewer; remounting the panel stands in for that here.
-    view.unmount();
-    await openDetails(queryClient);
-    await settle();
-    expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
-  });
-});
-
 function seedCanvas() {
   server
     .on("GET /api/auth/me", user())
@@ -187,16 +212,19 @@ async function openCanvasDetails() {
   seedCanvas();
   const view = await renderRoute(`/canvases/${ids.canvas}`);
   await screen.findByText("Orders API", {}, { timeout: 3000 });
+  return { ...view, ...(await openNodeDocumentation(view.user)) };
+}
+async function openNodeDocumentation(actor: ReturnType<typeof userEvent.setup>) {
   const node = [...document.querySelectorAll<HTMLElement>(".react-flow__node")].find(
     (element) => element.querySelector(".architecture-node-name")?.textContent === "Orders API",
   ) as HTMLElement;
   fireEvent.click(node);
   const inspector = document.querySelector(".canvas-workspace .inspector-panel") as HTMLElement;
-  await view.user.click(await within(inspector).findByRole("button", { name: /Open details/ }));
+  await actor.click(await within(inspector).findByRole("button", { name: /Open details/ }));
   const dialog = await screen.findByRole("dialog", { name: "Canvas details" });
-  await view.user.click(within(dialog).getByRole("button", { name: "Documentation" }));
+  await actor.click(within(dialog).getByRole("button", { name: "Documentation" }));
   await within(dialog).findByRole("textbox", { name: "Documentation" });
-  return { ...view, dialog };
+  return { dialog };
 }
 const closeButton = (dialog: HTMLElement) =>
   within(dialog).getAllByRole("button", { name: "Close" }).at(-1) as HTMLElement;
@@ -225,18 +253,40 @@ describe("closing the details dialog", () => {
     await screen.findByRole("alertdialog", { name: "Close with unsaved documentation?" });
   });
 
-  it("Close closes the dialog and the draft is kept", async () => {
+  it("Close anyway closes everything, keeps the draft and leaves focus to the element that opened the dialog", async () => {
     const { user: actor, dialog } = await openCanvasDetails();
     server.on("PATCH /api/entities/:id", failWith(503, "Unavailable"));
     await typeUntilDrafted();
     await actor.click(closeButton(dialog));
     const confirm = await screen.findByRole("alertdialog");
-    const confirmClose = within(confirm)
-      .getAllByRole("button", { name: "Close" })
-      .find((button) => !button.querySelector("svg")) as HTMLElement;
-    await actor.click(confirmClose);
+    expect(within(confirm).getByRole("button", { name: "Keep editing" })).toBeTruthy();
+    expect(confirm.textContent).toContain("kept on this device");
+    await actor.click(within(confirm).getByRole("button", { name: "Close anyway" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Canvas details" })).toBeNull());
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(mine(ids.service)).toContain("!");
+    // Not pulled back into the (closed) editor.
+    expect(Boolean(document.activeElement?.closest("[contenteditable='true']"))).toBe(false);
+    expect(document.activeElement?.textContent?.includes("Open details")).toBe(true);
+  });
+
+  it("does not ask again on the next keystroke when a save finished while the confirm was open", async () => {
+    const { user: actor, dialog } = await openCanvasDetails();
+    let finishSave: () => void = () => {};
+    server.on("PATCH /api/entities/:id", () => new Promise((resolve) => (finishSave = () => resolve({}))));
+    await typeText("!");
+    await act(async () => documentation().blur());
+    await waitFor(() => expect(server.requests("PATCH", `/api/entities/${ids.service}`)).toHaveLength(1));
+    await actor.click(closeButton(dialog));
+    await screen.findByRole("alertdialog", { name: "Close with unsaved documentation?" });
+
+    await act(async () => finishSave());
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(screen.getByRole("dialog", { name: "Canvas details" })).toBeTruthy();
+
+    await typeText("?");
+    await settle();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 
   it("closes without a prompt when nothing is unsaved", async () => {
@@ -244,6 +294,33 @@ describe("closing the details dialog", () => {
     await actor.click(closeButton(dialog));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("replaces a mounted editor when access is revoked, and may offer the user's own last text once access returns", async () => {
+    const { queryClient, user: actor } = await openCanvasDetails();
+    server.on("PATCH /api/entities/:id", failWith(503, "Unavailable"));
+    await typeUntilDrafted();
+    const lastText = mine(ids.service);
+
+    server.on("GET /api/canvases/:id/access", { role: "viewer" });
+    await act(async () => {
+      void queryClient.invalidateQueries({ queryKey: ["canvas-access", ids.canvas] });
+    });
+    await settle();
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Documentation" })).toBeNull());
+    expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
+
+    // Intended behaviour: nothing offers a draft to a viewer, but the text stays on this device for the same user. If
+    // write access comes back, that user's own last text is offered again; it is never shown to anyone else.
+    server.on("GET /api/canvases/:id/access", { role: "editor" });
+    await act(async () => {
+      void queryClient.invalidateQueries({ queryKey: ["canvas-access", ids.canvas] });
+    });
+    await settle();
+    // The page swapped to the read-only view and back, so the details are opened again.
+    if (!screen.queryByRole("textbox", { name: "Documentation" })) await openNodeDocumentation(actor);
+    expect(await screen.findByRole("button", { name: "Restore" })).toBeTruthy();
+    expect(mine(ids.service)).toBe(lastText);
   });
 
   it("replaces the editor and offers no draft after a live 1008 flips access to viewer", async () => {

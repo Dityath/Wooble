@@ -4,6 +4,9 @@ import {
   clearDraft,
   type DocumentationDraft,
   draftKey,
+  pruneDocumentationDrafts,
+  resumeDocumentationDrafts,
+  suspendDocumentationDrafts,
   readDraft,
   writeDraft,
 } from "../src/features/inspector/documentation/drafts";
@@ -241,5 +244,77 @@ describe("clearing every documentation draft", () => {
     localStorage.setItem("wooble-theme", "light");
     clearAllDocumentationDrafts();
     expect(localStorage.getItem("wooble-theme")).toBe("light");
+  });
+});
+
+describe("suspending documentation drafts", () => {
+  afterEach(() => resumeDocumentationDrafts());
+
+  it("neither writes nor reads while suspended, and works again once resumed", () => {
+    writeDraft(USER, "entity", OBJECT, "before");
+    suspendDocumentationDrafts();
+    writeDraft(USER, "entity", OBJECT, "during");
+    expect(readDraft(USER, "entity", OBJECT)).toBeNull();
+    resumeDocumentationDrafts();
+    expect(readDraft(USER, "entity", OBJECT)?.markdown).toBe("before");
+    writeDraft(USER, "entity", OBJECT, "after");
+    expect(readDraft(USER, "entity", OBJECT)?.markdown).toBe("after");
+  });
+
+  it("cannot write back after a purge while suspended", () => {
+    writeDraft(USER, "entity", OBJECT, "unsaved");
+    suspendDocumentationDrafts();
+    clearAllDocumentationDrafts();
+    writeDraft(USER, "entity", OBJECT, "late write from an unmounting editor");
+    expect(localStorage.length).toBe(0);
+  });
+});
+
+describe("pruning documentation drafts", () => {
+  const key = (userId: string, id: string) => draftKey(userId, "entity", id);
+
+  it("removes expired entries and other users' entries, and keeps the current user's", () => {
+    const now = Date.now();
+    putRaw(JSON.stringify({ markdown: "fresh", savedAt: now }), key(USER, "fresh"));
+    putRaw(JSON.stringify({ markdown: "old", savedAt: now - WEEK_MS - 1000 }), key(USER, "old"));
+    putRaw(JSON.stringify({ markdown: "theirs", savedAt: now }), key(OTHER_USER, "theirs"));
+    localStorage.setItem("wooble-theme", "dark");
+
+    pruneDocumentationDrafts(USER);
+
+    expect(Object.keys(localStorage).sort()).toEqual([key(USER, "fresh"), "wooble-theme"].sort());
+  });
+
+  it("removes malformed entries under this module's prefix and leaves other keys alone", () => {
+    putRaw("not json", key(USER, "a"));
+    putRaw("null", key(USER, "b"));
+    putRaw(JSON.stringify({ markdown: 3, savedAt: Date.now() }), key(USER, "c"));
+    putRaw(JSON.stringify({ markdown: "x", savedAt: "soon" }), key(USER, "d"));
+    putRaw(JSON.stringify({ markdown: "ok", savedAt: Date.now() }), key(USER, "e"));
+    localStorage.setItem("unrelated", "keep me");
+
+    pruneDocumentationDrafts(USER);
+
+    expect(Object.keys(localStorage).sort()).toEqual([key(USER, "e"), "unrelated"].sort());
+  });
+
+  it("does nothing without a known user", () => {
+    writeDraft(USER, "entity", OBJECT, "kept");
+    pruneDocumentationDrafts("");
+    expect(readDraft(USER, "entity", OBJECT)?.markdown).toBe("kept");
+  });
+
+  it("never throws when the store is unavailable", () => {
+    writeDraft(USER, "entity", OBJECT, "x");
+    withBrokenStorage("key", { value: refusing("SecurityError") }, () => {
+      expect(() => pruneDocumentationDrafts(USER)).not.toThrow();
+    });
+    withBrokenStorage("getItem", { value: refusing("SecurityError") }, () => {
+      expect(() => pruneDocumentationDrafts(USER)).not.toThrow();
+    });
+    withBrokenStorage("removeItem", { value: refusing("SecurityError") }, () => {
+      putRaw("garbage", key(OTHER_USER, "z"));
+      expect(() => pruneDocumentationDrafts(USER)).not.toThrow();
+    });
   });
 });

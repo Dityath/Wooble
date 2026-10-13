@@ -5,7 +5,7 @@ import { KeyRound, Moon, Pencil, Sun } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
 import { PageIntro } from "../../components/page-intro";
 import { Button, Card, Input, PasswordInput } from "../../components/ui";
-import { clearAllDocumentationDrafts } from "../inspector/documentation/drafts";
+import { clearAllDocumentationDrafts, suspendDocumentationDrafts } from "../inspector/documentation/drafts";
 import { api } from "../../lib/api";
 import { useAppearance } from "../../lib/use-appearance";
 
@@ -211,10 +211,11 @@ export function ProfilePage() {
                     setPasswordError("");
                     try {
                       await api.changePassword(currentPassword, newPassword);
+                      // Suspended first, so an editor still mounted cannot write its text back after the purge.
+                      suspendDocumentationDrafts();
                       clearAllDocumentationDrafts();
                       queryClient.clear();
                       await navigate({ to: "/login" });
-                      clearAllDocumentationDrafts();
                     } catch (error) {
                       setPasswordError(error instanceof Error ? error.message : "Could not change password");
                     } finally {

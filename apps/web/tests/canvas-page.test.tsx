@@ -229,13 +229,13 @@ describe("viewer canvas", () => {
     expectReadOnlyRequests();
   });
 
-  it("never renders a connection that is not on the authorized graph", async () => {
+  it("never fetches or renders another canvas's connection while viewing an authorized one", async () => {
     const bend: ConnectionPath = null;
     const shared: ArchitectureConnection & { bend: ConnectionPath } = {
       ...graph().connections[0],
       metadata: { documentation: "Shared documentation." },
     };
-    // A connection of the same workspace that is deliberately absent from the canvas the server returned.
+    // A second canvas, served under its own routes and open to anyone who asks: only the page must refrain from asking.
     const offCanvas: ArchitectureConnection & { bend: ConnectionPath } = {
       id: ids.secondConnection,
       workspaceId: ids.workspace,
@@ -247,14 +247,14 @@ describe("viewer canvas", () => {
       metadata: { documentation: "Off-canvas documentation." },
       bend,
     };
+    const otherGraph = graph({ canvas: { ...graph().canvas, id: ids.otherCanvas }, connections: [offCanvas] });
     const data = { ...graph(), connections: [shared] };
     server
       .on("GET /api/canvases/:id/access", { role: "viewer" })
-      .on("GET /api/canvases/:id/graph", data)
-      .on("GET /api/connections/:id", () => {
-        throw new Error(`the viewer asked for ${offCanvas.id}, which is not on the shared canvas`);
-      });
+      .on("GET /api/connections/:id", ({ params }) => (params.id === offCanvas.id ? offCanvas : shared));
     const { user: actor } = await openCanvas("viewer", data);
+    // openCanvas registers the shared graph for every canvas id; serve the other canvas under its own id again.
+    server.on("GET /api/canvases/:id/graph", ({ params }) => (params.id === ids.otherCanvas ? otherGraph : data));
     await selectConnection(actor);
     const documentation = await screen.findByRole("region", { name: "Connection documentation" });
     expect(within(documentation).getByText("Shared documentation.")).toBeTruthy();
@@ -264,6 +264,8 @@ describe("viewer canvas", () => {
     expect(edges[0].getAttribute("data-id")).toBe(shared.id);
     expect(document.body.textContent).not.toContain("Writes orders");
     expect(document.body.textContent).not.toContain("Off-canvas documentation.");
+    expect(server.requests("GET", `/api/canvases/${ids.otherCanvas}/graph`)).toHaveLength(0);
+    expect(server.requests("GET", `/api/canvases/${ids.otherCanvas}/access`)).toHaveLength(0);
     expect(server.requests("GET", `/api/connections/${offCanvas.id}`)).toHaveLength(0);
     expect(server.requests("GET", `/api/connections/${shared.id}`)).toHaveLength(0);
     expectReadOnlyRequests();

@@ -110,7 +110,10 @@ function TechnologyStackTags({ entity }: { entity: ArchitectureEntity }) {
 function useDocumentationDraftUserId(canvasId: string): string | undefined {
   const meQuery = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
   const accessQuery = useQuery({ queryKey: ["canvas-access", canvasId], queryFn: () => api.canvasAccess(canvasId) });
-  const role = accessQuery.isSuccess ? accessQuery.data.role : undefined;
+  // A cached "editor" may be stale: access could have been revoked since it was fetched. Drafts are enabled only for a
+  // result fetched after this mount and not being refetched (e.g. after a revocation invalidation).
+  const accessSettled = accessQuery.isSuccess && accessQuery.isFetchedAfterMount && !accessQuery.isFetching;
+  const role = accessSettled ? accessQuery.data.role : undefined;
   if (!meQuery.isSuccess || !meQuery.data?.id) return undefined;
   return role === "editor" || role === "manager" ? meQuery.data.id : undefined;
 }

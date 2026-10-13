@@ -20,6 +20,22 @@ const NAMESPACE = "wooble:draft:v1";
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
+ * While suspended, drafts are neither written nor read. Sign-out and a password change suspend them before purging, so
+ * an editor that is still mounted (or unmounts later, or whose save is still failing) cannot write its text back
+ * after the purge. A new sign-in resumes them. Module state is per tab, which is what is wanted: a reload starts
+ * resumed and relies on `me` resolving to a user to stay that way.
+ */
+let suspended = false;
+
+export function suspendDocumentationDrafts(): void {
+  suspended = true;
+}
+
+export function resumeDocumentationDrafts(): void {
+  suspended = false;
+}
+
+/**
  * The key one draft lives under. Each segment is encoded because ids are opaque strings: an id containing `:` or `/`
  * would otherwise forge the key of another user, kind, or object.
  */
@@ -36,7 +52,7 @@ export function readDraft(userId: string, kind: DraftObjectKind, objectId: strin
   // The session is an HttpOnly cookie with no auth context above this module, so without a known user there is no way
   // to tell whose draft this is. Reading is refused rather than guessing: a signed-out visitor shares the browser with
   // whoever used it last.
-  if (!userId) return null;
+  if (!userId || suspended) return null;
   let raw: string | null = null;
   try {
     raw = localStorage.getItem(draftKey(userId, kind, objectId));
@@ -63,7 +79,7 @@ export function readDraft(userId: string, kind: DraftObjectKind, objectId: strin
  * exactly the text that must not be lost. Never throws; a full or blocked store only costs the draft.
  */
 export function writeDraft(userId: string, kind: DraftObjectKind, objectId: string, markdown: string): void {
-  if (!userId) return;
+  if (!userId || suspended) return;
   try {
     const key = draftKey(userId, kind, objectId);
     if (markdown.trim() === "") localStorage.removeItem(key);
@@ -98,5 +114,43 @@ export function clearAllDocumentationDrafts(): void {
     }
   } catch {
     // Nothing else on the page depends on this, so a failing store is left alone.
+  }
+}
+
+/**
+ * Removes expired drafts and drafts that belong to anyone but `currentUserId`, so a shared browser does not keep a
+ * previous person's text around after they left without signing out. Entries under this module's prefix that cannot
+ * be parsed are removed too. Never throws.
+ */
+export function pruneDocumentationDrafts(currentUserId: string): void {
+  if (!currentUserId) return;
+  try {
+    const prefix = `${NAMESPACE}:`;
+    const ownPrefix = `${prefix}${encodeURIComponent(currentUserId)}:`;
+    for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+      const key = localStorage.key(index);
+      if (!key?.startsWith(prefix)) continue;
+      let keep = key.startsWith(ownPrefix);
+      if (keep) {
+        try {
+          const stored = JSON.parse(localStorage.getItem(key) ?? "null") as {
+            markdown?: unknown;
+            savedAt?: unknown;
+          } | null;
+          keep =
+            typeof stored === "object" &&
+            stored !== null &&
+            typeof stored.markdown === "string" &&
+            typeof stored.savedAt === "number" &&
+            Number.isFinite(stored.savedAt) &&
+            Date.now() - stored.savedAt <= RETENTION_MS;
+        } catch {
+          keep = false;
+        }
+      }
+      if (!keep) localStorage.removeItem(key);
+    }
+  } catch {
+    // A store that cannot be listed or edited has nothing this sweep can do.
   }
 }

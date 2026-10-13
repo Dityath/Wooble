@@ -411,6 +411,12 @@ function CanvasEditor({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [documentationUnsaved, setDocumentationUnsaved] = useState(false);
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
+  // Set while the confirm closes because the user chose "Close anyway", so focus is left to Radix's trigger restore.
+  const closingAnywayRef = useRef(false);
+  // A confirm left open when the documentation was saved must not pop up again on the next keystroke.
+  useEffect(() => {
+    if (!documentationUnsaved) setCloseConfirmOpen(false);
+  }, [documentationUnsaved]);
   const keepEditingRef = useRef<HTMLButtonElement>(null);
   const detailsDialogRef = useRef<HTMLDivElement>(null);
   const [detailSection, setDetailSection] = useState<"overview" | "documentation" | "schema" | "contract">("overview");
@@ -684,12 +690,18 @@ function CanvasEditor({
     [setConnectionSelected, tool],
   );
   const clearSelection = useCallback(() => {
+    // Defensive: the modal details dialog and the shortcut resolver (which ignores keys while details are open) make
+    // this unreachable with unsaved documentation, but if it ever happens the same close guard applies.
+    if (detailsOpen && documentationUnsaved) {
+      setCloseConfirmOpen(true);
+      return;
+    }
     setEntitySelected(null);
     setConnectionSelected(null);
     setNodes((current) => current.map((node) => (node.selected ? { ...node, selected: false } : node)));
     setEdges((current) => current.map((edge) => (edge.selected ? { ...edge, selected: false } : edge)));
     setDetailsOpen(false);
-  }, [setConnectionSelected, setEdges, setEntitySelected, setNodes]);
+  }, [detailsOpen, documentationUnsaved, setConnectionSelected, setEdges, setEntitySelected, setNodes]);
 
   const handleActivityOpenChange = useCallback(
     (open: boolean) => {
@@ -1128,7 +1140,12 @@ function CanvasEditor({
             keepEditingRef.current?.focus();
           }}
           onCloseAutoFocus={(event) => {
-            // Back into the details dialog (its editor when there is one), not to wherever focus was before.
+            // Only when the details dialog stays open (Keep editing, Escape): back into its editor. "Close anyway"
+            // closes everything, so focus is left to Radix to restore to the trigger.
+            if (closingAnywayRef.current) {
+              closingAnywayRef.current = false;
+              return;
+            }
             const details = detailsDialogRef.current;
             if (!details) return;
             event.preventDefault();
@@ -1137,8 +1154,8 @@ function CanvasEditor({
         >
           <DialogTitle>Close with unsaved documentation?</DialogTitle>
           <DialogDescription id="close-unsaved-description">
-            Your changes are not saved yet. The text is kept on this device and will be offered again when you open this
-            item's documentation.
+            Your changes are not saved yet. Wooble keeps trying to save them; if that is not possible, the text is kept
+            on this device and offered again when you reopen this item's documentation.
           </DialogDescription>
           <div className="inspector-delete-actions">
             <Button ref={keepEditingRef} variant="secondary" onClick={() => setCloseConfirmOpen(false)}>
@@ -1146,12 +1163,13 @@ function CanvasEditor({
             </Button>
             <Button
               onClick={() => {
+                closingAnywayRef.current = true;
                 setCloseConfirmOpen(false);
                 setDocumentationUnsaved(false);
                 setDetailsOpen(false);
               }}
             >
-              Close
+              Close anyway
             </Button>
           </div>
         </DialogContent>

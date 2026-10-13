@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ArrowRight } from "lucide-react";
 import { Button, Card, Input, PasswordInput } from "../../components/ui";
 import { api } from "../../lib/api";
+import { pruneDocumentationDrafts, resumeDocumentationDrafts } from "../inspector/documentation/drafts";
 
 export function AuthPage({ mode }: { mode: "login" | "register" }) {
   const [name, setName] = useState("");
@@ -47,6 +48,8 @@ export function AuthPage({ mode }: { mode: "login" | "register" }) {
                   mode === "login"
                     ? await api.login({ email, password })
                     : await api.register({ name, email, password, confirmPassword });
+                resumeDocumentationDrafts();
+                pruneDocumentationDrafts(user.id);
                 queryClient.setQueryData(["me"], user);
                 await router.invalidate();
                 window.location.assign(next);
