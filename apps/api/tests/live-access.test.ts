@@ -21,16 +21,27 @@ const unguarded = new Elysia({ serve: { reusePort: false } })
   });
 liveRoutes(unguarded, 60_000);
 
-const origins = { guarded: "", unguarded: "" };
+// The same, with a short recheck interval, for the periodic recheck.
+const periodic = new Elysia({ serve: { reusePort: false } })
+  .decorate("actor", null as Actor | null)
+  .onRequest((context) => {
+    context.actor = actors.get(context.request.headers.get("cookie") ?? "") ?? null;
+  });
+liveRoutes(periodic, 100);
+
+const origins = { guarded: "", unguarded: "", periodic: "" };
 beforeAll(async () => {
   await api.app.listen({ hostname: "127.0.0.1", port: 0 });
   await unguarded.listen({ hostname: "127.0.0.1", port: 0 });
+  await periodic.listen({ hostname: "127.0.0.1", port: 0 });
+  origins.periodic = periodic.server?.url.origin ?? "";
   origins.guarded = api.app.server?.url.origin ?? "";
   origins.unguarded = unguarded.server?.url.origin ?? "";
 });
 afterAll(async () => {
   await stopLiveServer(api.app, 100);
   await stopLiveServer(unguarded, 100);
+  await stopLiveServer(periodic, 100);
 });
 beforeEach(() => resetLoginAttempts());
 
@@ -488,6 +499,66 @@ describe("live canvas recheck failures", () => {
         expect.objectContaining({ type: "activity" }),
       ]);
       expect(editorLive.messages.filter((message) => message.type === "left")).toHaveLength(1);
+    } finally {
+      select.mockRestore();
+    }
+  });
+});
+
+describe("live canvas periodic recheck failures", () => {
+  it("closes the peer whose periodic recheck failed, detaches it, and leaves the other peer alone", async () => {
+    const { owner, payments } = await liveFixture();
+    const editor = await api.register("Periodic Editor");
+    await joinCanvas(owner, editor, payments, "editor");
+    actors.set(owner.session, actor(owner));
+    actors.set(editor.session, actor(editor));
+    const ownerLive = openLive("periodic", payments, owner.session);
+    await received(ownerLive, "presence");
+    const editorLive = openLive("periodic", payments, editor.session);
+    await received(editorLive, "presence");
+    await received(ownerLive, "joined");
+
+    // The session probe is the first query of every signed-in recheck. Fail exactly one of them; the
+    // peer whose timer fires first is the one that fails, and the outcome says which.
+    const original = db.select.bind(db);
+    let armed = true;
+    let probes = 0;
+    const select = spyOn(db, "select").mockImplementation(((fields?: unknown) => {
+      const probe = fields as { userId?: unknown } | undefined;
+      if (probe && Object.keys(probe).length === 1 && probe.userId === sessions.userId) {
+        probes++;
+        if (armed) {
+          armed = false;
+          throw new Error("database unavailable");
+        }
+      }
+      return original(fields as never);
+    }) as unknown as typeof db.select);
+    try {
+      const first = await Promise.race([
+        ownerLive.closed.then(() => "owner" as const),
+        editorLive.closed.then(() => "editor" as const),
+        Bun.sleep(3_000).then(() => null),
+      ]);
+      expect(first).not.toBeNull();
+      const [failed, survivor] = first === "owner" ? [ownerLive, editorLive] : [editorLive, ownerLive];
+      expect(await failed.closed).toEqual({ code: 1011, reason: "Access check unavailable" });
+
+      const failedPeerId = (await received(survivor, "left")).id;
+      const afterClose = [...failed.messages];
+      // Later periodic rechecks of the survivor run and pass: wait for two more probes.
+      const seen = probes;
+      const deadline = Date.now() + 3_000;
+      while (probes < seen + 2 && Date.now() < deadline) await Bun.sleep(10);
+      expect(probes).toBeGreaterThanOrEqual(seen + 2);
+      expect(survivor.socket.readyState).toBe(WebSocket.OPEN);
+
+      survivor.send({ type: "cursor", x: 1, y: 2 });
+      survivor.send({ type: "activity" });
+      await Bun.sleep(100);
+      expect(failed.messages).toEqual(afterClose);
+      expect(survivor.messages.filter((message) => message.type === "left")).toHaveLength(1);
+      expect(survivor.messages.filter((message) => message.id === failedPeerId && message.type !== "left")).toEqual([]);
     } finally {
       select.mockRestore();
     }

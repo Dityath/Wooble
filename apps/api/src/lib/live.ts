@@ -170,7 +170,7 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
       allowed = await canReadCanvas(peer, peer.canvasId);
     } catch (error) {
       console.error("Could not check live canvas access", error);
-      peer.socket.close(1011, "Access check unavailable");
+      unavailable(peer);
       return;
     }
     // The socket may have closed, or been revoked, while the check ran.
@@ -207,7 +207,7 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
         revoke(peer);
       } catch (error) {
         console.error("Could not recheck live canvas access", error);
-        peer.socket.close(1011, "Access check unavailable");
+        unavailable(peer);
       }
     }, recheckMs);
     for (const message of peer.queued.splice(0)) receive(peer, message);
