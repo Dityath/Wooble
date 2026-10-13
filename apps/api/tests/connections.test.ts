@@ -84,9 +84,11 @@ describe("connection updates", () => {
     );
     const updates = activity.body.events.filter((event) => event.action === "connection.updated");
     expect(updates).toHaveLength(3);
-    expect(updates.at(-1)).toMatchObject({
-      targetName: "Loads orders",
-      metadata: { fields: ["type", "label", "description", "metadata"], previous: { type: "rest", label: "" } },
+    // The feed summarizes what changed; previous values stay server-side.
+    expect(updates.at(-1)).toMatchObject({ targetName: "Loads orders" });
+    expect(updates.at(-1)?.metadata).toEqual({
+      fields: ["type", "label", "description", "metadata"],
+      metadataKeys: ["contract", "direction", "documentation"],
     });
   });
 

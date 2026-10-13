@@ -90,15 +90,15 @@ describe("canvas settings", () => {
     );
     expect(renamed.body).toMatchObject({ name: "Final", description: "Reviewed", shareMode: "link" });
     expect((await api.json<{ name: string }>("GET", url, owner.session)).body.name).toBe("Final");
-    const activity = await api.json<{ events: Array<{ action: string; metadata: { previous: unknown } }> }>(
+    const activity = await api.json<{ events: Array<{ action: string; metadata: Record<string, unknown> }> }>(
       "GET",
       `${url}/activity`,
       owner.session,
     );
-    expect(activity.body.events[0]).toMatchObject({
-      action: "canvas.updated",
-      metadata: { previous: { name: "Draft", description: "", shareMode: "restricted" } },
-    });
+    // The feed names the changed fields; the previous values stay server-side for undo.
+    expect(activity.body.events[0]).toEqual(
+      expect.objectContaining({ action: "canvas.updated", metadata: { fields: ["name", "description", "shareMode"] } }),
+    );
 
     expect((await api.request("PATCH", url, owner.session, {})).status).toBe(400);
     expect((await api.request("PATCH", url, owner.session, { shareMode: "public" })).status).toBe(400);
