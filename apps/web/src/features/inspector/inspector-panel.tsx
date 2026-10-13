@@ -109,7 +109,13 @@ function TechnologyStackTags({ entity }: { entity: ArchitectureEntity }) {
  */
 function useDocumentationDraftUserId(canvasId: string): string | undefined {
   const meQuery = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
-  const accessQuery = useQuery({ queryKey: ["canvas-access", canvasId], queryFn: () => api.canvasAccess(canvasId) });
+  const accessQuery = useQuery({
+    queryKey: ["canvas-access", canvasId],
+    queryFn: () => api.canvasAccess(canvasId),
+    // Other observers (the shell, the canvas page) have usually fetched this key within `staleTime`. This observer must
+    // still fetch on its own mount, or `isFetchedAfterMount` would never turn true and no draft would be kept.
+    refetchOnMount: "always",
+  });
   // A cached "editor" may be stale: access could have been revoked since it was fetched. Drafts are enabled only for a
   // result fetched after this mount and not being refetched (e.g. after a revocation invalidation).
   const accessSettled = accessQuery.isSuccess && accessQuery.isFetchedAfterMount && !accessQuery.isFetching;

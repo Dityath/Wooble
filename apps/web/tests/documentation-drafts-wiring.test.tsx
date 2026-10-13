@@ -136,6 +136,24 @@ describe("draft identity and access gate", () => {
     expect(await screen.findByRole("button", { name: "Restore" })).toBeTruthy();
   });
 
+  it("refetches access on mount even when another observer's fresh result is cached, then enables drafts", async () => {
+    seed();
+    writeDraft(ids.user, "entity", ids.service, "My unsaved draft");
+    let release: (role: { role: string }) => void = () => {};
+    server.on("GET /api/canvases/:id/access", () => new Promise((resolve) => (release = resolve)));
+    const queryClient = testQueryClient();
+    queryClient.setQueryData(["me"], user());
+    // Another observer (the page shell) fetched this just now, so the default staleTime would reuse it.
+    queryClient.setDefaultOptions({ queries: { staleTime: 20_000, retry: false } });
+    queryClient.setQueryData(["canvas-access", ids.canvas], { role: "editor" });
+    await openDetails(queryClient);
+    await settle();
+    expect(server.requests("GET", `/api/canvases/${ids.canvas}/access`)).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
+    await act(async () => release({ role: "editor" }));
+    expect(await screen.findByRole("button", { name: "Restore" })).toBeTruthy();
+  });
+
   it("never offers a draft when the refetch behind a cached editor role says viewer", async () => {
     seed();
     writeDraft(ids.user, "entity", ids.service, "My unsaved draft");

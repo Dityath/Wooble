@@ -1,5 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import { DocumentationEditor } from "../src/features/inspector/documentation/documentation-editor";
 import { readDraft, writeDraft } from "../src/features/inspector/documentation/drafts";
 import type { EditorLoader } from "../src/features/inspector/documentation/editor-loader";
 import { RichDocumentation } from "../src/features/inspector/rich-documentation";
@@ -602,5 +603,32 @@ describe("documentation editor chunk", () => {
     const load: EditorLoader = () => Promise.resolve({ default: LoadedEditor });
     renderWithQuery(<RichDocumentation load={load} value="Notes" onSave={async () => {}} />);
     expect(await screen.findByRole("textbox", { name: "Documentation" })).toBeTruthy();
+  });
+});
+
+describe("aria-invalid on the editing surfaces", () => {
+  const noop = () => {};
+  it("sets and clears aria-invalid on the editor element itself, keeping the attributes it already has", async () => {
+    const { rerender } = render(<DocumentationEditor initialMarkdown="Hello" onChange={noop} onBlur={noop} />);
+    const editable = await screen.findByRole("textbox", { name: "Documentation" });
+    expect(editable.hasAttribute("aria-invalid")).toBe(false);
+    rerender(<DocumentationEditor initialMarkdown="Hello" onChange={noop} onBlur={noop} invalid />);
+    await waitFor(() => expect(editable.getAttribute("aria-invalid")).toBe("true"));
+    expect(editable.getAttribute("aria-label")).toBe("Documentation");
+    expect(editable.getAttribute("aria-multiline")).toBe("true");
+    expect(editable.getAttribute("data-inline-editing")).toBe("true");
+    rerender(<DocumentationEditor initialMarkdown="Hello" onChange={noop} onBlur={noop} />);
+    await waitFor(() => expect(editable.hasAttribute("aria-invalid")).toBe(false));
+    expect(editable.getAttribute("aria-label")).toBe("Documentation");
+  });
+
+  it("sets aria-invalid on the source textarea", async () => {
+    const source = "<Button>x</Button>";
+    const { rerender } = render(<DocumentationEditor initialMarkdown={source} onChange={noop} onBlur={noop} invalid />);
+    const area = await screen.findByRole("textbox", { name: "Documentation" });
+    expect(area.tagName).toBe("TEXTAREA");
+    expect(area.getAttribute("aria-invalid")).toBe("true");
+    rerender(<DocumentationEditor initialMarkdown={source} onChange={noop} onBlur={noop} />);
+    expect(area.hasAttribute("aria-invalid")).toBe(false);
   });
 });

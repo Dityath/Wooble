@@ -419,6 +419,8 @@ function CanvasEditor({
   }, [documentationUnsaved]);
   const keepEditingRef = useRef<HTMLButtonElement>(null);
   const detailsDialogRef = useRef<HTMLDivElement>(null);
+  // The control that opened the details. The dialog is opened programmatically, so Radix has no trigger to restore to.
+  const detailsOpenerRef = useRef<HTMLElement | null>(null);
   const [detailSection, setDetailSection] = useState<"overview" | "documentation" | "schema" | "contract">("overview");
   const [activityOpen, setActivityOpen] = useState(false);
   const queryClient = useQueryClient();
@@ -1087,6 +1089,8 @@ function CanvasEditor({
             canvasId={canvasId}
             deleteRequest={deleteRequest}
             onOpenDetails={(section) => {
+              const active = document.activeElement;
+              detailsOpenerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
               setDetailSection(section);
               setDetailsOpen(true);
             }}
@@ -1107,6 +1111,21 @@ function CanvasEditor({
           ref={detailsDialogRef}
           className="canvas-details-dialog"
           aria-describedby={undefined}
+          onCloseAutoFocus={(event) => {
+            // Back to the control that opened the details; never <body>.
+            event.preventDefault();
+            const opener = detailsOpenerRef.current;
+            detailsOpenerRef.current = null;
+            if (opener?.isConnected) {
+              opener.focus();
+              return;
+            }
+            const fallback =
+              document.querySelector<HTMLElement>(".react-flow__node.selected") ??
+              document.querySelector<HTMLElement>(".react-flow__pane") ??
+              document.querySelector<HTMLElement>(".react-flow");
+            fallback?.focus();
+          }}
           onEscapeKeyDown={(event) => {
             if (
               document.activeElement instanceof Element &&

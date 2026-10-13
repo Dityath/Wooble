@@ -101,11 +101,24 @@ function BlockDocumentationEditor({
     editor.setEditable(!readOnly, false);
   }, [editor, readOnly]);
   useEffect(() => {
-    const attributes = options.editorProps.attributes;
-    editor.setOptions({
-      editorProps: { attributes: invalid ? { ...attributes, "aria-invalid": "true" } : attributes },
-    });
-  }, [editor, invalid, options]);
+    // Set on the element itself: replacing editorProps would drop attributes that plugins add to the editable.
+    const apply = () => {
+      let dom: HTMLElement;
+      try {
+        dom = editor.view.dom;
+      } catch {
+        // TipTap throws until the view is mounted; the "mount" listener below applies it then.
+        return;
+      }
+      if (invalid) dom.setAttribute("aria-invalid", "true");
+      else dom.removeAttribute("aria-invalid");
+    };
+    apply();
+    editor.on("mount", apply);
+    return () => {
+      editor.off("mount", apply);
+    };
+  }, [editor, invalid]);
   useImperativeHandle(
     ref,
     () => ({

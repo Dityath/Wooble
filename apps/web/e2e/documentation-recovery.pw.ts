@@ -20,9 +20,7 @@ test.beforeAll(async ({ request }) => {
   owner = await registerUser(request, "recovery-owner");
 });
 
-test.beforeEach(async ({ request, context, page }) => {
-  // Time still flows; the clock is installed only so a journey can move it forward (see `ageAccessCache`).
-  await page.clock.install();
+test.beforeEach(async ({ request, context }) => {
   seeded = await seedCanvas(request, owner.cookieValue);
   await signIn(context, owner.cookieValue);
 });
@@ -96,15 +94,7 @@ async function openCanvas(page: Page, canvasId = seeded.canvasId) {
   await expect(page.locator(".canvas-toolbox")).toBeVisible();
 }
 
-/**
- * Moves the page's clock past the query cache's 20 s `staleTime`, so that opening an object refetches the canvas access
- * the way it does for someone who has had the canvas open for a while. See the fixme journey below: without this, a
- * person who opens documentation within 20 s of loading the page gets no draft at all.
- */
-const ageAccessCache = (page: Page) => page.clock.fastForward(21_000);
-
-async function openTargetDocumentation(page: Page, target: Target, { ageCache = true } = {}) {
-  if (ageCache) await ageAccessCache(page);
+async function openTargetDocumentation(page: Page, target: Target) {
   if (target.kind === "entity") {
     await node(page, seeded.alphaId).click();
   } else {
@@ -184,15 +174,11 @@ for (const target of [entityTarget, connectionTarget]) {
   });
 }
 
-// BUG: drafts are enabled only for a canvas-access result "fetched after mount", but the app's query cache has a 20 s
-// staleTime and the page shell has already fetched that access on load. Opening documentation within 20 s of loading the
-// page therefore reuses the cached result, `isFetchedAfterMount` never turns true, and the text is neither kept as a
-// draft nor offered again. Confirmed by waiting 21 s (real time) before opening: the draft is then written and restored.
-test.fixme("text typed within seconds of loading the page is kept as a draft when the save fails", async ({ page }) => {
+test("text typed within seconds of loading the page is kept as a draft when the save fails", async ({ page }) => {
   const browser = watchBrowser(page, [abortedSave]);
   watchBeforeUnload(page);
   await openCanvas(page);
-  await openTargetDocumentation(page, entityTarget, { ageCache: false });
+  await openTargetDocumentation(page, entityTarget);
   await failSaves(page);
   await typeDocumentation(page, "Typed right after load");
   await expect(saveState(page)).toHaveText("Save failed");
@@ -332,9 +318,7 @@ test("closing the details dialog with unsaved documentation asks first, from eve
   expect(browser.problems).toEqual([]);
 });
 
-// BUG: after "Close anyway" the keyboard focus lands on <body>, not on the control that opened the details. Evidence: the
-// opener is still in the page (one `.inspector-panel` "Documentation" button) but document.activeElement is BODY.
-test.fixme("Close anyway returns focus to the control that opened the details", async ({ page }) => {
+test("Close anyway returns focus to the control that opened the details", async ({ page }) => {
   const browser = watchBrowser(page, [abortedSave]);
   await openCanvas(page);
   await openTargetDocumentation(page, entityTarget);
@@ -526,10 +510,7 @@ test("a failed editor chunk shows readable Markdown with Reload, and Reload brin
   expect(browser.problems).toEqual([]);
 });
 
-// BUG: the editor never gets aria-invalid while over the limit. Evidence: with the notice showing "Remove 5 characters to
-// save." the contenteditable has no aria-invalid, before and after further typing. The rich editor's setOptions call
-// (rich-documentation-editor `invalid` -> documentation-editor.tsx) does not reach the DOM attribute.
-test.fixme("documentation over the limit marks the editor aria-invalid, and clears it once under the limit", async ({
+test("documentation over the limit marks the editor aria-invalid, and clears it once under the limit", async ({
   page,
 }) => {
   await openCanvas(page);
