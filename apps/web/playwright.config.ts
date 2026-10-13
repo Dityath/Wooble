@@ -15,6 +15,9 @@ export default defineConfig({
   // its *.spec.* discovery would otherwise run Playwright suites as bun tests.
   testDir: "./e2e",
   testMatch: "*.pw.ts",
+  // The self-host journey needs an HTTPS origin and Caddy-served assets; it runs
+  // only through playwright.selfhost.config.ts (test:selfhost-browser).
+  testIgnore: "selfhost-install.pw.ts",
   fullyParallel: false,
   workers: 1,
   timeout: 30_000,
