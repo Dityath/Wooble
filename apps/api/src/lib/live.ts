@@ -25,6 +25,8 @@ type Peer = {
   queued: unknown[];
   recheckTimer: ReturnType<typeof setInterval> | null;
   revokeTimer: ReturnType<typeof setTimeout> | null;
+  /** Set once a close was started by the server or the socket closed; nothing is closed or armed twice. */
+  closing: boolean;
   closed: Promise<void>;
   markClosed: () => void;
 };
@@ -34,11 +36,6 @@ const maxQueuedMessages = 16;
 const uuidParam = z.string().uuid();
 function send(peer: Peer, message: object) {
   if (peer.socket.readyState === 1) peer.socket.send(JSON.stringify(message));
-}
-function revoke(peer: Peer, reason = "Canvas access changed") {
-  if (peer.revokeTimer) return;
-  peer.socket.close(1008, reason);
-  peer.revokeTimer = setTimeout(() => peer.socket.terminate(), 1000);
 }
 
 function ignoreOversizedMessages(socket: ElysiaWS) {
@@ -81,7 +78,7 @@ async function canReadCanvas(peer: Peer, canvasId: string) {
   return !!shared;
 }
 
-export function liveRoutes(app: Api, recheckMs = 30_000) {
+export function liveRoutes(app: Api, recheckMs = 30_000, { terminateAfterMs = 1000 } = {}) {
   const rooms = new Map<string, Set<Peer>>();
   // Every open socket, including those still waiting for their access check.
   const connected = new Set<Peer>();
@@ -89,6 +86,7 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
     const activePeers = [...connected];
     for (const peer of activePeers) {
       if (peer.recheckTimer) clearInterval(peer.recheckTimer);
+      peer.closing = true;
       if (peer.revokeTimer) clearTimeout(peer.revokeTimer);
       try {
         if (peer.socket.readyState === 1) peer.socket.close(1001, "Server shutting down");
@@ -131,15 +129,24 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
     broadcast(peer.canvasId, { type: "left", id: peer.id });
     if (room && !room.size) rooms.delete(peer.canvasId);
   }
-  /** Access that cannot be established is no access: close the peer, and stop it first. */
-  function unavailable(peer: Peer) {
-    // Detach before the close handshake starts, otherwise frames still travel during the close window.
+  /**
+   * Stops a peer first, then closes its socket: otherwise frames keep travelling during the close
+   * handshake. An unresponsive client must not keep a detached socket around, so the socket is
+   * terminated after a delay. Closing a peer that is already closing or closed does nothing.
+   */
+  function closePeer(peer: Peer, code: number, reason: string) {
     detach(peer);
-    if (peer.revokeTimer) return;
-    peer.socket.close(1011, "Access check unavailable");
-    // An unresponsive client must not keep a detached socket around.
-    peer.revokeTimer = setTimeout(() => peer.socket.terminate(), 1000);
+    if (peer.closing) return;
+    peer.closing = true;
+    if (peer.socket.readyState !== 1) return;
+    peer.socket.close(code, reason);
+    // Bun runs the close handler inside close(); a socket that is already closed needs no fallback.
+    if ((peer.socket.readyState as number) === 3) return;
+    peer.revokeTimer = setTimeout(() => peer.socket.terminate(), terminateAfterMs);
   }
+  const revoke = (peer: Peer, reason = "Canvas access changed") => closePeer(peer, 1008, reason);
+  /** Access that cannot be established is no access: close the peer, and stop it first. */
+  const unavailable = (peer: Peer) => closePeer(peer, 1011, "Access check unavailable");
   async function revalidatePeers(affected: (peer: Peer) => boolean) {
     // Checked in parallel, and one failed check does not stop the rest. A peer whose access cannot be
     // read fails closed: it is detached and closed rather than left waiting for a later check.
@@ -159,7 +166,15 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
   const revalidateLivePeers = (userId: string) => revalidatePeers((peer) => peer.actor?.id === userId);
   async function revalidateWorkspacePeers(workspaceId: string) {
     if (!connected.size) return;
-    const rows = await db.select({ id: canvases.id }).from(canvases).where(eq(canvases.workspaceId, workspaceId));
+    let rows: Array<{ id: string }>;
+    try {
+      rows = await db.select({ id: canvases.id }).from(canvases).where(eq(canvases.workspaceId, workspaceId));
+    } catch (error) {
+      // Which canvases are affected is unknown, so recheck every peer; each one fails closed on its own.
+      console.error("Could not look up the workspace's canvases", error);
+      await revalidatePeers(() => true);
+      return;
+    }
     const canvasIds = new Set(rows.map((row) => row.id));
     await revalidatePeers((peer) => canvasIds.has(peer.canvasId));
   }
@@ -174,7 +189,7 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
       return;
     }
     // The socket may have closed, or been revoked, while the check ran.
-    if (!connected.has(peer) || peer.socket.readyState !== 1) return;
+    if (peer.closing || !connected.has(peer) || peer.socket.readyState !== 1) return;
     if (!allowed) {
       revoke(peer, "Canvas access denied");
       return;
@@ -299,6 +314,7 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
         queued: [],
         recheckTimer: null,
         revokeTimer: null,
+        closing: false,
         closed,
         markClosed,
       };
@@ -310,7 +326,7 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
     },
     message(ws, message) {
       const peer = peers.get(ws.raw);
-      if (!peer) return;
+      if (!peer || peer.closing) return;
       if (peer.joined) receive(peer, message);
       else if (peer.queued.length < maxQueuedMessages) peer.queued.push(message);
     },
@@ -318,6 +334,7 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
       const peer = peers.get(ws.raw);
       if (!peer) return;
       peers.delete(ws.raw);
+      peer.closing = true;
       detach(peer);
       if (peer.revokeTimer) clearTimeout(peer.revokeTimer);
       peer.markClosed();

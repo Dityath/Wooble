@@ -1,11 +1,12 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { sql } from "drizzle-orm";
 import { Elysia } from "elysia";
-import { db, sessions } from "@wooble/db";
+import { canvases, db, sessions } from "@wooble/db";
 import type { Actor } from "../src/lib/auth";
 import { liveRoutes, stopLiveServer } from "../src/lib/live";
 import { resetLoginAttempts } from "../src/modules/auth/routes";
 import { apiClient, password } from "./support/client";
+import { openRawWebSocket, type RawWebSocket } from "./support/raw-websocket";
 
 const webOrigin = "http://localhost:5173";
 // A recheck interval longer than any test, so the periodic recheck never closes a socket here.
@@ -29,11 +30,32 @@ const periodic = new Elysia({ serve: { reusePort: false } })
   });
 liveRoutes(periodic, 100);
 
-const origins = { guarded: "", unguarded: "", periodic: "" };
+// Unguarded apps for sockets that never answer a close frame. The terminate delay is short but long
+// enough to make assertions inside the close window. The stub PATCH route runs the same
+// after-response recheck and `graph:changed` broadcast as the real canvas route, without the guard.
+const terminateAfterMs = 1000;
+function rawApp(recheckMs: number) {
+  const app = new Elysia({ serve: { reusePort: false } })
+    .decorate("actor", null as Actor | null)
+    .onRequest((context) => {
+      context.actor = actors.get(context.request.headers.get("cookie") ?? "") ?? null;
+    });
+  liveRoutes(app, recheckMs, { terminateAfterMs });
+  app.patch("/api/canvases/:canvasId", () => ({ ok: true }));
+  return app;
+}
+const rawLive = rawApp(60_000);
+const rawPeriodic = rawApp(100);
+
+const origins = { guarded: "", unguarded: "", periodic: "", rawLive: "", rawPeriodic: "" };
 beforeAll(async () => {
   await api.app.listen({ hostname: "127.0.0.1", port: 0 });
   await unguarded.listen({ hostname: "127.0.0.1", port: 0 });
   await periodic.listen({ hostname: "127.0.0.1", port: 0 });
+  await rawLive.listen({ hostname: "127.0.0.1", port: 0 });
+  await rawPeriodic.listen({ hostname: "127.0.0.1", port: 0 });
+  origins.rawLive = rawLive.server?.url.origin ?? "";
+  origins.rawPeriodic = rawPeriodic.server?.url.origin ?? "";
   origins.periodic = periodic.server?.url.origin ?? "";
   origins.guarded = api.app.server?.url.origin ?? "";
   origins.unguarded = unguarded.server?.url.origin ?? "";
@@ -42,6 +64,8 @@ afterAll(async () => {
   await stopLiveServer(api.app, 100);
   await stopLiveServer(unguarded, 100);
   await stopLiveServer(periodic, 100);
+  await stopLiveServer(rawLive, 100);
+  await stopLiveServer(rawPeriodic, 100);
 });
 beforeEach(() => resetLoginAttempts());
 
@@ -56,8 +80,10 @@ type Live = {
 };
 
 const sockets: Live[] = [];
+const rawSockets: RawWebSocket[] = [];
 afterEach(() => {
   for (const live of sockets.splice(0)) live.socket.close();
+  for (const raw of rawSockets.splice(0)) raw.destroy();
 });
 
 function openLive(server: keyof typeof origins, canvasId: string, session?: string, origin = webOrigin): Live {
@@ -559,6 +585,209 @@ describe("live canvas periodic recheck failures", () => {
       expect(failed.messages).toEqual(afterClose);
       expect(survivor.messages.filter((message) => message.type === "left")).toHaveLength(1);
       expect(survivor.messages.filter((message) => message.id === failedPeerId && message.type !== "left")).toEqual([]);
+    } finally {
+      select.mockRestore();
+    }
+  });
+});
+
+describe("live canvas close window", () => {
+  const changed = { code: 1008, reason: "Canvas access changed" };
+  const unavailable = { code: 1011, reason: "Access check unavailable" };
+  type Server = "rawLive" | "rawPeriodic";
+
+  /** A signed-in raw peer that never answers a close frame, and a guest in the same room. */
+  async function rawPair(server: Server) {
+    const { owner, statusPage } = await liveFixture();
+    const person = await api.register("Raw Editor");
+    actors.set(person.session, actor(person));
+    const guest = openLive(server, statusPage);
+    await received(guest, "presence");
+    const raw = await openRawWebSocket(`${origins[server].replace(/^http/, "ws")}/api/canvases/${statusPage}/live`, {
+      origin: webOrigin,
+      cookie: person.session,
+    });
+    rawSockets.push(raw);
+    await waitFor(() => raw.messages.some((message) => message.type === "presence"));
+    const joined = await received(guest, "joined");
+    return { owner, person, statusPage, guest, raw, rawId: joined.id as string, server };
+  }
+  async function waitFor(condition: () => boolean, timeoutMs = 3_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (!condition()) {
+      if (Date.now() > deadline) throw new Error("Timed out");
+      await Bun.sleep(10);
+    }
+  }
+  /** Fails the next signed-in session probe once; only the raw peer is signed in, the guest never probes. */
+  function failNextProbe() {
+    const original = db.select.bind(db);
+    let armed = true;
+    return spyOn(db, "select").mockImplementation(((fields?: unknown) => {
+      const probe = fields as { userId?: unknown } | undefined;
+      if (armed && probe && Object.keys(probe).length === 1 && probe.userId === sessions.userId) {
+        armed = false;
+        throw new Error("database unavailable");
+      }
+      return original(fields as never);
+    }) as unknown as typeof db.select);
+  }
+  const patch = (server: Server, canvasId: string) =>
+    fetch(`${origins[server]}/api/canvases/${canvasId}`, { method: "PATCH" });
+
+  /** Everything that must hold while the raw client sits in the server's close window. */
+  async function expectDetachedInCloseWindow(
+    { guest, raw, rawId, statusPage, server }: Awaited<ReturnType<typeof rawPair>>,
+    closeFrame: { code: number; reason: string },
+  ) {
+    // The guest hears `left` at once, with the raw client's TCP connection still open and unanswered.
+    await received(guest, "left", terminateAfterMs / 2);
+    await waitFor(() => raw.closeFrame !== null);
+    expect(raw.closeFrame).toEqual(closeFrame);
+    const before = raw.messages.length;
+
+    // Frames from the room no longer reach the raw client...
+    guest.send({ type: "cursor", x: 7, y: 8 });
+    guest.send({ type: "selection", kind: "node", id: crypto.randomUUID() });
+    guest.send({ type: "activity" });
+    expect((await patch(server, statusPage)).status).toBe(200);
+    // ...its own frames are not relayed...
+    raw.send({ type: "cursor", x: 1, y: 2 });
+    raw.send({ type: "selection", kind: "node", id: crypto.randomUUID() });
+    raw.send({ type: "activity" });
+    // ...and a socket that joins now does not see it.
+    const later = openLive(server, statusPage);
+    const presence = await received(later, "presence");
+    await Bun.sleep(150);
+    expect(raw.afterClose).toEqual([]);
+    expect(raw.messages).toHaveLength(before);
+    expect((presence.peers as Array<{ id: string }>).map((peer) => peer.id)).not.toContain(rawId);
+    expect(
+      guest.messages.filter((message) => message.id === rawId && !["joined", "left"].includes(message.type)),
+    ).toEqual([]);
+    // The later socket may see the canvas change, but nothing from the raw peer.
+    expect(types(later).filter((type) => type !== "graph:changed")).toEqual(["presence"]);
+    expect(guest.messages.filter((message) => message.type === "left")).toHaveLength(1);
+  }
+
+  it("detaches a peer whose immediate recheck failed before its close handshake completes", async () => {
+    const pair = await rawPair("rawLive");
+    const select = failNextProbe();
+    try {
+      expect((await patch("rawLive", pair.statusPage)).status).toBe(200);
+      await expectDetachedInCloseWindow(pair, unavailable);
+    } finally {
+      select.mockRestore();
+    }
+  });
+
+  it("detaches a peer whose periodic recheck failed before its close handshake completes", async () => {
+    const pair = await rawPair("rawPeriodic");
+    const select = failNextProbe();
+    try {
+      await waitFor(() => pair.raw.closeFrame !== null);
+      await expectDetachedInCloseWindow(pair, unavailable);
+    } finally {
+      select.mockRestore();
+    }
+  });
+
+  it("detaches a peer revoked by a periodic recheck before its close handshake completes", async () => {
+    const pair = await rawPair("rawPeriodic");
+    expect((await api.request("POST", "/api/auth/logout", pair.person.session)).status).toBe(200);
+    await expectDetachedInCloseWindow(pair, changed);
+  });
+
+  it("detaches a revoked peer before its close handshake completes", async () => {
+    const pair = await rawPair("rawLive");
+    expect((await api.request("POST", "/api/auth/logout", pair.person.session)).status).toBe(200);
+    expect((await patch("rawLive", pair.statusPage)).status).toBe(200);
+    await expectDetachedInCloseWindow(pair, changed);
+  });
+
+  it("does not close again, or arm a terminate timer, for a peer that closed while its recheck ran", async () => {
+    const { statusPage } = await liveFixture();
+    const person = await api.register("Raw Editor");
+    actors.set(person.session, actor(person));
+    const live = openLive("rawLive", statusPage, person.session);
+    await received(live, "presence");
+    expect((await api.request("POST", "/api/auth/logout", person.session)).status).toBe(200);
+
+    // Terminate timers armed by live.ts, tracked by their delay, and still pending.
+    const pending = new Set<unknown>();
+    const realSet = globalThis.setTimeout;
+    const realClear = globalThis.clearTimeout;
+    const set = spyOn(globalThis, "setTimeout").mockImplementation(((handler: () => void, ms?: number) => {
+      const timer = realSet(handler, ms);
+      if (ms === terminateAfterMs) pending.add(timer);
+      return timer;
+    }) as unknown as typeof setTimeout);
+    const clear = spyOn(globalThis, "clearTimeout").mockImplementation(((timer: unknown) => {
+      pending.delete(timer);
+      return realClear(timer as never);
+    }) as unknown as typeof clearTimeout);
+    try {
+      await db.transaction(async (tx) => {
+        // The recheck that follows the canvas change reads the session, and waits for this lock.
+        await tx.execute(sql`lock table sessions in access exclusive mode`);
+        expect((await patch("rawLive", statusPage)).status).toBe(200);
+        await Bun.sleep(50);
+        live.socket.close();
+        await live.closed;
+        await Bun.sleep(50);
+      });
+      // The recheck now finds no access for a peer that is already gone.
+      await Bun.sleep(200);
+      expect([...pending]).toEqual([]);
+    } finally {
+      clear.mockRestore();
+      set.mockRestore();
+    }
+  });
+
+  it("closes the peers of a workspace when the canvas lookup for a member change fails", async () => {
+    const { owner, payments } = await liveFixture();
+    const members = `/api/workspaces/${owner.workspaceId}/members`;
+    const manager = await api.register("Live Manager");
+    expect(
+      (await api.request("POST", members, owner.session, { email: manager.user.email, role: "manager" })).status,
+    ).toBe(201);
+    const managerLive = openLive("guarded", payments, manager.session);
+    await received(managerLive, "presence");
+    const ownerLive = openLive("guarded", payments, owner.session);
+    await received(ownerLive, "presence");
+    await received(managerLive, "joined");
+
+    // The only query that selects a bare canvases.id for a signed-in request here is the lookup.
+    const original = db.select.bind(db);
+    let armed = true;
+    const select = spyOn(db, "select").mockImplementation(((fields?: unknown) => {
+      const probe = fields as { id?: unknown } | undefined;
+      if (armed && probe && Object.keys(probe).length === 1 && probe.id === canvases.id) {
+        armed = false;
+        throw new Error("database unavailable");
+      }
+      return original(fields as never);
+    }) as unknown as typeof db.select);
+    try {
+      const demotion = await api.request("PATCH", `${members}/${manager.user.id}`, owner.session, { role: "member" });
+      expect(demotion.status).toBe(200);
+      // The recheck runs after the response resolves.
+      await waitFor(() => !armed);
+
+      const closed = await closedWithin(managerLive);
+      expect(closed?.code === 1008 || closed?.code === 1011).toBe(true);
+      expect(types(managerLive)).toEqual(["presence", "joined"].slice(0, types(managerLive).length));
+      const afterClose = [...managerLive.messages];
+      // The owner was rechecked too, stays connected, and keeps being served.
+      expect(await closedWithin(ownerLive, 200)).toBeNull();
+      expect(await received(ownerLive, "left")).toMatchObject({ type: "left" });
+      expect(await upgradeStatus(payments, owner.session)).toBe(400);
+      expect((await api.request("PATCH", `/api/canvases/${payments}`, owner.session, { name: "Again" })).status).toBe(
+        200,
+      );
+      expect(await received(ownerLive, "graph:changed")).toMatchObject({ type: "graph:changed" });
+      expect(managerLive.messages).toEqual(afterClose);
     } finally {
       select.mockRestore();
     }
