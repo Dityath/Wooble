@@ -1,4 +1,4 @@
-import { index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { bigint, index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { canvases } from "./canvases";
 import { users } from "./access";
 
@@ -32,6 +32,11 @@ export const canvasEvents = pgTable(
     metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
     undoneAt: timestamp("undone_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    /** Monotonic commit-order key. `created_at` is transaction start time and the clock can step back, so order by this. */
+    seq: bigint("seq", { mode: "number" }).notNull().unique().generatedByDefaultAsIdentity(),
   },
-  (table) => [index("canvas_events_canvas_id_created_at_idx").on(table.canvasId, table.createdAt)],
+  (table) => [
+    index("canvas_events_canvas_id_created_at_idx").on(table.canvasId, table.createdAt),
+    index("canvas_events_canvas_id_seq_idx").on(table.canvasId, table.seq),
+  ],
 );

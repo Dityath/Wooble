@@ -106,6 +106,75 @@ describe("database upgrades", () => {
   });
 });
 
+describe("canvas event sequence backfill", () => {
+  it("orders seq by (created_at, id) and gives later inserts a higher seq", async () => {
+    const scratch = await scratchDatabase("eventseq");
+    try {
+      await migrateDatabase(scratch.url, v010);
+      const database = drizzle(scratch.url);
+      try {
+        const event = (n: number) => `00000000-0000-4000-8000-0000000001${String(n).padStart(2, "0")}`;
+        await database.execute(
+          sql.raw(`
+          INSERT INTO users (id, email, name, password_hash) VALUES ('${ids.user}', 'seq-owner@example.test', 'Seq Owner', 'scrypt$fictional');
+          INSERT INTO workspaces (id, name) VALUES ('${ids.workspace}', 'Seq workspace');
+          INSERT INTO canvases (id, workspace_id, name) VALUES ('${ids.home}', '${ids.workspace}', 'Home');
+          -- Physical insert order is newest first; the two oldest share a timestamp, so id breaks the tie.
+          INSERT INTO canvas_events (id, canvas_id, actor_name, action, target_type, created_at) VALUES
+            ('${event(1)}', '${ids.home}', 'Seq Owner', 'canvas.updated', 'canvas', '2026-03-04T00:00:00Z'),
+            ('${event(2)}', '${ids.home}', 'Seq Owner', 'canvas.updated', 'canvas', '2026-03-03T00:00:00Z'),
+            ('${event(4)}', '${ids.home}', 'Seq Owner', 'canvas.updated', 'canvas', '2026-03-01T00:00:00Z'),
+            ('${event(3)}', '${ids.home}', 'Seq Owner', 'canvas.updated', 'canvas', '2026-03-01T00:00:00Z');
+        `),
+        );
+
+        await migrateDatabase(scratch.url);
+
+        const bySeq = await database.execute(sql.raw("SELECT id, seq FROM canvas_events ORDER BY seq ASC"));
+        const byTime = await database.execute(sql.raw("SELECT id FROM canvas_events ORDER BY created_at ASC, id ASC"));
+        expect(bySeq.rows.map((row) => row.id)).toEqual([event(3), event(4), event(2), event(1)]);
+        expect(bySeq.rows.map((row) => row.id)).toEqual(byTime.rows.map((row) => row.id));
+        expect(bySeq.rows.map((row) => Number(row.seq))).toEqual([1, 2, 3, 4]);
+
+        await database.execute(
+          sql.raw(`INSERT INTO canvas_events (id, canvas_id, actor_name, action, target_type, created_at)
+            VALUES ('${event(5)}', '${ids.home}', 'Seq Owner', 'canvas.updated', 'canvas', '2020-01-01T00:00:00Z')`),
+        );
+        const added = await database.execute(sql.raw(`SELECT seq FROM canvas_events WHERE id = '${event(5)}'`));
+        expect(Number(added.rows[0]?.seq)).toBeGreaterThan(4);
+      } finally {
+        await database.$client.end();
+      }
+    } finally {
+      await scratch.drop();
+    }
+  });
+
+  it("migrates an empty table and numbers the first event 1", async () => {
+    const scratch = await scratchDatabase("eventseq0");
+    try {
+      await migrateDatabase(scratch.url);
+      const database = drizzle(scratch.url);
+      try {
+        await database.execute(
+          sql.raw(`
+          INSERT INTO users (id, email, name, password_hash) VALUES ('${ids.user}', 'seq-empty@example.test', 'Seq Empty', 'scrypt$fictional');
+          INSERT INTO workspaces (id, name) VALUES ('${ids.workspace}', 'Empty workspace');
+          INSERT INTO canvases (id, workspace_id, name) VALUES ('${ids.home}', '${ids.workspace}', 'Home');
+          INSERT INTO canvas_events (canvas_id, actor_name, action, target_type) VALUES ('${ids.home}', 'Seq Empty', 'canvas.updated', 'canvas');
+        `),
+        );
+        const rows = await database.execute(sql.raw("SELECT seq FROM canvas_events"));
+        expect(rows.rows.map((row) => Number(row.seq))).toEqual([1]);
+      } finally {
+        await database.$client.end();
+      }
+    } finally {
+      await scratch.drop();
+    }
+  });
+});
+
 /** Connection string for another database on the same instance as DATABASE_URL. */
 function urlFor(name: string): string {
   const url = new URL(process.env.DATABASE_URL ?? "");
