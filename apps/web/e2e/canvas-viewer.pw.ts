@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 import {
   addCanvasMember,
   authHeaders,
@@ -30,6 +30,8 @@ const richDocumentation = [
   "| 2 | 500 ms |",
 ].join("\n");
 
+const privateDocumentation = "PRIVATE-CANVAS-B internal failover runbook";
+
 let owner: TestUser;
 let viewer: TestUser;
 let seeded: SeededCanvas;
@@ -49,6 +51,14 @@ test.beforeAll(async ({ request }) => {
     data: { metadata: { documentation: richDocumentation } },
   });
   if (!documented.ok()) throw new Error(`connection documentation failed: ${await documented.text()}`);
+  // The private canvas carries documentation of its own, so a leak into a guest response is recognisable by its text.
+  for (const path of [`/api/connections/${privateCanvas.connectionId}`, `/api/entities/${privateCanvas.alphaId}`]) {
+    const secret = await request.patch(path, {
+      headers: authHeaders(owner.cookieValue),
+      data: { metadata: { documentation: privateDocumentation } },
+    });
+    if (!secret.ok()) throw new Error(`private documentation failed: ${await secret.text()}`);
+  }
 });
 
 function openCanvas(page: Page) {
@@ -260,4 +270,73 @@ test("a signed-out guest sees only the shared canvas graph", async ({ page, cont
   await expect(page.locator(`.react-flow__edge[data-id="${privateCanvas.connectionId}"]`)).toHaveCount(0);
   expect(browser.writes).toEqual([]);
   expect(browser.problems).toEqual([]);
+});
+
+/** Reads one object's documentation as the owner, who is allowed to see it. */
+async function ownerDocumentation(request: APIRequestContext, path: string) {
+  const response = await request.get(path, { headers: authHeaders(owner.cookieValue) });
+  expect(response.ok()).toBe(true);
+  const { metadata } = (await response.json()) as { metadata: { documentation?: string | null } };
+  return metadata.documentation ?? null;
+}
+
+const attemptedEdit = "Rewritten by someone who must not be able to write";
+
+test("the server refuses documentation writes from a viewer and from a signed-out guest", async ({
+  page,
+  request,
+  context,
+}) => {
+  const paths = [`/api/connections/${seeded.connectionId}`, `/api/entities/${seeded.alphaId}`];
+  const before = await Promise.all(paths.map((path) => ownerDocumentation(request, path)));
+  expect(before[0]).toBe(richDocumentation);
+
+  // Signed-in viewer: authenticated, but without write access.
+  await signIn(context, viewer.cookieValue);
+  for (const path of paths) {
+    const refused = await page.request.patch(path, { data: { metadata: { documentation: attemptedEdit } } });
+    expect(refused.status(), `viewer PATCH ${path}`).toBe(403);
+  }
+
+  // Signed-out link guest: the share link grants reading only, and the server asks for a sign-in.
+  await context.clearCookies();
+  expect(await context.cookies()).toEqual([]);
+  for (const path of paths) {
+    const refused = await page.request.patch(path, { data: { metadata: { documentation: attemptedEdit } } });
+    expect(refused.status(), `guest PATCH ${path}`).toBe(401);
+  }
+
+  // Nothing changed on the server.
+  const after = await Promise.all(paths.map((path) => ownerDocumentation(request, path)));
+  expect(after).toEqual(before);
+  expect(JSON.stringify(after)).not.toContain(attemptedEdit);
+});
+
+test("a link guest of one canvas cannot read another canvas's connections, entities or graph", async ({
+  page,
+  context,
+}) => {
+  expect(await context.cookies()).toEqual([]);
+  const refusals = [401, 403, 404];
+  for (const path of [
+    `/api/connections/${privateCanvas.connectionId}`,
+    `/api/entities/${privateCanvas.alphaId}`,
+    `/api/canvases/${privateCanvas.canvasId}/graph`,
+    `/api/canvases/${privateCanvas.canvasId}`,
+  ]) {
+    const response = await page.request.get(path);
+    expect(refusals, `guest GET ${path} answered ${response.status()}`).toContain(response.status());
+    expect(await response.text()).not.toContain(privateDocumentation);
+  }
+
+  // The same holds for a signed-in viewer of canvas A, who has no role on canvas B.
+  await signIn(context, viewer.cookieValue);
+  for (const path of [
+    `/api/connections/${privateCanvas.connectionId}`,
+    `/api/canvases/${privateCanvas.canvasId}/graph`,
+  ]) {
+    const response = await page.request.get(path);
+    expect(refusals, `viewer GET ${path} answered ${response.status()}`).toContain(response.status());
+    expect(await response.text()).not.toContain(privateDocumentation);
+  }
 });

@@ -316,3 +316,51 @@ test("a small edit to a long table stays within the Markdown save limit", async 
   expect(saved?.length).toBe(table.length + 1);
   await expect(detailsDialog(page).getByRole("alert")).toHaveCount(0);
 });
+
+test("slash menu exposes combobox state, closes with Escape keeping the slash, and inserts mid-paragraph without losing text", async ({
+  page,
+}) => {
+  await openCanvas(page);
+  await openNodeDocumentation(page, seeded.alphaId);
+  const editor = documentationEditor(page);
+  await editor.click();
+  await expect(editor).toHaveAttribute("aria-expanded", "false");
+
+  await page.keyboard.type("/");
+  await expect(editor).toHaveAttribute("aria-expanded", "true");
+  const listboxId = (await editor.getAttribute("aria-controls")) ?? "";
+  expect(listboxId).not.toBe("");
+  const listbox = page.locator(`[id="${listboxId}"]`);
+  await expect(listbox).toHaveAttribute("role", "listbox");
+  await expect(listbox).toBeVisible();
+  const active = async () => (await editor.getAttribute("aria-activedescendant")) ?? "";
+  const firstId = await active();
+  expect(firstId).not.toBe("");
+  await expect(page.locator(`[id="${firstId}"]`)).toHaveAttribute("role", "option");
+  await expect(page.locator(`[id="${firstId}"]`)).toHaveAttribute("aria-selected", "true");
+
+  await page.keyboard.press("ArrowDown");
+  await expect.poll(active).not.toBe(firstId);
+  await expect(page.locator(`[id="${await active()}"]`)).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(`[id="${firstId}"]`)).toHaveAttribute("aria-selected", "false");
+
+  await page.keyboard.press("Escape");
+  await expect(editor).toHaveAttribute("aria-expanded", "false");
+  await expect(editor).not.toHaveAttribute("aria-activedescendant", /.+/);
+  await expect(listbox).toHaveCount(0);
+  await expect(editor).toBeFocused();
+  await expect(editor).toHaveText("/");
+
+  // In the middle of a paragraph the command splits it, and both halves keep their words.
+  await page.keyboard.press("Backspace");
+  await page.keyboard.type("Before after");
+  await page.keyboard.press("Home");
+  for (let step = 0; step < "Before ".length; step += 1) await page.keyboard.press("ArrowRight");
+  await page.keyboard.type("/h1");
+  await expect(editor).toHaveAttribute("aria-expanded", "true");
+  await page.keyboard.press("Enter");
+  await expect(editor).toHaveAttribute("aria-expanded", "false");
+  await expect(editor.getByRole("heading", { level: 1 })).toHaveCount(1);
+  await expect(editor).toContainText("Before");
+  await expect(editor).toContainText("after");
+});

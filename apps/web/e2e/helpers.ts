@@ -1,4 +1,4 @@
-import type { APIRequestContext, BrowserContext } from "@playwright/test";
+import type { APIRequestContext, BrowserContext, Page } from "@playwright/test";
 
 export const SESSION_COOKIE = "wooble_session";
 export const TEST_PASSWORD = "WoobleBrowserPassword-2026";
@@ -101,6 +101,15 @@ export async function shareCanvasByLink(request: APIRequestContext, cookieValue:
     data: { shareMode: "link" },
   });
   if (!response.ok()) throw new Error(`link share failed: ${await response.text()}`);
+}
+
+/** Signs in through the real login form, as a person returning to the app does. Resolves once the app has loaded. */
+export async function signInWithForm(page: Page, email: string, password: string) {
+  await page.goto("/login");
+  await page.locator("#auth-email").fill(email);
+  await page.locator("#auth-password").fill(password);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.waitForURL((url) => !url.pathname.startsWith("/login"));
 }
 
 /** The signed-in person's user id, as the server reports it for this session. */

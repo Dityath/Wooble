@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from "@playwright/test";
+import { expect, test, type APIRequestContext, type BrowserContext, type Page, type Route } from "@playwright/test";
 import {
   addCanvasMember,
   authHeaders,
@@ -7,6 +7,8 @@ import {
   seedCanvas,
   setCanvasMemberRole,
   signIn,
+  signInWithForm,
+  TEST_PASSWORD,
   type SeededCanvas,
   type TestUser,
 } from "./helpers";
@@ -18,7 +20,9 @@ test.beforeAll(async ({ request }) => {
   owner = await registerUser(request, "recovery-owner");
 });
 
-test.beforeEach(async ({ request, context }) => {
+test.beforeEach(async ({ request, context, page }) => {
+  // Time still flows; the clock is installed only so a journey can move it forward (see `ageAccessCache`).
+  await page.clock.install();
   seeded = await seedCanvas(request, owner.cookieValue);
   await signIn(context, owner.cookieValue);
 });
@@ -27,9 +31,14 @@ const node = (page: Page, entityId: string) => page.locator(`.react-flow__node[d
 const edgeLabel = (page: Page) => page.locator(".architecture-edge-label").filter({ hasText: "REST" });
 const detailsDialog = (page: Page) => page.getByRole("dialog", { name: "Canvas details" });
 const documentationEditor = (page: Page) => detailsDialog(page).getByRole("textbox", { name: "Documentation" });
-const saveState = (page: Page) => detailsDialog(page).locator(".documentation-card").getByRole("status");
-const recoveryPrompt = (page: Page) => detailsDialog(page).getByRole("region", { name: "Unsaved documentation found" });
+// The visual label shows every state; the hidden polite live region beside it only ever says "Saved".
+const saveState = (page: Page) => detailsDialog(page).locator(".documentation-save-state");
+const liveRegion = (page: Page) => detailsDialog(page).locator(".documentation-live");
+const recoveryPrompt = (page: Page) =>
+  detailsDialog(page).getByRole("status").filter({ hasText: "Unsaved documentation from" });
+const failureNotice = (page: Page) => detailsDialog(page).getByRole("alert");
 const closeConfirmation = (page: Page) => page.getByRole("alertdialog", { name: "Close with unsaved documentation?" });
+const reloadButton = (page: Page) => detailsDialog(page).getByRole("button", { name: "Reload", exact: true });
 const retryButton = (page: Page) => detailsDialog(page).getByRole("button", { name: "Retry", exact: true });
 
 type Target = { kind: "entity" | "connection"; path: () => string };
@@ -87,7 +96,15 @@ async function openCanvas(page: Page, canvasId = seeded.canvasId) {
   await expect(page.locator(".canvas-toolbox")).toBeVisible();
 }
 
-async function openTargetDocumentation(page: Page, target: Target) {
+/**
+ * Moves the page's clock past the query cache's 20 s `staleTime`, so that opening an object refetches the canvas access
+ * the way it does for someone who has had the canvas open for a while. See the fixme journey below: without this, a
+ * person who opens documentation within 20 s of loading the page gets no draft at all.
+ */
+const ageAccessCache = (page: Page) => page.clock.fastForward(21_000);
+
+async function openTargetDocumentation(page: Page, target: Target, { ageCache = true } = {}) {
+  if (ageCache) await ageAccessCache(page);
   if (target.kind === "entity") {
     await node(page, seeded.alphaId).click();
   } else {
@@ -137,6 +154,7 @@ for (const target of [entityTarget, connectionTarget]) {
 
     await typeDocumentation(page, "Recovered after reload");
     await expect(saveState(page)).toHaveText("Save failed");
+    await expect(liveRegion(page)).toHaveText("");
     await expect(retryButton(page)).toBeVisible();
     expect(await draftKeys(page)).toHaveLength(1);
     expect(await stored(page, target.path())).toBeNull();
@@ -148,17 +166,39 @@ for (const target of [entityTarget, connectionTarget]) {
     await unfail();
     await openTargetDocumentation(page, target);
     await expect(recoveryPrompt(page)).toBeVisible();
-    // Offered, not applied: the editor is still empty and nothing was written.
+    await expect(recoveryPrompt(page)).toContainText("Restore or discard it to keep editing.");
+    // Offered, not applied: the editor is still empty, nothing was written, and it cannot be typed into meanwhile.
     await expect(documentationEditor(page)).toHaveText("");
+    await expect(documentationEditor(page)).toHaveAttribute("contenteditable", "false");
 
     await recoveryPrompt(page).getByRole("button", { name: "Restore" }).click();
+    await expect(recoveryPrompt(page)).toHaveCount(0);
+    await expect(documentationEditor(page)).toHaveAttribute("contenteditable", "true");
+    await expect(documentationEditor(page)).toBeFocused();
     await expect(documentationEditor(page)).toHaveText("Recovered after reload");
     await expect(saveState(page)).toHaveText("Saved");
+    await expect(liveRegion(page)).toHaveText("Saved");
     await expect.poll(() => stored(page, target.path())).toBe("Recovered after reload");
     await expect.poll(() => draftKeys(page)).toEqual([]);
     expect(browser.problems).toEqual([]);
   });
 }
+
+// BUG: drafts are enabled only for a canvas-access result "fetched after mount", but the app's query cache has a 20 s
+// staleTime and the page shell has already fetched that access on load. Opening documentation within 20 s of loading the
+// page therefore reuses the cached result, `isFetchedAfterMount` never turns true, and the text is neither kept as a
+// draft nor offered again. Confirmed by waiting 21 s (real time) before opening: the draft is then written and restored.
+test.fixme("text typed within seconds of loading the page is kept as a draft when the save fails", async ({ page }) => {
+  const browser = watchBrowser(page, [abortedSave]);
+  watchBeforeUnload(page);
+  await openCanvas(page);
+  await openTargetDocumentation(page, entityTarget, { ageCache: false });
+  await failSaves(page);
+  await typeDocumentation(page, "Typed right after load");
+  await expect(saveState(page)).toHaveText("Save failed");
+  expect(await draftKeys(page)).toHaveLength(1);
+  expect(browser.problems).toEqual([]);
+});
 
 test("discarding a recovered draft removes it and leaves the server value alone", async ({ page, request }) => {
   const browser = watchBrowser(page, [abortedSave]);
@@ -183,9 +223,12 @@ test("discarding a recovered draft removes it and leaves the server value alone"
   await openTargetDocumentation(page, entityTarget);
   await expect(recoveryPrompt(page)).toBeVisible();
   await expect(documentationEditor(page)).toHaveText("Server version");
+  await expect(documentationEditor(page)).toHaveAttribute("contenteditable", "false");
 
-  await recoveryPrompt(page).getByRole("button", { name: "Discard" }).click();
+  await recoveryPrompt(page).getByRole("button", { name: "Discard saved copy" }).click();
   await expect(recoveryPrompt(page)).toBeHidden();
+  await expect(documentationEditor(page)).toHaveAttribute("contenteditable", "true");
+  await expect(documentationEditor(page)).toBeFocused();
   expect(await draftKeys(page)).toEqual([]);
   await expect(documentationEditor(page)).toHaveText("Server version");
   expect(await stored(page, entityTarget.path())).toBe("Server version");
@@ -279,16 +322,31 @@ test("closing the details dialog with unsaved documentation asks first, from eve
   await page.keyboard.press("Escape");
   await keepEditing();
 
-  // Confirming closes the dialog; the text stays on the device as a draft.
+  // Confirming closes the dialog; the text stays on the device.
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   await expect(closeConfirmation(page)).toBeVisible();
-  await closeConfirmation(page)
-    .locator(".inspector-delete-actions")
-    .getByRole("button", { name: "Close", exact: true })
-    .click();
+  await closeConfirmation(page).getByRole("button", { name: "Close anyway" }).click();
   await expect(dialog).toBeHidden();
   await expect(closeConfirmation(page)).toHaveCount(0);
   expect(await draftKeys(page)).toHaveLength(1);
+  expect(browser.problems).toEqual([]);
+});
+
+// BUG: after "Close anyway" the keyboard focus lands on <body>, not on the control that opened the details. Evidence: the
+// opener is still in the page (one `.inspector-panel` "Documentation" button) but document.activeElement is BODY.
+test.fixme("Close anyway returns focus to the control that opened the details", async ({ page }) => {
+  const browser = watchBrowser(page, [abortedSave]);
+  await openCanvas(page);
+  await openTargetDocumentation(page, entityTarget);
+  await failSaves(page);
+  await typeDocumentation(page, "Not saved yet");
+  await expect(saveState(page)).toHaveText("Save failed");
+  await detailsDialog(page).getByRole("button", { name: "Close", exact: true }).click();
+  await closeConfirmation(page).getByRole("button", { name: "Close anyway" }).click();
+  await expect(detailsDialog(page)).toBeHidden();
+  await expect(
+    page.locator(".inspector-panel").getByRole("button", { name: "Documentation", exact: true }),
+  ).toBeFocused();
   expect(browser.problems).toEqual([]);
 });
 
@@ -299,6 +357,7 @@ test("closing after the documentation saved needs no confirmation", async ({ pag
   await typeDocumentation(page, "Saved before closing");
   await expect(saveState(page)).toHaveText("Saved");
   await page.keyboard.press("Escape");
+  await expect(documentationEditor(page)).not.toBeFocused();
   await page.keyboard.press("Escape");
   await expect(detailsDialog(page)).toBeHidden();
   await expect(closeConfirmation(page)).toHaveCount(0);
@@ -306,7 +365,7 @@ test("closing after the documentation saved needs no confirmation", async ({ pag
   expect(browser.problems).toEqual([]);
 });
 
-test("a member whose editor access was revoked mid-edit gets a read-only editor and no kept draft", async ({
+test("a member whose editor access was revoked mid-edit keeps the visible text in a read-only editor and no draft", async ({
   page,
   request,
   context,
@@ -327,10 +386,16 @@ test("a member whose editor access was revoked mid-edit gets a read-only editor 
   await setCanvasMemberRole(request, owner.cookieValue, seeded.canvasId, memberId, "viewer");
   await page.keyboard.type(" and an edit after the downgrade");
 
-  const notice = detailsDialog(page).getByRole("alert");
+  const typed = "First edit while an editor and an edit after the downgrade";
+  const notice = failureNotice(page);
   await expect(notice).toContainText("You can no longer edit this documentation");
+  await expect(notice).toBeFocused();
   await expect(retryButton(page)).toHaveCount(0);
-  await expect(documentationEditor(page)).toHaveCount(0);
+  // The text stays visible, but the editor is read-only.
+  await expect(documentationEditor(page)).toBeVisible();
+  await expect(documentationEditor(page)).toHaveText(typed);
+  await expect(documentationEditor(page)).toHaveAttribute("contenteditable", "false");
+  await expect(saveState(page)).toHaveText("Not saved");
   expect(await draftKeys(page)).toEqual([]);
   expect(browser.problems).toEqual([]);
   // The server kept the last write that was allowed.
@@ -377,10 +442,7 @@ test("signing out purges drafts, and the next person on the browser is not offer
 
   // The details dialog is modal; leave it (confirming) to reach the account menu.
   await detailsDialog(page).getByRole("button", { name: "Close", exact: true }).click();
-  await closeConfirmation(page)
-    .locator(".inspector-delete-actions")
-    .getByRole("button", { name: "Close", exact: true })
-    .click();
+  await closeConfirmation(page).getByRole("button", { name: "Close anyway" }).click();
   await expect(detailsDialog(page)).toBeHidden();
   await page.getByRole("button", { name: "Open account menu" }).click();
   await page.getByRole("button", { name: "Sign out" }).click();
@@ -402,7 +464,7 @@ test("signing out purges drafts, and the next person on the browser is not offer
   expect(browser.problems).toEqual([]);
 });
 
-test("a failed editor chunk shows readable Markdown with Retry, and the canvas keeps working", async ({
+test("a failed editor chunk shows readable Markdown with Reload, and Reload brings the editor back", async ({
   page,
   request,
 }) => {
@@ -418,19 +480,20 @@ test("a failed editor chunk shows readable Markdown with Retry, and the canvas k
     return route.abort("failed");
   };
   await page.route(chunk, handler);
-  // The console message of a failed dynamic import and its request failure are the deliberate failures.
+  // The aborted chunk request and React's logged dynamic-import error are the deliberate failures.
   const browser = watchBrowser(page, [
     /^request failed: GET .*rich-documentation-editor/,
-    // React logs the caught load error when the boundary catches it.
     /^console: [\s\S]*Failed to fetch dynamically imported module/,
   ]);
   await openCanvas(page);
   await node(page, seeded.alphaId).click();
   await page.locator(".inspector-panel").getByRole("button", { name: "Documentation", exact: true }).click();
 
-  const fallback = detailsDialog(page).getByRole("alert");
-  await expect(fallback).toContainText("The documentation editor could not load.");
-  await expect(retryButton(page)).toBeVisible();
+  const fallback = failureNotice(page);
+  await expect(fallback).toContainText("The documentation editor could not load. Reload the page to try again.");
+  await expect(fallback).toContainText("The documentation is shown below.");
+  await expect(reloadButton(page)).toBeVisible();
+  await expect(retryButton(page)).toHaveCount(0);
   expect(failedChunks.length).toBeGreaterThan(0);
   await expect(detailsDialog(page).getByRole("heading", { name: "Chunk fallback" })).toBeVisible();
   await expect(detailsDialog(page).locator("strong")).toHaveText("Markdown");
@@ -441,37 +504,51 @@ test("a failed editor chunk shows readable Markdown with Retry, and the canvas k
   await expect(detailsDialog(page)).toBeHidden();
   await node(page, seeded.betaId).click();
   await expect(page.locator(".inspector-panel")).toContainText("Beta Service");
-  expect(browser.problems).toEqual([]);
-});
 
-// BUG: Retry cannot recover in a real browser. Chromium keeps a failed dynamic import in the page's module map, so
-// the second import() of the same URL rejects without a network request until the page is reloaded.
-test.fixme("Retry loads the editor once the chunk is reachable again", async ({ page, request }) => {
-  const patch = await request.patch(entityTarget.path(), {
-    headers: authHeaders(owner.cookieValue),
-    data: { metadata: { documentation: "## Chunk fallback\n\nReadable **Markdown**." } },
-  });
-  expect(patch.ok()).toBe(true);
-  const chunk = /rich-documentation-editor/;
-  const handler = (route: Route) => route.abort("failed");
-  await page.route(chunk, handler);
-  const browser = watchBrowser(page, [
-    /^request failed: GET .*rich-documentation-editor/,
-    /^console: [\s\S]*Failed to fetch dynamically imported module/,
-  ]);
-  await openCanvas(page);
+  // The chunk is reachable again; Reload loads the page afresh, and the editor works.
   await node(page, seeded.alphaId).click();
   await page.locator(".inspector-panel").getByRole("button", { name: "Documentation", exact: true }).click();
-  await expect(detailsDialog(page).getByRole("alert")).toContainText("The documentation editor could not load.");
-
+  await expect(reloadButton(page)).toBeVisible();
   await page.unroute(chunk, handler);
-  await retryButton(page).click();
-  await expect(documentationEditor(page)).toBeVisible();
+  const loaded = page.waitForEvent("load");
+  await reloadButton(page).click();
+  await loaded;
+  await expect(node(page, seeded.betaId)).toBeVisible();
+  await expect(detailsDialog(page)).toHaveCount(0);
+  await openTargetDocumentation(page, entityTarget);
   await expect(documentationEditor(page).getByRole("heading", { name: "Chunk fallback" })).toBeVisible();
+  await expect(documentationEditor(page)).toHaveAttribute("contenteditable", "true");
+  await documentationEditor(page).click();
+  await page.keyboard.press("ControlOrMeta+End");
+  await page.keyboard.type(" Edited after reload.");
+  await expect(saveState(page)).toHaveText("Saved");
+  await expect.poll(() => stored(page, entityTarget.path())).toContain("Edited after reload.");
   expect(browser.problems).toEqual([]);
 });
 
-test("documentation over the limit says how much to remove, offers no Retry, and sends nothing", async ({ page }) => {
+// BUG: the editor never gets aria-invalid while over the limit. Evidence: with the notice showing "Remove 5 characters to
+// save." the contenteditable has no aria-invalid, before and after further typing. The rich editor's setOptions call
+// (rich-documentation-editor `invalid` -> documentation-editor.tsx) does not reach the DOM attribute.
+test.fixme("documentation over the limit marks the editor aria-invalid, and clears it once under the limit", async ({
+  page,
+}) => {
+  await openCanvas(page);
+  await openTargetDocumentation(page, entityTarget);
+  await documentationEditor(page).click();
+  await documentationEditor(page).evaluate((element, pasted) => {
+    const clipboardData = new DataTransfer();
+    clipboardData.setData("text/plain", pasted);
+    element.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
+  }, "x".repeat(20_005));
+  await expect(detailsDialog(page).getByText("Remove 5 characters to save.")).toBeVisible();
+  await expect(documentationEditor(page)).toHaveAttribute("aria-invalid", "true");
+  for (let removed = 0; removed < 5; removed += 1) await page.keyboard.press("Backspace");
+  await expect(documentationEditor(page)).not.toHaveAttribute("aria-invalid", "true");
+});
+
+test("documentation over the limit says how much to remove, keeps the notice out of live regions, and sends nothing", async ({
+  page,
+}) => {
   const browser = watchBrowser(page);
   await openCanvas(page);
   await openTargetDocumentation(page, entityTarget);
@@ -482,9 +559,14 @@ test("documentation over the limit says how much to remove, offers no Retry, and
     element.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
   }, "x".repeat(20_005));
 
-  const notice = detailsDialog(page).getByRole("alert");
-  await expect(notice).toContainText("Remove 5 characters to save.");
+  // The sentence in the live region never changes; the exact excess is outside any live region.
+  const limitNotice = detailsDialog(page).getByRole("status").filter({ hasText: "over the 20,000-character limit" });
+  await expect(limitNotice).toHaveText("Documentation is over the 20,000-character limit.");
+  const excess = detailsDialog(page).getByText("Remove 5 characters to save.");
+  await expect(excess).toBeVisible();
+  await expect(excess.locator("xpath=ancestor-or-self::*[@role='status' or @aria-live]")).toHaveCount(0);
   await expect(retryButton(page)).toHaveCount(0);
+  await expect(failureNotice(page)).toHaveCount(0);
   await expect(saveState(page)).toHaveText("Unsaved changes");
   // The text is not lost: it is kept as a draft, and nothing was sent.
   expect(await draftKeys(page)).toHaveLength(1);
@@ -494,8 +576,133 @@ test("documentation over the limit says how much to remove, offers no Retry, and
 
   // Removing the excess saves.
   for (let removed = 0; removed < 5; removed += 1) await page.keyboard.press("Backspace");
-  await expect(notice).toHaveCount(0);
+  await expect(limitNotice).toHaveCount(0);
   await expect(saveState(page)).toHaveText("Saved");
   await expect.poll(async () => (await stored(page, entityTarget.path()))?.length).toBe(20_000);
+  expect(browser.problems).toEqual([]);
+});
+
+/** Leaves the details dialog the way a person with unsaved text does: asks, then closes anyway. */
+async function closeDetailsAnyway(page: Page) {
+  await detailsDialog(page).getByRole("button", { name: "Close", exact: true }).click();
+  await closeConfirmation(page).getByRole("button", { name: "Close anyway" }).click();
+  await expect(detailsDialog(page)).toBeHidden();
+}
+
+/** Registers a person of their own with a canvas and a failed-save draft on the entity, then closes the dialog. */
+async function personWithFailedDraft(page: Page, request: APIRequestContext, context: BrowserContext, name: string) {
+  const person = await registerUser(request, name);
+  seeded = await seedCanvas(request, person.cookieValue);
+  await context.clearCookies();
+  await signIn(context, person.cookieValue);
+  await openCanvas(page);
+  await openTargetDocumentation(page, entityTarget);
+  await failSaves(page);
+  await typeDocumentation(page, `Draft of ${name}`);
+  await expect(saveState(page)).toHaveText("Save failed");
+  expect(await draftKeys(page)).toHaveLength(1);
+  await closeDetailsAnyway(page);
+  return person;
+}
+
+const sessionProbes = /^HTTP 401 \/api\/(auth\/me|canvases\/[^/]+\/access)$/;
+
+test("changing the password purges drafts, and signing in again is not offered them", async ({
+  page,
+  request,
+  context,
+}) => {
+  const browser = watchBrowser(page, [abortedSave, sessionProbes]);
+  watchBeforeUnload(page);
+  const person = await personWithFailedDraft(page, request, context, "recovery-password");
+
+  await page.goto("/profile");
+  await page.getByRole("button", { name: "Change password" }).click();
+  const newPassword = `${TEST_PASSWORD}-changed`;
+  await page.locator("#profile-current-password").fill(TEST_PASSWORD);
+  await page.locator("#profile-new-password").fill(newPassword);
+  await page.getByRole("button", { name: "Change password" }).last().click();
+  await expect(page).toHaveURL(/\/login/);
+  await expect.poll(() => draftKeys(page)).toEqual([]);
+
+  // The new password works, and the purge (not a different storage key) is why nothing is offered.
+  await signInWithForm(page, person.email, newPassword);
+  expect(await draftKeys(page)).toEqual([]);
+  await openCanvas(page);
+  await openTargetDocumentation(page, entityTarget);
+  await expect(documentationEditor(page)).toHaveText("");
+  await expect(recoveryPrompt(page)).toHaveCount(0);
+  expect(await draftKeys(page)).toEqual([]);
+  expect(browser.problems).toEqual([]);
+});
+
+test("signing out purges drafts, and the same person signing in again is not offered them", async ({
+  page,
+  request,
+  context,
+}) => {
+  const browser = watchBrowser(page, [abortedSave, sessionProbes]);
+  watchBeforeUnload(page);
+  const person = await personWithFailedDraft(page, request, context, "recovery-same");
+
+  await page.getByRole("button", { name: "Open account menu" }).click();
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page).toHaveURL(/\/login/);
+  await expect.poll(() => draftKeys(page)).toEqual([]);
+
+  await signInWithForm(page, person.email, TEST_PASSWORD);
+  expect(await draftKeys(page)).toEqual([]);
+  await openCanvas(page);
+  await openTargetDocumentation(page, entityTarget);
+  await expect(documentationEditor(page)).toHaveText("");
+  await expect(recoveryPrompt(page)).toHaveCount(0);
+  expect(await draftKeys(page)).toEqual([]);
+  expect(browser.problems).toEqual([]);
+});
+
+test("leaving while a save is still in flight asks first, and nothing is offered after it lands", async ({ page }) => {
+  const browser = watchBrowser(page);
+  const prompts: string[] = [];
+  page.on("dialog", (dialog) => {
+    if (dialog.type() !== "beforeunload") return void dialog.accept();
+    prompts.push(dialog.type());
+    // Staying on the page: dismissing the prompt cancels the attempt to leave.
+    void dialog.dismiss();
+  });
+  await openCanvas(page);
+  await openTargetDocumentation(page, entityTarget);
+
+  // Hold the save at the network: it has been sent and has not come back.
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const holdSave = async (route: Route) => {
+    if (route.request().method() !== "PATCH") return route.fallback();
+    await held;
+    return route.fallback();
+  };
+  await page.route(/\/api\/entities\//, holdSave);
+  await typeDocumentation(page, "Saved while the page was open");
+  // Leaving the editor saves at once; the request is now waiting on the held route.
+  await page.keyboard.press("Escape");
+  await expect(saveState(page)).toHaveText("Saving…");
+  await expect.poll(() => browser.patches.length).toBe(1);
+
+  await page.close({ runBeforeUnload: true });
+  await expect.poll(() => prompts.length).toBe(1);
+  expect(page.isClosed()).toBe(false);
+
+  release();
+  await expect(saveState(page)).toHaveText("Saved");
+  await expect.poll(() => stored(page, entityTarget.path())).toBe("Saved while the page was open");
+  await page.unroute(/\/api\/entities\//, holdSave);
+  await page.reload();
+  await expect(node(page, seeded.betaId)).toBeVisible();
+  expect(prompts).toHaveLength(1);
+  await openTargetDocumentation(page, entityTarget);
+  await expect(recoveryPrompt(page)).toHaveCount(0);
+  await expect(documentationEditor(page)).toHaveText("Saved while the page was open");
+  expect(await draftKeys(page)).toEqual([]);
   expect(browser.problems).toEqual([]);
 });
