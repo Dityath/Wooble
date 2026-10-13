@@ -887,7 +887,7 @@ export function canvasRoutes(app: Api) {
       return {
         error: "undo_conflict",
         message:
-          "Your recent changes can't be undone because collaborators changed the same objects since. Nothing was undone.",
+          "Your last changes can't be undone: someone else changed the same objects, or you can no longer edit them. Nothing was undone.",
         skipped: result.skipped,
       };
     }
