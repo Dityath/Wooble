@@ -1,11 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import type userEvent from "@testing-library/user-event";
+import type { ArchitectureConnection, ConnectionPath } from "@wooble/domain";
 import type { CanvasGraph } from "../src/lib/api";
 import { useEditorStore } from "../src/stores/editor-store";
+// The canvas viewer imports the read-only renderer through the inspector barrel, the entity page imports the
+// module itself. Both must be the same component after the editor branch moved the file.
+import { MarkdownContent as markdownContentFromInspector } from "../src/features/inspector/rich-documentation";
+import { MarkdownContent as markdownContentFromDocumentation } from "../src/features/inspector/documentation/markdown-content";
 import { FakeApi, failWith } from "./support/fake-api";
 import { FakeSocket, installFakeSocket, restoreWebSocket } from "./support/fake-socket";
 import { graph, ids, user, workspace } from "./support/fixtures";
-import { renderRoute } from "./support/render";
+import { renderRoute, renderWithQuery } from "./support/render";
 
 let server: FakeApi;
 
@@ -95,6 +101,48 @@ describe("canvas loading", () => {
   });
 });
 
+/**
+ * Long documentation of the shape a reader actually meets on a shared connection: prose, a fenced code block and a
+ * GFM table. The read-only renderer must show all of it without turning any of it into an editable control.
+ */
+const richDocumentation = [
+  "# Order intake",
+  "",
+  "The reader retries **twice**, then dead-letters the message.",
+  "",
+  "```json",
+  '{ "retries": 2, "timeoutMs": 500 }',
+  "```",
+  "",
+  "| Endpoint | Purpose |",
+  "| --- | --- |",
+  "| GET /orders | List orders |",
+  "| POST /orders | Create an order |",
+].join("\n");
+
+/** Asserts the read-only promise of a viewer or guest journey: it reads and never writes. */
+function expectReadOnlyRequests() {
+  expect(server.calls.filter((call) => call.method !== "GET").map((call) => `${call.method} ${call.path}`)).toEqual([]);
+  expect(server.requests("PATCH", /^\/api\/(entities|connections|canvases)\//)).toHaveLength(0);
+  expect(server.requests("POST", /^\/api\//)).toHaveLength(0);
+  expect(server.requests("DELETE", /^\/api\//)).toHaveLength(0);
+}
+
+/** Asserts the documentation region is a reader surface: rendered markdown, no editing control at all. */
+function expectReadOnlyDocumentation(documentation: HTMLElement) {
+  expect(within(documentation).queryByRole("textbox")).toBeNull();
+  expect(within(documentation).queryAllByRole("button")).toEqual([]);
+  expect(documentation.querySelector("[contenteditable]")).toBeNull();
+  expect(documentation.querySelector("textarea")).toBeNull();
+  expect(documentation.querySelector("input")).toBeNull();
+}
+
+/** Clicks the connection edge the way a reader does: focus it from the edge label, then select the line. */
+async function selectConnection(actor: ReturnType<typeof userEvent.setup>) {
+  await actor.click(screen.getByRole("button", { name: "Reads orders" }));
+  fireEvent.click(document.querySelector(".react-flow__edge") as Element);
+}
+
 describe("viewer canvas", () => {
   it("opens read-only details for nodes and connections", async () => {
     const data = graph();
@@ -138,10 +186,87 @@ describe("viewer canvas", () => {
 
   it("says when a connection has no documentation yet", async () => {
     const { user: actor } = await openCanvas("viewer");
-    await actor.click(screen.getByRole("button", { name: "Reads orders" }));
-    fireEvent.click(document.querySelector(".react-flow__edge") as Element);
+    await selectConnection(actor);
     const documentation = await screen.findByRole("region", { name: "Connection documentation" });
     expect(within(documentation).getByText("No documentation yet.")).toBeTruthy();
+  });
+
+  it("renders long documentation with a code block and a table, using the entity page's read-only renderer", async () => {
+    // The editor branch moved MarkdownContent into documentation/markdown-content.tsx and kept a re-export at
+    // rich-documentation.tsx. The viewer must still get the same renderer the entity page imports.
+    expect(markdownContentFromInspector).toBe(markdownContentFromDocumentation);
+
+    const data = graph();
+    data.connections[0] = { ...data.connections[0], metadata: { documentation: richDocumentation } };
+    const { user: actor } = await openCanvas("viewer", data);
+    await selectConnection(actor);
+    const documentation = await screen.findByRole("region", { name: "Connection documentation" });
+
+    expect(within(documentation).getByRole("heading", { name: "Order intake" })).toBeTruthy();
+    expect(within(documentation).getByText("twice", { selector: "strong" })).toBeTruthy();
+    expect(documentation.querySelector("pre code")?.textContent).toContain('"retries": 2');
+    const table = within(documentation).getByRole("table");
+    expect(within(table).getByRole("columnheader", { name: "Endpoint" })).toBeTruthy();
+    expect(within(table).getByRole("cell", { name: "POST /orders" })).toBeTruthy();
+    expectReadOnlyDocumentation(documentation);
+
+    // Rendered output is identical to the module the entity page imports, so both readers see the same markdown.
+    const direct = renderWithQuery(markdownContentFromDocumentation({ value: richDocumentation }));
+    expect(documentation.querySelector("article")?.outerHTML).toBe(direct.container.innerHTML);
+    direct.unmount();
+  });
+
+  it("sends no write request while a viewer reads connection documentation", async () => {
+    const data = graph();
+    data.connections[0] = { ...data.connections[0], metadata: { documentation: richDocumentation } };
+    // Any write attempt would be recorded here, so the assertions below are evidence, not decoration.
+    server.on("PATCH /api/connections/:id", failWith(403, "Viewers cannot edit connections"));
+    const { user: actor } = await openCanvas("viewer", data);
+    await selectConnection(actor);
+    await screen.findByRole("region", { name: "Connection documentation" });
+    await actor.click(screen.getByRole("button", { name: "Zen mode" }));
+    await actor.click(screen.getByRole("button", { name: "Exit Zen mode" }));
+    expectReadOnlyRequests();
+  });
+
+  it("never renders a connection that is not on the authorized graph", async () => {
+    const bend: ConnectionPath = null;
+    const shared: ArchitectureConnection & { bend: ConnectionPath } = {
+      ...graph().connections[0],
+      metadata: { documentation: "Shared documentation." },
+    };
+    // A connection of the same workspace that is deliberately absent from the canvas the server returned.
+    const offCanvas: ArchitectureConnection & { bend: ConnectionPath } = {
+      id: ids.secondConnection,
+      workspaceId: ids.workspace,
+      sourceEntityId: ids.service,
+      targetEntityId: ids.database,
+      type: "rest",
+      label: "Writes orders",
+      description: null,
+      metadata: { documentation: "Off-canvas documentation." },
+      bend,
+    };
+    const data = { ...graph(), connections: [shared] };
+    server
+      .on("GET /api/canvases/:id/access", { role: "viewer" })
+      .on("GET /api/canvases/:id/graph", data)
+      .on("GET /api/connections/:id", () => {
+        throw new Error(`the viewer asked for ${offCanvas.id}, which is not on the shared canvas`);
+      });
+    const { user: actor } = await openCanvas("viewer", data);
+    await selectConnection(actor);
+    const documentation = await screen.findByRole("region", { name: "Connection documentation" });
+    expect(within(documentation).getByText("Shared documentation.")).toBeTruthy();
+
+    const edges = [...document.querySelectorAll(".react-flow__edge")];
+    expect(edges).toHaveLength(1);
+    expect(edges[0].getAttribute("data-id")).toBe(shared.id);
+    expect(document.body.textContent).not.toContain("Writes orders");
+    expect(document.body.textContent).not.toContain("Off-canvas documentation.");
+    expect(server.requests("GET", `/api/connections/${offCanvas.id}`)).toHaveLength(0);
+    expect(server.requests("GET", `/api/connections/${shared.id}`)).toHaveLength(0);
+    expectReadOnlyRequests();
   });
 
   it("clears the selection from the pane and toggles Zen mode", async () => {
@@ -693,9 +818,55 @@ describe("shared canvas guests", () => {
       .on("GET /api/canvases/:id/graph", data);
     const { user: actor } = await renderRoute(`/canvases/${ids.canvas}`);
     await screen.findByText("Orders API");
-    await actor.click(screen.getByRole("button", { name: "Reads orders" }));
-    fireEvent.click(document.querySelector(".react-flow__edge") as Element);
+    await selectConnection(actor);
     const documentation = await screen.findByRole("region", { name: "Connection documentation" });
     expect(within(documentation).getByText("Orders are read through a replica.")).toBeTruthy();
+    expectReadOnlyDocumentation(documentation);
+    expectReadOnlyRequests();
+  });
+
+  it("lets signed-out visitors read long documentation and never reach an editing or writing surface", async () => {
+    const data = graph();
+    data.connections[0] = { ...data.connections[0], metadata: { documentation: richDocumentation } };
+    server
+      .on("GET /api/auth/me", failWith(401, "Sign in required"))
+      .on("GET /api/canvases/:id/access", { role: "viewer" })
+      .on("GET /api/canvases/:id/graph", data)
+      .on("PATCH /api/connections/:id", failWith(401, "Sign in required"));
+    const { user: actor } = await renderRoute(`/canvases/${ids.canvas}`);
+    await screen.findByText("Orders API");
+    expect(screen.queryByRole("toolbar", { name: "Canvas tools" })).toBeNull();
+
+    await selectConnection(actor);
+    const documentation = await screen.findByRole("region", { name: "Connection documentation" });
+    expect(within(documentation).getByRole("heading", { name: "Order intake" })).toBeTruthy();
+    expect(documentation.querySelector("pre code")?.textContent).toContain('"retries": 2');
+    const table = within(documentation).getByRole("table");
+    expect(within(table).getByRole("columnheader", { name: "Purpose" })).toBeTruthy();
+    expect(within(table).getByRole("cell", { name: "GET /orders" })).toBeTruthy();
+    expectReadOnlyDocumentation(documentation);
+
+    // A guest must not be able to leave the reader: no editor, no dialog, and no write on any surface.
+    await actor.click(screen.getByRole("button", { name: "Zen mode" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.querySelector(".inspector-panel")).toBeNull();
+    await selectConnection(actor);
+    expectReadOnlyRequests();
+  });
+
+  it("keeps a signed-out guest inside the shared canvas graph", async () => {
+    const shared = graph();
+    shared.connections[0] = { ...shared.connections[0], metadata: { documentation: "Shared documentation." } };
+    server
+      .on("GET /api/auth/me", failWith(401, "Sign in required"))
+      .on("GET /api/canvases/:id/access", { role: "viewer" })
+      .on("GET /api/canvases/:id/graph", shared);
+    await renderRoute(`/canvases/${ids.canvas}`);
+    await screen.findByText("Orders API");
+    expect(document.querySelectorAll(".react-flow__edge")).toHaveLength(1);
+    expect(document.querySelector(".react-flow__edge")?.getAttribute("data-id")).toBe(ids.connection);
+    expect(document.body.textContent).not.toContain(ids.secondConnection);
+    expect(server.requests("GET", `/api/connections/${ids.secondConnection}`)).toHaveLength(0);
+    expectReadOnlyRequests();
   });
 });

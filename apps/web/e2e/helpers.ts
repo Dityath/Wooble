@@ -90,3 +90,15 @@ export async function addCanvasMember(
   });
   if (response.status() !== 201) throw new Error(`member add failed: ${await response.text()}`);
 }
+
+/**
+ * Turns on link sharing so a signed-out browser context can open the canvas. There is no separate share link: the
+ * share mode is the grant, and `/canvases/:canvasId` is the URL a guest is given.
+ */
+export async function shareCanvasByLink(request: APIRequestContext, cookieValue: string, canvasId: string) {
+  const response = await request.patch(`/api/canvases/${canvasId}`, {
+    headers: authHeaders(cookieValue),
+    data: { shareMode: "link" },
+  });
+  if (!response.ok()) throw new Error(`link share failed: ${await response.text()}`);
+}
