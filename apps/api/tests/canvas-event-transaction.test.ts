@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { asc, eq, sql } from "drizzle-orm";
 import { canvasEvents, db, entities, pool } from "@wooble/db";
+import { createApp } from "../src/app";
+import { withCanvasLocks } from "../src/modules/canvas/activity";
 import { resetLoginAttempts } from "../src/modules/auth/routes";
 import { apiClient } from "./support/client";
 
@@ -243,35 +245,53 @@ async function connect(): Promise<PoolClient> {
 
 /**
  * Waits (bounded polling; assertions never depend on elapsed time) until `count` backends of this database are
- * waiting on a lock. Postgres reports a queued waiter as blocked by the waiter ahead of it, so this counts
- * lock waits instead of looking for the blocker's pid alone.
+ * blocked behind `blockerPid`, directly or through the waiters queued ahead of them. Postgres reports a queued
+ * row-lock waiter as blocked by the waiter ahead of it, so the blocker's waiters are followed transitively. Only
+ * backends of the current test database that depend on this one blocker are counted.
  */
-async function waitForBlocked(count: number) {
+async function waitForBlocked(blockerPid: number, count: number) {
   for (let attempt = 0; attempt < 500; attempt++) {
     const { rows } = await pool.query<{ n: string }>(
-      "select count(*) as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and pid <> pg_backend_pid()",
+      `with recursive waiting(pid) as (
+         select pid from pg_stat_activity
+          where datname = current_database() and pid <> pg_backend_pid() and pg_blocking_pids(pid) @> array[$1::int]
+         union
+         select a.pid from pg_stat_activity a join waiting w on pg_blocking_pids(a.pid) @> array[w.pid]
+          where a.datname = current_database()
+       )
+       select count(*) as n from waiting`,
+      [blockerPid],
     );
     if (Number(rows[0].n) >= count) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error(`Expected ${count} backend(s) waiting on a lock`);
+  throw new Error(`Expected ${count} backend(s) blocked behind pid ${blockerPid}`);
 }
 
 async function lockCanvas(canvasId: string) {
   const blocker: PoolClient = await connect();
   await blocker.query("begin");
   await blocker.query("select id from canvases where id = $1 for update", [canvasId]);
-  return { blocker };
+  const { rows } = await blocker.query("select pg_backend_pid() as pid");
+  return { blocker, pid: Number(rows[0].pid) };
+}
+
+async function release(blocker: PoolClient) {
+  try {
+    await blocker.query("commit");
+  } finally {
+    blocker.release();
+  }
 }
 
 describe("lock order and event order", () => {
   it("takes the canvas lock before the entity lock", async () => {
     const { owner, canvasId, service } = await setup();
-    const { blocker } = await lockCanvas(canvasId);
+    const { blocker, pid } = await lockCanvas(canvasId);
     let patch: Promise<Response> | undefined;
     try {
       patch = api.request("PATCH", `/api/entities/${service}`, owner.session, { name: "Ordered" });
-      await waitForBlocked(1);
+      await waitForBlocked(pid, 1);
       // The PATCH is waiting on the canvas row, so it must not hold the entity row yet.
       const probe: PoolClient = await connect();
       try {
@@ -285,53 +305,88 @@ describe("lock order and event order", () => {
         probe.release();
       }
     } finally {
-      await blocker.query("commit");
-      blocker.release();
+      await release(blocker);
     }
     expect((await patch)?.status).toBe(200);
     expect(await eventsFor(canvasId, "entity.updated")).toHaveLength(1);
   });
 
-  it("completes a concurrent update and undo without deadlock, in seq order", async () => {
+  /** The owner renames the service; the editor's concurrent metadata edit and the owner's undo then interleave. */
+  async function raceUndoAndPatch(order: "patch-first" | "undo-first") {
     const { owner, canvasId, service } = await setup();
-    await api.request("PATCH", `/api/canvases/${canvasId}`, owner.session, { name: "Before" });
-    const { blocker } = await lockCanvas(canvasId);
-    let patch: Promise<Response> | undefined;
-    let undo: Promise<Response> | undefined;
+    const editor = await joinAsEditor(owner, canvasId);
+    expect(
+      (await api.request("PATCH", `/api/entities/${service}`, owner.session, { name: "Renamed API" })).status,
+    ).toBe(200);
+    const [rename] = await eventsFor(canvasId, "entity.updated");
+
+    const { blocker, pid } = await lockCanvas(canvasId);
+    const patchRequest = () =>
+      api.request("PATCH", `/api/entities/${service}`, editor.session, { metadata: { documentation: "Docs" } });
+    const undoRequest = () => api.request("POST", `/api/canvases/${canvasId}/undo`, owner.session);
+    let first: Promise<Response>;
+    let second: Promise<Response>;
     try {
-      patch = api.request("PATCH", `/api/entities/${service}`, owner.session, { name: "Raced" });
-      undo = api.request("POST", `/api/canvases/${canvasId}/undo`, owner.session);
-      await waitForBlocked(2);
+      // The first request is queued on the canvas row before the second starts, so the queue order is known.
+      first = order === "patch-first" ? patchRequest() : undoRequest();
+      await waitForBlocked(pid, 1);
+      second = order === "patch-first" ? undoRequest() : patchRequest();
+      await waitForBlocked(pid, 2);
+      // Both are waiting for the canvas lock: nothing of either is visible yet.
       const [untouched] = await db.select({ name: entities.name }).from(entities).where(eq(entities.id, service));
-      expect(untouched.name).toBe("Orders API");
+      expect(untouched.name).toBe("Renamed API");
     } finally {
-      await blocker.query("commit");
-      blocker.release();
+      await release(blocker);
     }
-    const patchResponse = await patch;
-    const undoResponse = await undo;
-    expect(patchResponse?.status).toBe(200);
-    expect(undoResponse?.status).toBe(200);
-    const undoBody = (await undoResponse?.json()) as UndoResult;
+    const [firstResponse, secondResponse] = await Promise.all([first, second]);
+    const patchResponse = order === "patch-first" ? firstResponse : secondResponse;
+    const undoResponse = order === "patch-first" ? secondResponse : firstResponse;
+    expect(patchResponse.status).toBe(200);
+    expect(undoResponse.status).toBe(200);
+    expect((await undoResponse.json()) as UndoResult).toMatchObject({ undone: true, action: "entity.updated" });
 
     const events = await eventsFor(canvasId);
-    const patchEvent = events.find((e) => e.action === "entity.updated");
+    const patchEvent = events.filter((e) => e.action === "entity.updated").find((e) => e.id !== rename.id);
     const undoEvent = events.find((e) => e.action === "canvas.undo");
-    expect(patchEvent).toBeDefined();
-    if (!patchEvent) return;
-    if (undoEvent) {
-      const undoOf = (undoEvent.metadata as { undoOf?: string }).undoOf;
-      if (undoEvent.seq > patchEvent.seq) {
-        // The undo committed after the update, so it saw (and reverted) it.
-        expect(undoOf).toBe(patchEvent.id);
-        expect(undoBody.action).toBe("entity.updated");
-      } else {
-        // The undo committed first, so the update was not yet visible to it.
-        expect(undoOf).not.toBe(patchEvent.id);
-      }
-    } else {
-      expect(undoBody.undone).toBe(false);
+    if (!patchEvent || !undoEvent) throw new Error("Expected both an update event and an undo event");
+    // The undo reverted the owner's rename in both orders, and the collaborator's change survived it.
+    expect((undoEvent.metadata as { undoOf?: string }).undoOf).toBe(rename.id);
+    const current = (await graph(owner.session, canvasId)).entities.find((e) => e.id === service);
+    expect(current).toMatchObject({ name: "Orders API", metadata: { documentation: "Docs" } });
+    // The request queued first committed first, so its event has the lower seq.
+    const firstEvent = order === "patch-first" ? patchEvent : undoEvent;
+    const secondEvent = order === "patch-first" ? undoEvent : patchEvent;
+    expect(Number(firstEvent.seq)).toBeLessThan(Number(secondEvent.seq));
+  }
+
+  it("applies a collaborator's update committed before the undo, in seq order", async () => {
+    await raceUndoAndPatch("patch-first");
+  });
+
+  it("never lets an undo that commits first overwrite the collaborator's concurrent update", async () => {
+    await raceUndoAndPatch("undo-first");
+  });
+
+  it("locks the previous row of a canvas update, so concurrent renames chain their previous values", async () => {
+    const { owner, canvasId } = await setup();
+    const { blocker, pid } = await lockCanvas(canvasId);
+    let first: Promise<Response>;
+    let second: Promise<Response>;
+    try {
+      first = api.request("PATCH", `/api/canvases/${canvasId}`, owner.session, { name: "First name" });
+      await waitForBlocked(pid, 1);
+      second = api.request("PATCH", `/api/canvases/${canvasId}`, owner.session, { name: "Second name" });
+      await waitForBlocked(pid, 2);
+    } finally {
+      await release(blocker);
     }
+    expect((await first).status).toBe(200);
+    expect((await second).status).toBe(200);
+    const [firstEvent, secondEvent] = await eventsFor(canvasId, "canvas.updated");
+    expect(firstEvent.metadata).toEqual({ fields: ["name"], previous: { name: "Checkout flow" } });
+    expect(firstEvent.targetName).toBe("First name");
+    expect(secondEvent.metadata).toEqual({ fields: ["name"], previous: { name: "First name" } });
+    expect(secondEvent.targetName).toBe("Second name");
   });
 });
 
@@ -361,5 +416,44 @@ describe("activity feed order", () => {
       owner.session,
     );
     expect(feed.body.events.map((e) => e.id)).toEqual([...stored].reverse().map((e) => e.id));
+  });
+});
+
+describe("canvas lock retries", () => {
+  it("answers 503 and writes nothing when the canvas set keeps changing", async () => {
+    const { owner, canvasId, service } = await setup();
+    const finderCalls: number[] = [];
+    // Every attempt first sees no canvas, then (after its work) a canvas it does not hold, so no attempt can succeed.
+    const app = createApp({
+      configure: (configured) => {
+        configured.post("/test-lock-exhaustion/:entityId", async (context) => {
+          const entityId = (context.params as { entityId: string }).entityId;
+          await withCanvasLocks(
+            async () => {
+              finderCalls.push(finderCalls.length);
+              return finderCalls.length % 2 === 1 ? [] : [canvasId];
+            },
+            async (tx, currentCanvasIds) => {
+              await tx.update(entities).set({ name: "Written" }).where(eq(entities.id, entityId));
+              await currentCanvasIds();
+            },
+          );
+          return { ok: true };
+        });
+      },
+    });
+    const response = await app.handle(
+      new Request(`http://localhost/test-lock-exhaustion/${service}`, { method: "POST" }),
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      message: "The service is temporarily unavailable. Try again in a moment.",
+    });
+    // Five attempts, each with two canvas-set reads, and every attempt rolled back.
+    expect(finderCalls).toHaveLength(10);
+    const [row] = await db.select({ name: entities.name }).from(entities).where(eq(entities.id, service));
+    expect(row.name).toBe("Orders API");
+    expect(await eventsFor(canvasId, "entity.updated")).toHaveLength(0);
+    expect((await graph(owner.session, canvasId)).entities.find((e) => e.id === service)?.name).toBe("Orders API");
   });
 });

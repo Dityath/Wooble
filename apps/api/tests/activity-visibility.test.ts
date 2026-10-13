@@ -193,4 +193,45 @@ describe("activity feed withholds undo payloads", () => {
       sentinels.documentation,
     );
   });
+
+  it("withholds legacy-shaped nested payloads and unlisted keys from a viewer", async () => {
+    const owner = await api.register("Legacy Owner");
+    const canvasId = await api.createCanvas(owner.session, owner.workspaceId, "Orders");
+    const service = await api.createNode(owner.session, canvasId, { name: "Orders API" });
+    const legacySentinel = "LEGACY-SENTINEL-91c4d8";
+    const hooksSentinel = "HOOKS-SENTINEL-27be5f";
+    await db.insert(canvasEvents).values([
+      {
+        canvasId,
+        actorUserId: owner.user.id,
+        actorName: "Legacy Owner",
+        action: "entity.updated",
+        targetType: "entity",
+        targetId: service,
+        targetName: "Orders API",
+        metadata: {
+          fields: ["name", "metadata"],
+          previous: { name: "Old", metadata: { documentation: legacySentinel } },
+        },
+      },
+      {
+        canvasId,
+        actorUserId: owner.user.id,
+        actorName: "Legacy Owner",
+        action: "entity.updated",
+        targetType: "entity",
+        targetId: service,
+        targetName: "Orders API",
+        metadata: { fields: ["name"], hooks: [{ url: hooksSentinel }], previousMetadata: { a: legacySentinel } },
+      },
+    ]);
+    const viewer = await joinCanvas(owner.session, canvasId);
+    const read = await readFeed(viewer.session, canvasId);
+    expect(read.status).toBe(200);
+    expect(read.text).not.toContain(legacySentinel);
+    expect(read.text).not.toContain(hooksSentinel);
+    expect(pathsWithKeys(read.body, ["hooks", "previous", "previousMetadata", "snapshot"])).toEqual([]);
+    const legacy = (read.body?.events ?? []).filter((event) => event.action === "entity.updated");
+    expect(legacy.map((event) => event.metadata)).toEqual([{ fields: ["name"] }, { fields: ["name", "metadata"] }]);
+  });
 });

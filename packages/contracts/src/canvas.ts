@@ -150,7 +150,8 @@ export const canvasEventSchema = z.object({
   targetType: z.string(),
   targetId: z.string().uuid().nullable(),
   targetName: z.string().nullable(),
-  metadata: z.record(z.unknown()),
+  /** The feed returns only allowlisted, display-safe keys (never undo payloads), so values are scalars or name lists. */
+  metadata: z.record(z.union([z.string(), z.number(), z.boolean(), z.null(), z.array(z.string())])),
   undoneAt: z.string().nullable(),
   createdAt: z.string(),
 });

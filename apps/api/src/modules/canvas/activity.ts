@@ -48,7 +48,6 @@ export const ACTIVITY_METADATA_ALLOWLIST = [
   "removedConnections",
   "undoOf",
   "undoneAction",
-  "skipped",
 ] as const;
 
 type ActivityMetadataValue = string | number | boolean | null | string[];
@@ -113,6 +112,14 @@ export async function canvasIdsForConnection(executor: Transaction, connectionId
 }
 
 class CanvasSetChanged extends Error {}
+
+/** Raised when the canvas set kept changing; the error handler maps `status` 503 to a retryable response. */
+export class CanvasLockContention extends Error {
+  readonly status = 503;
+  constructor() {
+    super("The canvas changed while saving; try again");
+  }
+}
 const MAX_LOCK_ATTEMPTS = 5;
 
 /**
@@ -152,7 +159,8 @@ export async function withCanvasLocks<T>(
         });
       });
     } catch (error) {
-      if (!(error instanceof CanvasSetChanged) || attempt >= MAX_LOCK_ATTEMPTS) throw error;
+      if (!(error instanceof CanvasSetChanged)) throw error;
+      if (attempt >= MAX_LOCK_ATTEMPTS) throw new CanvasLockContention();
     }
   }
 }
