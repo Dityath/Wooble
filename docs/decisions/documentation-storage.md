@@ -23,15 +23,17 @@ When drafts are written and cleared:
 
 - A draft is written when the editor holds unsaved text, including text over the 20,000-character limit, and when the editor closes with an unsaved edit. A blank draft removes the entry.
 - It is cleared when that exact text saves, when the user discards it, when it matches the saved text, or when a save returns 403.
-- A 401, a 400/422, and network or server errors keep the draft.
-- Sign-out and a password change remove every documentation draft on the device. A session that merely expires keeps the draft for the same user.
+- A 401, any other 4xx (such as 400, 404, 409, 410, 413, or 422), and network or server errors keep the draft. Only 408, 429, 5xx, and network failures are treated as transient and offer Retry; a 401 also offers a manual Retry once the user has signed in again, and other 4xx responses are permanent, so they offer no Retry.
+- Sign-out and a password change first suspend draft reads and writes, then remove every documentation draft on the device. Suspension keeps an editor that is still mounted from writing its text back after the purge. Signing in resumes drafts and removes expired drafts and drafts of other users on the device, the shared-device sweep. A session that merely expires keeps that user's draft until the next sign-in by anyone, which removes it if a different user signs in.
 - Reads and writes never throw: a full or blocked store only costs the draft.
 
-Recovery is explicit. The editor offers the draft with Restore and Discard and never injects it, so a stale draft cannot silently overwrite newer saved text. It is offered only after the current user is known and the canvas allows editing, because the key depends on the user and a viewer must not be offered an edit.
+Recovery is explicit. The editor offers the draft with Restore and Discard and never injects it, so a stale draft cannot silently overwrite newer saved text. The prompt must be decided before editing continues: the editor is read-only until the user chooses Restore or Discard saved copy. It is offered only after `me` has resolved and a canvas-access check made after the editor mounted says the role is editor or manager, because the key depends on the user, a cached role may be stale, and a viewer must not be offered an edit.
 
-A 403 clears the draft because access was removed deliberately: keeping text the user may no longer write would resurface it later in an editor they cannot use. A 401 keeps it because the same user can sign in again and save.
+A 403 clears the draft because access was removed deliberately: keeping text the user may no longer write would resurface it later in an editor they cannot use. The editor stays visible and read-only with the typed text so the user can copy it, offers no Retry, and says to ask a canvas manager for edit access. A 401 keeps the draft because the same user can sign in again and save.
 
-Limits: drafts are per browser and device, are removed by clearing browser data, and are not synced. Edits made in the autosave window right before sign-out can be lost. This does not add co-editing; updates remain last-write-wins.
+Closing the details dialog with unsaved documentation, by the close button, the overlay, or Escape, asks for confirmation with Keep editing or Close anyway. The text is saved when possible and otherwise kept on this device. If the lazily loaded editor chunk fails to load, the documentation is shown as readable Markdown with a Reload button, because a failed dynamic import cannot be retried in place in Chromium.
+
+Limits: drafts are per browser and device, are removed by clearing browser data, and are not synced. They are not shared between tabs in real time: a second open tab can keep writing until its next request fails. They expire after 7 days. Edits made in the autosave window right before sign-out can be lost. This does not add co-editing; updates remain last-write-wins.
 
 The server remains the source of truth for authorization. A draft is client-held text, not permission; every save is checked by the API against the current role, and the client never uses a stored draft to decide who may write.
 
