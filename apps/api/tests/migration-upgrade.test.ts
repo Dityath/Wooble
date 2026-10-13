@@ -269,7 +269,15 @@ describe("scratch database safety", () => {
         second.url,
         "INSERT INTO users (id, email, name, password_hash) VALUES ('00000000-0000-4000-8000-0000000000ff', 'survivor@example.test', 'Survivor', 'scrypt$fictional')",
       );
-      await first.drop();
+      // An open session on the second database must survive the drop of the first.
+      const open = drizzle(second.url);
+      try {
+        await open.execute(sql.raw("SELECT 1"));
+        await first.drop();
+        expect((await open.execute(sql.raw("SELECT count(*)::int AS n FROM users"))).rows).toEqual([{ n: 1 }]);
+      } finally {
+        await open.$client.end();
+      }
 
       expect(await scratchNames()).not.toContain(first.name);
       expect(await scratchNames()).toContain(second.name);
@@ -280,6 +288,28 @@ describe("scratch database safety", () => {
       ]);
     });
   });
+
+  it("refuses to drop a database with an open session, without ending it, and drops it once the session closes", async () => {
+    const scratch = await scratchDatabase("busy");
+    const open = drizzle(scratch.url);
+    let closed = false;
+    try {
+      await open.execute(sql.raw("SELECT 1"));
+      // The documented behavior: no FORCE, so a busy database is not dropped and its session is left alone.
+      await expect(scratch.drop()).rejects.toThrow();
+      expect(await scratchNames()).toContain(scratch.name);
+      expect((await open.execute(sql.raw("SELECT 1 AS one"))).rows).toEqual([{ one: 1 }]);
+
+      await open.$client.end();
+      closed = true;
+      await scratch.drop();
+      expect(await scratchNames()).not.toContain(scratch.name);
+    } finally {
+      if (!closed) await open.$client.end();
+      await scratch.drop();
+    }
+    // PostgreSQL waits about five seconds for a busy database's sessions before refusing the drop.
+  }, 30_000);
 
   it("never drops a database it did not create", async () => {
     // `<database>_upgrade` is the fixed name the pre-fix harness used for the suffix below, so it is exactly what a
