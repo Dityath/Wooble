@@ -1,8 +1,10 @@
-import type { AnyExtension, EditorOptions } from "@tiptap/core";
+import { type AnyExtension, type EditorOptions, Extension } from "@tiptap/core";
 import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { TableKit } from "@tiptap/extension-table";
 import { Placeholder } from "@tiptap/extensions";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { StarterKit } from "@tiptap/starter-kit";
+import { safeDocumentationUrl } from "./markdown-content";
 import {
   createDocumentationMarked,
   DocumentationCodeBlock,
@@ -34,6 +36,39 @@ export interface DocumentationExtensionOptions {
 }
 
 /**
+ * Drops a link mark whose destination documentation may not link to, such as `javascript:alert(1)` from a pasted
+ * `[click me](javascript:alert(1))`, leaving the text it was written on. TipTap's `isAllowedUri` guards the paths it owns
+ * (a pasted HTML anchor, a typed URL, `setLink`) and renders any other destination with an empty `href`, but its Markdown
+ * parser reads a link destination as it was written, so the parsed Markdown is checked here.
+ */
+const DocumentationLinkSafety = Extension.create({
+  name: "documentationLinkSafety",
+
+  addProseMirrorPlugins() {
+    const link = this.editor.schema.marks.link;
+    if (!link) return [];
+    return [
+      new Plugin({
+        key: new PluginKey("documentationLinkSafety"),
+        appendTransaction: (transactions, _state, state) => {
+          if (!transactions.some((transaction) => transaction.docChanged)) return null;
+          const tr = state.tr;
+          state.doc.descendants((node, pos) => {
+            for (const mark of node.marks) {
+              if (mark.type !== link) continue;
+              const { href } = mark.attrs;
+              if (typeof href !== "string" || !href || safeDocumentationUrl(href)) continue;
+              tr.removeMark(pos, pos + node.nodeSize, mark);
+            }
+          });
+          return tr.docChanged ? tr : null;
+        },
+      }),
+    ];
+  },
+});
+
+/**
  * The documentation editor's extensions. Documentation is stored as Markdown, so every block and mark they enable has
  * a Markdown form.
  */
@@ -45,10 +80,16 @@ export function documentationExtensions({ placeholder = "" }: DocumentationExten
       link: {
         // A plain click places the caret; opening the link would take the user away while they edit.
         openOnClick: false,
+        // Documentation links to `http`, `https` and `mailto` only (see `safeDocumentationUrl`, which the read-only
+        // renderer applies too). This decides what a pasted HTML anchor, a typed URL, and `setLink` may link to.
+        isAllowedUri: (url) => !url || safeDocumentationUrl(url) !== "",
         // Only text that is clearly a link: a URL with its scheme, a www. address, or an email address. File names such as
-        // README.md or deploy.sh are also valid domain names and would otherwise link to someone else's site.
+        // README.md or deploy.sh are also valid domain names and would otherwise link to someone else's site. A scheme
+        // on its own is not enough: any `scheme://` would read `javascript:` and `data:` as a link too.
         shouldAutoLink: (url) =>
-          /^[a-z][a-z0-9+.-]*:\/\//i.test(url) || /^www\./i.test(url) || /^[^\s@/]+@[^\s@/]+\.[^\s@/]+$/.test(url),
+          (/^[a-z][a-z0-9+.-]*:\/\//i.test(url) && safeDocumentationUrl(url) !== "") ||
+          /^www\./i.test(url) ||
+          /^[^\s@/]+@[^\s@/]+\.[^\s@/]+$/.test(url),
       },
       // Replaced below by versions that write Markdown which reopens as the same blocks.
       paragraph: false,
@@ -73,6 +114,7 @@ export function documentationExtensions({ placeholder = "" }: DocumentationExten
     Placeholder.configure({ placeholder: ({ editor }) => (editor.isEmpty ? placeholder : "") }),
     SlashCommand,
     MarkdownPaste,
+    DocumentationLinkSafety,
     PreventedEscape,
   ];
 }
