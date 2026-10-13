@@ -5,6 +5,7 @@ Wooble is a TypeScript monorepo managed with Bun workspaces and Turborepo. The w
 | Area | Current implementation | Purpose |
 | --- | --- | --- |
 | Web | React, Vite, TanStack Router and Query | UI, routing, server state |
+| Documentation | TipTap / ProseMirror, Markdown | Lazy-loaded block editor with source fallback; Markdown persistence |
 | Canvas | XYFlow, Zustand | Graph interaction and transient editor state |
 | UI | Tailwind CSS, Radix primitives, shared tokens | Interface components and visual system |
 | API | Elysia on Bun | HTTP and WebSocket routes |
@@ -34,6 +35,12 @@ The API stores password hashes and hashed session tokens in PostgreSQL. Session 
 ## State ownership
 
 TanStack Query owns data fetched from the API. Zustand holds transient editor state such as selection. The browser does not treat XYFlow node data as the database record. Changes are persisted through the API, and other open canvases receive update notifications over WebSocket.
+
+## Documentation storage
+
+The documentation editor and its autosave lifecycle load together in a separate browser chunk. The API continues to store Markdown strings; TipTap JSON is transient editor state. Compact tables and bare URLs avoid expanding documents toward the 20,000-character contract limit. Documents with images, footnotes, YAML front matter, or raw HTML open as Markdown source with a warning; unsupported Markdown paste is stopped before conversion and offers source editing. Code examples and supported `<br>` breaks remain editable as blocks.
+
+The [Markdown-first decision and collaboration follow-up](decisions/documentation-storage.md) records the interim scope and the checks required before adopting Yjs.
 
 ## Source of truth
 

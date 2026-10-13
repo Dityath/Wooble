@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
-import { act, createEvent, fireEvent, render, renderHook, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, within } from "@testing-library/react";
 import { useContext, useState } from "react";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "../src/components/ui";
 import { ConnectorEditContext } from "../src/features/canvas/connector-edit-context";
@@ -155,12 +155,12 @@ describe("small interaction details", () => {
     expect(button.textContent).toBe("Copy link");
   });
 
-  it("keeps the documentation editor focused when Cancel is pressed", async () => {
-    const { user: actor } = renderWithQuery(<RichDocumentation value="Text" onSave={mock(async () => {})} />);
-    await actor.click(screen.getByRole("button", { name: "Edit" }));
-    const cancel = screen.getByRole("button", { name: "Cancel" });
-    const pointerDown = createEvent.pointerDown(cancel);
-    fireEvent(cancel, pointerDown);
-    expect(pointerDown.defaultPrevented).toBe(true);
+  it("marks the documentation editor as a multiline textbox that edits inline", () => {
+    renderWithQuery(<RichDocumentation value="Text" onSave={mock(async () => {})} />);
+    const documentation = screen.getByRole("textbox", { name: "Documentation" });
+    expect(documentation.getAttribute("aria-multiline")).toBe("true");
+    // Canvas shortcuts skip contenteditable targets, and the details dialog stays open on Escape while it has focus.
+    expect(documentation.getAttribute("contenteditable")).toBe("true");
+    expect(documentation.getAttribute("data-inline-editing")).toBe("true");
   });
 });
