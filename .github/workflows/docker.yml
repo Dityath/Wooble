@@ -15,6 +15,8 @@ on:
       - "scripts/selfhost-*.test.ts"
       - "scripts/release-workflow.test.ts"
       - "scripts/third-party-notices.test.ts"
+      - ".github/workflows/release.yml"
+      - "scripts/third-party-notices.ts"
       - "scripts/selfhost-cli-check.ts"
       - "scripts/selfhost-image-check.ts"
       - "deploy/wooble"
