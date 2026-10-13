@@ -34,6 +34,8 @@ API tests call the Elysia app in process against the isolated database. `apiClie
 
 A new route needs an access class in `routeAccess` (`apps/api/src/lib/auth.ts`) and an entry in the route list in `apps/api/tests/route-access.test.ts`; that test fails for any registered route missing from the list. To test a guard rule before a real route uses it, register a probe route with `apiClient({ configure })`.
 
+Live-socket tests that use the raw client (`apps/api/tests/support/raw-websocket.ts`) prove frame isolation for a peer that never answers a close frame, not detach-before-close ordering: on Bun 1.3.14 the server's close handler runs synchronously inside `ws.close()`, so the two cannot be told apart. The terminate fallback timer is not observed by any test and is unverified.
+
 ## Database migrations and upgrades
 
 Each release must upgrade from the previous one without losing content. Two checks guard this:

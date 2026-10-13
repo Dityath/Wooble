@@ -34,26 +34,31 @@ liveRoutes(periodic, 100);
 // enough to make assertions inside the close window. The stub PATCH route runs the same
 // after-response recheck and `graph:changed` broadcast as the real canvas route, without the guard.
 const terminateAfterMs = 1000;
-function rawApp(recheckMs: number) {
+function rawApp(recheckMs: number, terminateMs = terminateAfterMs) {
   const app = new Elysia({ serve: { reusePort: false } })
     .decorate("actor", null as Actor | null)
     .onRequest((context) => {
       context.actor = actors.get(context.request.headers.get("cookie") ?? "") ?? null;
     });
-  liveRoutes(app, recheckMs, { terminateAfterMs });
+  liveRoutes(app, recheckMs, { terminateAfterMs: terminateMs });
   app.patch("/api/canvases/:canvasId", () => ({ ok: true }));
   return app;
 }
 const rawLive = rawApp(60_000);
 const rawPeriodic = rawApp(100);
+// A delay no other app uses, so the timer-leak test can tell live.ts's terminate timers from all others.
+const leakTerminateAfterMs = 1337;
+const rawLeak = rawApp(60_000, leakTerminateAfterMs);
 
-const origins = { guarded: "", unguarded: "", periodic: "", rawLive: "", rawPeriodic: "" };
+const origins = { guarded: "", unguarded: "", periodic: "", rawLive: "", rawPeriodic: "", rawLeak: "" };
 beforeAll(async () => {
   await api.app.listen({ hostname: "127.0.0.1", port: 0 });
   await unguarded.listen({ hostname: "127.0.0.1", port: 0 });
   await periodic.listen({ hostname: "127.0.0.1", port: 0 });
   await rawLive.listen({ hostname: "127.0.0.1", port: 0 });
   await rawPeriodic.listen({ hostname: "127.0.0.1", port: 0 });
+  await rawLeak.listen({ hostname: "127.0.0.1", port: 0 });
+  origins.rawLeak = rawLeak.server?.url.origin ?? "";
   origins.rawLive = rawLive.server?.url.origin ?? "";
   origins.rawPeriodic = rawPeriodic.server?.url.origin ?? "";
   origins.periodic = periodic.server?.url.origin ?? "";
@@ -66,6 +71,7 @@ afterAll(async () => {
   await stopLiveServer(periodic, 100);
   await stopLiveServer(rawLive, 100);
   await stopLiveServer(rawPeriodic, 100);
+  await stopLiveServer(rawLeak, 100);
 });
 beforeEach(() => resetLoginAttempts());
 
@@ -591,10 +597,15 @@ describe("live canvas periodic recheck failures", () => {
   });
 });
 
-describe("live canvas close window", () => {
+// Evidence boundary: on Bun 1.3.14 the server's close handler runs synchronously inside ws.close(), so
+// these tests cannot tell "detach before close" from "detach in the close handler", and the terminate
+// fallback (a timer that ends a client that never answers) is unobservable here and stays unverified.
+// What they do cover is frame isolation: a client that never answers the close frame receives nothing
+// further, and nothing it sends is relayed, while its TCP connection is still open.
+describe("live frame isolation for a client that never answers the close frame", () => {
   const changed = { code: 1008, reason: "Canvas access changed" };
   const unavailable = { code: 1011, reason: "Access check unavailable" };
-  type Server = "rawLive" | "rawPeriodic";
+  type Server = "rawLive" | "rawPeriodic" | "rawLeak";
 
   /** A signed-in raw peer that never answers a close frame, and a guest in the same room. */
   async function rawPair(server: Server) {
@@ -644,6 +655,8 @@ describe("live canvas close window", () => {
     await received(guest, "left", terminateAfterMs / 2);
     await waitFor(() => raw.closeFrame !== null);
     expect(raw.closeFrame).toEqual(closeFrame);
+    // The checks below are only meaningful while the raw client is still connected.
+    expect(raw.isTcpClosed()).toBe(false);
     const before = raw.messages.length;
 
     // Frames from the room no longer reach the raw client...
@@ -659,6 +672,7 @@ describe("live canvas close window", () => {
     const later = openLive(server, statusPage);
     const presence = await received(later, "presence");
     await Bun.sleep(150);
+    expect(raw.isTcpClosed()).toBe(false);
     expect(raw.afterClose).toEqual([]);
     expect(raw.messages).toHaveLength(before);
     expect((presence.peers as Array<{ id: string }>).map((peer) => peer.id)).not.toContain(rawId);
@@ -670,7 +684,7 @@ describe("live canvas close window", () => {
     expect(guest.messages.filter((message) => message.type === "left")).toHaveLength(1);
   }
 
-  it("detaches a peer whose immediate recheck failed before its close handshake completes", async () => {
+  it("detaches a peer whose immediate recheck failed without relaying frames while it never answers the close frame", async () => {
     const pair = await rawPair("rawLive");
     const select = failNextProbe();
     try {
@@ -681,7 +695,7 @@ describe("live canvas close window", () => {
     }
   });
 
-  it("detaches a peer whose periodic recheck failed before its close handshake completes", async () => {
+  it("detaches a peer whose periodic recheck failed without relaying frames while it never answers the close frame", async () => {
     const pair = await rawPair("rawPeriodic");
     const select = failNextProbe();
     try {
@@ -692,24 +706,38 @@ describe("live canvas close window", () => {
     }
   });
 
-  it("detaches a peer revoked by a periodic recheck before its close handshake completes", async () => {
+  it("detaches a peer revoked by a periodic recheck without relaying frames while it never answers the close frame", async () => {
     const pair = await rawPair("rawPeriodic");
     expect((await api.request("POST", "/api/auth/logout", pair.person.session)).status).toBe(200);
     await expectDetachedInCloseWindow(pair, changed);
   });
 
-  it("detaches a revoked peer before its close handshake completes", async () => {
+  it("detaches a revoked peer without relaying frames while it never answers the close frame", async () => {
     const pair = await rawPair("rawLive");
     expect((await api.request("POST", "/api/auth/logout", pair.person.session)).status).toBe(200);
     expect((await patch("rawLive", pair.statusPage)).status).toBe(200);
     await expectDetachedInCloseWindow(pair, changed);
   });
 
+  /** Waits until a backend of this database is blocked behind the given backend. */
+  async function waitForBlocked(blockerPid: number) {
+    for (let attempt = 0; attempt < 500; attempt++) {
+      const result = await db.execute(
+        sql`select count(*)::int as n from pg_stat_activity
+             where datname = current_database() and pid <> pg_backend_pid()
+               and pg_blocking_pids(pid) @> array[${blockerPid}::int]`,
+      );
+      if (Number((result.rows[0] as { n: number }).n) >= 1) return;
+      await Bun.sleep(10);
+    }
+    throw new Error(`Nothing became blocked behind pid ${blockerPid}`);
+  }
+
   it("does not close again, or arm a terminate timer, for a peer that closed while its recheck ran", async () => {
     const { statusPage } = await liveFixture();
     const person = await api.register("Raw Editor");
     actors.set(person.session, actor(person));
-    const live = openLive("rawLive", statusPage, person.session);
+    const live = openLive("rawLeak", statusPage, person.session);
     await received(live, "presence");
     expect((await api.request("POST", "/api/auth/logout", person.session)).status).toBe(200);
 
@@ -719,7 +747,7 @@ describe("live canvas close window", () => {
     const realClear = globalThis.clearTimeout;
     const set = spyOn(globalThis, "setTimeout").mockImplementation(((handler: () => void, ms?: number) => {
       const timer = realSet(handler, ms);
-      if (ms === terminateAfterMs) pending.add(timer);
+      if (ms === leakTerminateAfterMs) pending.add(timer);
       return timer;
     }) as unknown as typeof setTimeout);
     const clear = spyOn(globalThis, "clearTimeout").mockImplementation(((timer: unknown) => {
@@ -730,11 +758,12 @@ describe("live canvas close window", () => {
       await db.transaction(async (tx) => {
         // The recheck that follows the canvas change reads the session, and waits for this lock.
         await tx.execute(sql`lock table sessions in access exclusive mode`);
-        expect((await patch("rawLive", statusPage)).status).toBe(200);
-        await Bun.sleep(50);
+        const holder = await tx.execute(sql`select pg_backend_pid() as pid`);
+        const holderPid = Number((holder.rows[0] as { pid: number }).pid);
+        expect((await patch("rawLeak", statusPage)).status).toBe(200);
+        await waitForBlocked(holderPid);
         live.socket.close();
         await live.closed;
-        await Bun.sleep(50);
       });
       // The recheck now finds no access for a peer that is already gone.
       await Bun.sleep(200);

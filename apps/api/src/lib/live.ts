@@ -138,9 +138,11 @@ export function liveRoutes(app: Api, recheckMs = 30_000, { terminateAfterMs = 10
     detach(peer);
     if (peer.closing) return;
     peer.closing = true;
-    if (peer.socket.readyState !== 1) return;
-    peer.socket.close(code, reason);
+    const state = peer.socket.readyState as number;
+    if (state === 3) return;
+    if (state === 1) peer.socket.close(code, reason);
     // Bun runs the close handler inside close(); a socket that is already closed needs no fallback.
+    // A socket in CLOSING (2) may still never finish its handshake, so it keeps the fallback.
     if ((peer.socket.readyState as number) === 3) return;
     peer.revokeTimer = setTimeout(() => peer.socket.terminate(), terminateAfterMs);
   }
