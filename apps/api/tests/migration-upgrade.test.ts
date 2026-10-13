@@ -1,7 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { migrateDatabase, readJournal, scratchDatabase } from "./support/migrations";
+import type { ScratchDatabase } from "./support/migrations";
+import {
+  migrateDatabase,
+  readJournal,
+  scratchDatabase,
+  scratchDatabasePrefix,
+  scratchDatabaseName,
+} from "./support/migrations";
 
 // The last migration in the v0.1.0 release. Each later release keeps this test and adds its own previous release.
 const v010 = "0005_tranquil_prima";
@@ -96,5 +103,225 @@ describe("database upgrades", () => {
     } finally {
       await scratch.drop();
     }
+  });
+});
+
+/** Connection string for another database on the same instance as DATABASE_URL. */
+function urlFor(name: string): string {
+  const url = new URL(process.env.DATABASE_URL ?? "");
+  url.pathname = `/${name}`;
+  return url.toString();
+}
+
+/** The admin database, used only for statements about other databases. */
+function admin() {
+  return drizzle(urlFor("postgres"));
+}
+
+/** Runs one admin statement on its own pool, closed before the statement resolves. */
+async function adminStatement(statement: string): Promise<void> {
+  const database = admin();
+  try {
+    await database.execute(sql.raw(statement));
+  } finally {
+    await database.$client.end();
+  }
+}
+
+/** The scratch databases currently on the instance, so a leaked or destroyed one is visible. */
+async function scratchNames(): Promise<string[]> {
+  const database = admin();
+  try {
+    const result = await database.execute(
+      sql.raw("SELECT datname FROM pg_database WHERE starts_with(datname, 'wooble_p1_1_') ORDER BY datname"),
+    );
+    return result.rows.map((row) => String(row.datname));
+  } finally {
+    await database.$client.end();
+  }
+}
+
+/** Runs a read on a scratch database through a pool that is closed before it resolves. */
+async function query(databaseUrl: string, statement: string): Promise<unknown[]> {
+  const database = drizzle(databaseUrl);
+  try {
+    return (await database.execute(sql.raw(statement))).rows;
+  } finally {
+    await database.$client.end();
+  }
+}
+
+const publicTables = (databaseUrl: string) =>
+  query(databaseUrl, "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename").then((rows) =>
+    rows.map((row) => (row as { tablename: string }).tablename),
+  );
+
+/** Two harnesses created at the same time, with every one of them cleaned up whatever the body does. */
+async function withParallelHarnesses(
+  body: (first: ScratchDatabase, second: ScratchDatabase) => Promise<void>,
+): Promise<void> {
+  const harnesses: ScratchDatabase[] = [];
+  const results = await Promise.allSettled(
+    [scratchDatabase("parallel"), scratchDatabase("parallel")].map((pending) =>
+      pending.then((scratch) => {
+        harnesses.push(scratch);
+        return scratch;
+      }),
+    ),
+  );
+  const failed = results.find((result) => result.status === "rejected");
+  try {
+    if (failed?.status === "rejected") throw failed.reason;
+    const [first, second] = harnesses as [ScratchDatabase, ScratchDatabase];
+    await body(first, second);
+  } finally {
+    for (const harness of harnesses) await harness.drop();
+  }
+}
+
+describe("scratch database safety", () => {
+  it("keeps two harnesses running at the same time independent", async () => {
+    await withParallelHarnesses(async (first, second) => {
+      // Both were created before either was dropped, so their names have to differ.
+      expect(first.name).not.toBe(second.name);
+      await Promise.all([migrateDatabase(first.url), migrateDatabase(second.url)]);
+
+      const names = await scratchNames();
+      expect(names).toContain(first.name);
+      expect(names).toContain(second.name);
+
+      const expected = ["canvas_events", "entities", "users", "workspace_members"];
+      for (const tables of [await publicTables(first.url), await publicTables(second.url)]) {
+        for (const table of expected) expect(tables).toContain(table);
+      }
+
+      // Dropping one must leave the other reachable, with its schema and its rows.
+      await query(
+        second.url,
+        "INSERT INTO users (id, email, name, password_hash) VALUES ('00000000-0000-4000-8000-0000000000ff', 'survivor@example.test', 'Survivor', 'scrypt$fictional')",
+      );
+      await first.drop();
+
+      expect(await scratchNames()).not.toContain(first.name);
+      expect(await scratchNames()).toContain(second.name);
+      const survivors = await publicTables(second.url);
+      for (const table of expected) expect(survivors).toContain(table);
+      expect(await query(second.url, "SELECT email FROM users WHERE email = 'survivor@example.test'")).toEqual([
+        { email: "survivor@example.test" },
+      ]);
+    });
+  });
+
+  it("never drops a database it did not create", async () => {
+    // `<database>_upgrade` is the fixed name the pre-fix harness used for the suffix below, so it is exactly what a
+    // preemptive `DROP DATABASE` used to destroy. The second sentinel sits in the harness's own prefix namespace.
+    const base = new URL(process.env.DATABASE_URL ?? "").pathname.slice(1);
+    const sentinels = [`${base}_upgrade`, `${scratchDatabasePrefix}${base}_sentinel_0000`];
+    const created: string[] = [];
+    try {
+      for (const sentinel of sentinels) {
+        await adminStatement(`CREATE DATABASE ${sentinel}`);
+        created.push(sentinel);
+        await query(urlFor(sentinel), "CREATE TABLE notes (id int PRIMARY KEY, body text NOT NULL)");
+        await query(
+          urlFor(sentinel),
+          "INSERT INTO notes (id, body) VALUES (1, 'Written before any scratch database existed')",
+        );
+      }
+
+      // Three full create/migrate/drop cycles against the same suffix the sentinel name was built from.
+      for (let cycle = 0; cycle < 3; cycle += 1) {
+        const scratch = await scratchDatabase("upgrade");
+        try {
+          await migrateDatabase(scratch.url);
+        } finally {
+          await scratch.drop();
+          // A second drop is a no-op: the handle is spent once it has dropped its database.
+          await scratch.drop();
+        }
+      }
+
+      for (const sentinel of sentinels) {
+        expect(await scratchNames()).toContain(sentinel);
+        expect(await query(urlFor(sentinel), "SELECT id, body FROM notes ORDER BY id")).toEqual([
+          { id: 1, body: "Written before any scratch database existed" },
+        ]);
+      }
+    } finally {
+      // The test's own databases, dropped by name: never through the harness under test.
+      for (const sentinel of created) await adminStatement(`DROP DATABASE IF EXISTS ${sentinel} WITH (FORCE)`);
+    }
+  });
+
+  it("regenerates a taken name instead of dropping what is already there", async () => {
+    const base = new URL(process.env.DATABASE_URL ?? "").pathname.slice(1);
+    const existing = scratchDatabaseName(base, "taken", "aaaa0000");
+    await adminStatement(`CREATE DATABASE ${existing}`);
+    try {
+      await query(urlFor(existing), "CREATE TABLE kept (id int PRIMARY KEY)");
+      await query(urlFor(existing), "INSERT INTO kept (id) VALUES (1)");
+
+      // The first candidate collides with `existing`; later ones are fresh.
+      const tokens = ["aaaa0000", "bbbb1111", "cccc2222"];
+      let calls = 0;
+      const scratch = await scratchDatabase("taken", { token: () => tokens[calls++] ?? "dddd3333" });
+      try {
+        expect(calls).toBe(2);
+        expect(scratch.name).not.toBe(existing);
+        expect(scratch.name).toBe(scratchDatabaseName(base, "taken", "bbbb1111"));
+        expect(await scratchNames()).toContain(scratch.name);
+
+        // The pre-existing database kept both its name and its contents.
+        expect(await scratchNames()).toContain(existing);
+        expect(await query(urlFor(existing), "SELECT id FROM kept ORDER BY id")).toEqual([{ id: 1 }]);
+      } finally {
+        await scratch.drop();
+      }
+
+      // And dropping what this run created leaves the taken database alone.
+      expect(await scratchNames()).not.toContain(scratch.name);
+      expect(await query(urlFor(existing), "SELECT id FROM kept ORDER BY id")).toEqual([{ id: 1 }]);
+    } finally {
+      await adminStatement(`DROP DATABASE IF EXISTS ${existing} WITH (FORCE)`);
+    }
+  });
+
+  it("gives up after bounded attempts when every name is taken, without dropping anything", async () => {
+    const base = new URL(process.env.DATABASE_URL ?? "").pathname.slice(1);
+    const existing = scratchDatabaseName(base, "full", "eeee4444");
+    await adminStatement(`CREATE DATABASE ${existing}`);
+    try {
+      let calls = 0;
+      await expect(
+        scratchDatabase("full", {
+          token: () => {
+            calls += 1;
+            return "eeee4444";
+          },
+        }),
+      ).rejects.toThrow(/attempts/);
+      expect(calls).toBeGreaterThan(1);
+      expect(calls).toBeLessThanOrEqual(10);
+      expect(await scratchNames()).toContain(existing);
+    } finally {
+      await adminStatement(`DROP DATABASE IF EXISTS ${existing} WITH (FORCE)`);
+    }
+  });
+
+  it("bounds the generated name even when the test database name is long", () => {
+    const longName = `wooble_p1_1_${"x".repeat(200)}`;
+    const first = scratchDatabaseName(longName, "upgrade", "0123456789");
+    const second = scratchDatabaseName(longName, "upgrade", "fedcba9876");
+
+    for (const name of [first, second]) {
+      expect(Buffer.byteLength(name, "utf8")).toBeLessThanOrEqual(63);
+      expect(name).toMatch(/^[a-z0-9_]+$/);
+      expect(name.startsWith("wooble_p1_1_")).toBe(true);
+      expect(name).toContain("_upgrade_");
+    }
+
+    // Same database and suffix, different randomness.
+    expect(first).not.toBe(second);
+    expect(first.slice(0, -10)).toBe(second.slice(0, -10));
   });
 });
