@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import type { QueryClient } from "@tanstack/react-query";
 import type userEvent from "@testing-library/user-event";
 import { InspectorPanel } from "../src/features/inspector/inspector-panel";
@@ -23,9 +23,15 @@ beforeEach(() => {
   localStorage.clear();
   installFakeSocket();
   server = new FakeApi().install();
+  // Default save target; routes a test registers later take precedence (FakeApi: later registrations win).
+  server.on("PATCH /api/entities/:entityId", {});
   useEditorStore.setState({ selectedEntityId: null, selectedConnectionId: null, positions: {} });
 });
-afterEach(() => {
+afterEach(async () => {
+  // Unmount and let queued documentation saves finish while the fake fetch is still installed, so none
+  // escapes to the real network after the test ends.
+  cleanup();
+  for (let round = 0; round < 3; round++) await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
   // Sign-out suspends drafts for the whole process; later tests (and files) start with them on.
   resumeDocumentationDrafts();
   server.restore();
