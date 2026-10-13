@@ -30,7 +30,21 @@ API tests need an isolated PostgreSQL database. See [self-hosting](docs/self-hos
 
 Canvas browser tests also need a separate, migrated PostgreSQL database and Playwright Chromium. Run `bunx playwright install chromium` once, then run `BROWSER_TEST_DATABASE_URL=<test-database-url> bun run --cwd apps/web test:browser`. The browser test command requires this variable and refuses to reuse an existing API or web server. Its fixtures create fictional users and canvases in the test database and leave them there for inspection; use a disposable database.
 
-Pull requests that touch the apps, packages, `deploy/`, `compose.selfhost.yml`, or the lockfile also run the **Self-hosted stack** workflow (`.github/workflows/docker.yml`). It builds and starts the Docker stack with a throwaway environment file, checks health through the web server, checks that only the web service publishes a port and only on loopback, and runs `scripts/selfhost-smoke.ts`: it registers a fictional account, edits a canvas, opens the live socket, checks that a write from another origin is refused, restarts the API, and stops and starts the stack to confirm the data is kept. Run it locally with Docker by following the workflow's steps; never point it at an installation with real users, because it creates an account.
+Self-host browser login is a separate journey from canvas browser tests. It needs a running disposable self-host Compose stack at an HTTPS origin and Playwright Chromium. For local Caddy TLS, the HTTPS-error override is restricted to loopback:
+
+```sh
+bun run --cwd apps/web playwright install chromium
+SELFHOST_BROWSER_DISPOSABLE=1 \
+  SELFHOST_BROWSER_ORIGIN=https://localhost:18083 \
+  SELFHOST_BROWSER_IGNORE_HTTPS_ERRORS=1 \
+  bun run --cwd apps/web test:selfhost-browser
+```
+
+This test loads the actual static web assets through Caddy, registers a fictional account, checks the browser-created Secure/HttpOnly session cookie, signs out, and logs in again. It does not inject a cookie. API smoke tests that call registration/login directly prove API behavior, not the browser cookie or Caddy journey. Use only fictional data and a disposable stack.
+
+Pull requests touching the application, deployment, Compose, image-check, or self-host scripts are configured to run the **Self-hosted stack** workflow (`.github/workflows/docker.yml`). It builds the source stack with a throwaway environment, checks the API image/build-context backup exclusion and SQL migrations, runs CLI static checks, verifies HTTPS health and that only the web service publishes a loopback port, then exercises API registration/canvas edits/live presence/foreign-Origin rejection, browser login through Caddy, backup and confirmed restore, API restart, and persistence across stop/start. The workflow's configuration is not a passed GitHub run; check the Actions result for the branch/commit. Docker/browser runtime, fresh-host, second-device, domain HTTPS, and multi-architecture results must be reported separately. Never run these checks against an installation with real users because they create fictional accounts and mutate a smoke canvas.
+
+The release workflow is a separate path. Its tag/manual dry-run behavior and architecture results must be read from the actual workflow and GitHub run; do not infer a passing release from CI configuration or a local source build. See [versioning](versioning.md) and [self-hosting](self-hosting.md) for exact image tags, maintainer GHCR package visibility setup, and release limitations.
 
 Biome is the repository linter and formatter. `bun run lint` treats warnings as errors, so CI fails on any lint warning. Run `bun run format` when formatting needs to be applied. CSS formatting is disabled in `biome.json` to preserve the existing stylesheet.
 

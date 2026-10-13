@@ -8,7 +8,27 @@ Wooble has three test suites, and each one runs with Bun:
 | Shared runtime | `packages/*/tests` | Nothing extra |
 | API | `apps/api/tests` | An isolated, migrated PostgreSQL database in `DATABASE_URL`, whose user can create databases (for the upgrade test) |
 
-Canvas browser journeys run separately with Playwright; see [CONTRIBUTING.md](../CONTRIBUTING.md#local-checks).
+Canvas and self-host browser journeys run separately with Playwright; see [CONTRIBUTING.md](../CONTRIBUTING.md#local-checks). API smoke tests and browser login tests prove different things: only the browser journey verifies the real web assets, browser-managed Secure/HttpOnly cookies, and login through Caddy.
+
+## Self-host stack checks
+
+`scripts/selfhost-cli-check.ts` performs static safety checks on `deploy/wooble`. `scripts/selfhost-image-check.ts` requires Docker and creates a fictional backup sentinel to check that it is excluded from the build context and final API image while checked-in SQL migrations remain present. The script removes only its own sentinel and temporary image.
+
+The Self-hosted stack GitHub Actions workflow (`.github/workflows/docker.yml`) is configured to build a disposable source stack, verify its published ports and health, run API registration/canvas/WebSocket/Origin smoke, exercise browser login and static assets through local Caddy HTTPS, and rehearse backup/restore using fictional content. It then tests restart and persistence. Workflow configuration is not evidence of a completed GitHub Actions run; report the run URL/status and each phase result when it has actually run. Do not use these commands against a real installation or real account data.
+
+To run the browser-specific journey against a disposable local Compose stack, start a stack using a supported HTTPS origin (for example `https://localhost:18083`), install Playwright's Chromium once, then run:
+
+```sh
+bun run --cwd apps/web playwright install chromium
+SELFHOST_BROWSER_DISPOSABLE=1 \
+  SELFHOST_BROWSER_ORIGIN=https://localhost:18083 \
+  SELFHOST_BROWSER_IGNORE_HTTPS_ERRORS=1 \
+  bun run --cwd apps/web test:selfhost-browser
+```
+
+`SELFHOST_BROWSER_IGNORE_HTTPS_ERRORS=1` is permitted only for loopback origins and a disposable stack using Caddy's local certificate. It does not turn off HTTPS or alter cookie policy. For a trusted certificate or a controlled domain, omit that option. The browser test creates one fictional registration, signs out, logs in again, checks static assets, and inspects the browser-set cookie attributes; it never injects a cookie. A successful API smoke test does not replace this browser test.
+
+At this documentation checkpoint Docker/browser execution for the local self-host stack has not been available, and the new GitHub workflow has not been run. This section describes configured checks, not passed results.
 
 ## Writing web tests
 

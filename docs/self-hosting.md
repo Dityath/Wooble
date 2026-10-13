@@ -1,111 +1,132 @@
 # Self-host Wooble
 
-Wooble needs a web server, its Bun API, and PostgreSQL. The Docker path below starts all three on one machine. The Bun path is for operators who prefer to run the application processes themselves. These instructions target a private machine, LAN, or VPN while email verification and account recovery are not implemented.
+This guide describes the self-host CLI and Compose modes added after the first preview. They require a release tag that contains `deploy/wooble` and the mode overlays. The existing `v0.1.0` tag predates those files, so it is only a legacy upgrade fixture, not a checkout for this procedure. A new exact-version tag and its API/web GHCR images have not yet been verified as published. Until the maintainer publishes and verifies a tag containing these files, this is the installation procedure to use for that release, not evidence that a supported image installation is already available. Never substitute `main`, `latest`, or an untagged image.
 
-## Docker: quickest local installation
+Wooble does not yet provide email verification, email delivery, or password recovery. Keep registration and access within a trusted group. An account's email address is not verified, and a forgotten password currently has no recovery flow.
 
-Prerequisites: Docker Engine with Compose, and free port 8080. From the repository root:
+## Requirements and configuration
 
-```sh
-cp .env.selfhost.example .env.selfhost
-```
-
-Edit `.env.selfhost` and replace `WOOBLE_DB_PASSWORD` with a long random alphanumeric password. Keep `WOOBLE_ORIGIN=http://localhost:8080` for access from the same machine. Then start the stack:
+Use Docker Engine with the Compose plugin. When a release containing this CLI has been published, check out that exact tag (the `v0.2.0` below is a future example and must not be used until its tag and images exist), then create a private environment file:
 
 ```sh
-docker compose --env-file .env.selfhost -f compose.selfhost.yml up --build -d
-docker compose --env-file .env.selfhost -f compose.selfhost.yml ps
-```
-
-Open <http://localhost:8080> and register your first account. Registration creates **My Workspace**. The first account is a regular user; if a system administrator is needed, promote that account explicitly:
-
-```sh
-docker compose --env-file .env.selfhost -f compose.selfhost.yml exec api \
-  bun apps/api/scripts/promote-admin.ts you@example.com
-```
-
-The stack waits for PostgreSQL to become healthy, applies checked-in migrations, and then starts the API and web server. The browser uses the same origin for the web UI, API, and WebSocket connection. PostgreSQL and the API have no host-published ports. The web server binds to `127.0.0.1` only. Set `WOOBLE_HTTP_PORT` and the matching port in `WOOBLE_ORIGIN` if 8080 is unavailable.
-
-Check the application and logs:
-
-```sh
-curl -fsS http://localhost:8080/health
-docker compose --env-file .env.selfhost -f compose.selfhost.yml logs --tail=100 api web
-```
-
-Stop it without removing stored data:
-
-```sh
-docker compose --env-file .env.selfhost -f compose.selfhost.yml down
-```
-
-Do not add `--volumes` to that command unless you intend to delete the PostgreSQL volume.
-
-### Access from another machine
-
-Keep the Docker web port bound to loopback and put an HTTPS reverse proxy on the same host in front of `127.0.0.1:8080`. Forward normal HTTP requests and WebSocket upgrades. Set `WOOBLE_ORIGIN` to the exact browser origin, such as `https://wooble.example.com`, then recreate the API service:
-
-```sh
-docker compose --env-file .env.selfhost -f compose.selfhost.yml up -d --force-recreate api
-```
-
-The proxy must terminate HTTPS. Session cookies are Secure for non-local production origins. Wooble currently lacks email verification, email delivery, and password recovery. Keep access to the installation within a trusted group until those flows are available; do not invite people by an unverified email address.
-
-### Backup and updates
-
-The `postgres-data` Docker volume contains Wooble's durable application data. Save a database backup before updating:
-
-```sh
-(umask 077 && mkdir -p backups && docker compose --env-file .env.selfhost -f compose.selfhost.yml exec -T postgres \
-  pg_dump -U wooble -Fc wooble > "backups/wooble-$(date -u +%Y%m%dT%H%M%SZ).dump")
-```
-
-The `umask` keeps the directory and the dump readable only by your user. `backups/` is excluded from Git and from the Docker build context, so a dump stored there is never copied into an image. Store a copy outside the server as well.
-
-Update to a tagged release rather than following `main`. `main` can contain migrations for features that are still in progress, and an applied migration can only be undone by restoring a backup. After the backup, check out the release you want and run the same `up --build -d` command:
-
-```sh
+git clone https://github.com/Dityath/Wooble.git
+cd Wooble
 git fetch --tags
-git checkout v0.1.0 # replace with the release you are installing
-docker compose --env-file .env.selfhost -f compose.selfhost.yml up --build -d
+git checkout v0.2.0
+cp .env.selfhost.example .env.selfhost
+chmod 600 .env.selfhost
 ```
 
-The migration service applies pending migrations before the API starts. Test a restore on a separate installation before depending on backups for recovery.
+Edit `.env.selfhost` and set `WOOBLE_DB_PASSWORD` to a long random alphanumeric password, `WOOBLE_VERSION` to that same exact published release tag (`v0.2.0` only after it exists), and `WOOBLE_COMPOSE_PROJECT_NAME` to a stable name for this installation. Keep the project name stable across commands so Compose reuses its database volume. Do not share or commit this file.
 
-## Bun on the host
-
-Prerequisites: Bun 1.3.14, PostgreSQL 16, and a web server or reverse proxy capable of serving static files and forwarding WebSocket connections. Create a PostgreSQL database and user with a strong password. From the repository root:
+Choose one access mode by setting `WOOBLE_MODE`, `WOOBLE_ORIGIN`, and the mode-specific values below. The examples use port `18083` for a local instance. The checked-in environment example defaults to port `8080`; change both `WOOBLE_HTTP_PORT` and `WOOBLE_ORIGIN` together if you use another port. Caddy's local certificate is self-signed; install/trust the Caddy local root CA in the browser device, or use the browser only after explicitly allowing its local certificate. Do not disable Secure cookies to make plain HTTP work. For local Compose mode, export the disposable Caddy CA after the stack starts and import it only on devices that should trust this instance:
 
 ```sh
-bun install --frozen-lockfile
-cp .env.example .env
+docker compose --env-file .env.selfhost --project-name wooble \
+  -f compose.selfhost.yml -f compose.selfhost.local.yml \
+  exec -T web cat /data/caddy/pki/authorities/local/root.crt > /tmp/wooble-local-root.crt
+chmod 600 /tmp/wooble-local-root.crt
 ```
 
-Set `DATABASE_URL` to the database you created, `API_PORT=3001`, `NODE_ENV=production`, and `WEB_ORIGIN` to the browser origin. For a same-machine trial through a web server on port 8080, use `WEB_ORIGIN=http://localhost:8080`. Keep `.env` private. Apply migrations and build the frontend:
+Use the configured project name in that command. Treat this CA file as trust material, not as a public certificate. Remove the local copy when it is no longer needed.
+
+| Mode | Environment values | Browser URL and host exposure |
+| --- | --- | --- |
+| `local` | `WOOBLE_MODE=local`, `WOOBLE_ORIGIN=https://localhost:18083`, `WOOBLE_HTTP_PORT=18083` | `https://localhost:18083`; web binds to `127.0.0.1` only. |
+| `private` | `WOOBLE_MODE=private`, `WOOBLE_BIND_ADDRESS=<host-private-IP>`, `WOOBLE_CADDY_HOST=<same-private-IP>`, `WOOBLE_ORIGIN=https://<same-private-IP>:18083`, `WOOBLE_HTTP_PORT=18083` | Exact HTTPS origin on the selected private interface. Use only on a private network/VPN and make the local Caddy certificate trusted on each device. Set the bind address to an interface address on this host. |
+| `domain` | `WOOBLE_MODE=domain`, `WOOBLE_DOMAIN=wooble.example.com`, `WOOBLE_ORIGIN=https://wooble.example.com` | `https://wooble.example.com`; DNS must point to this host and inbound TCP 80/443 and UDP 443 must reach it for Caddy's automatic HTTPS/HTTP3. |
+
+For local access, edit `.env.selfhost` to the exact published `WOOBLE_VERSION` used above, `WOOBLE_MODE=local`, `WOOBLE_ORIGIN=https://localhost:18083`, and `WOOBLE_HTTP_PORT=18083`. Set a unique project name if you need an isolated installation. The copy-and-edit workflow above avoids printing secrets. Confirm the non-secret settings without dumping the file:
 
 ```sh
-bun db:migrate
-bun run --cwd apps/web build
-bun --env-file=.env apps/api/src/index.ts
+awk -F= '$1 ~ /^WOOBLE_(VERSION|COMPOSE_PROJECT_NAME|MODE|ORIGIN|HTTP_PORT|DOMAIN|CADDY_HOST|BIND_ADDRESS)$/ { print }' .env.selfhost
 ```
 
-Run the final command under a process supervisor so it restarts after a reboot. Serve `apps/web/dist` as a single-page app: return `index.html` for UI routes, proxy `/api/*` and `/health` to `127.0.0.1:3001`, and allow WebSocket upgrades on `/api/canvases/*/live`. Bind or firewall the API port so clients reach it only through the proxy. Set the proxy's public URL to exactly the same value as `WEB_ORIGIN`.
+The base Compose file publishes no API or database host ports. In local mode only the web container publishes `127.0.0.1:18083` in this example; private mode publishes the web port only on the explicitly selected private address; domain mode publishes web ports 80/443. Caddy sends `/api/*` and `/health` to the API, serves the static web assets, and its `reverse_proxy` carries WebSocket upgrades for live canvas connections. The API trusts forwarding headers only from the configured proxy network/CIDRs. Do not expose the API container directly or add broad trusted proxy ranges.
 
-For Internet access, use HTTPS at the reverse proxy. The same account and email limitations described above apply. Back up the PostgreSQL database before applying migrations or updating the application.
+Compose stores Caddy's `/data` and `/config` in named `caddy-data` and `caddy-config` volumes. Keeping the Compose project name stable preserves the local internal CA and domain ACME certificates/account state when the web container is recreated or the stack is stopped and started. Routine `down` preserves these volumes; `down --volumes` removes them along with database data. Keep the project name stable during upgrades and preserve both Caddy volumes in backups of the host's Docker volumes if you need to recover the same local CA or ACME state after host loss.
 
-## Configuration reference
+The standard API trusted range is `TRUSTED_PROXY_CIDRS=172.30.0.2/32`, the Compose Caddy peer. If you change `WOOBLE_PROXY_SUBNET`, `WOOBLE_CADDY_IP`, or `WOOBLE_API_IP`, adjust the trusted range so it names the actual Caddy peer. For an additional upstream proxy, add only its exact source CIDR to the API trusted list, and configure `CADDY_TRUSTED_PROXY_CIDRS` with the upstream proxy source ranges that Caddy should trust. The external proxy must overwrite/sanitize forwarding headers and connect through the chosen private bind. Verify the actual proxy chain and firewall before enabling these values; a client must not be able to reach the API directly and spoof `X-Forwarded-For`.
 
-The API checks its configuration when it starts. If a setting is missing or invalid, it exits and lists each problem by name without printing secret values; check the API logs (`docker compose --env-file .env.selfhost -f compose.selfhost.yml logs api`). A common one is a plain `http://` address for another machine: production session cookies are Secure, so browsers would not keep the sign-in, and the API refuses to start rather than fail at login.
+## Install and operate
 
-| Variable | Purpose |
-| --- | --- |
-| `DATABASE_URL` | PostgreSQL connection used by the API and migrations |
-| `API_PORT` | API listener port; defaults to 3001 |
-| `WEB_ORIGIN` | Exact browser origin accepted for credentials, writes, and WebSockets, such as `https://wooble.example.com`: scheme, host, and port only, without a path or trailing slash. Separate several with commas. Required in production, where plain `http://` is accepted only for `localhost`, `127.0.0.1`, or `[::1]` |
-| `NODE_ENV` | Set to `production` for a self-hosted API |
-| `TRUST_PROXY` | `true` only when the API is reachable solely through a proxy that controls `X-Forwarded-For`, otherwise `false` or unset; the Docker stack sets this automatically |
-| `WOOBLE_DB_PASSWORD` | Password used by the Docker PostgreSQL service |
-| `WOOBLE_ORIGIN` | Docker setting that becomes `WEB_ORIGIN` |
-| `WOOBLE_HTTP_PORT` | Local Docker web port; defaults to 8080 |
+The operator command loads `.env.selfhost`, selects the matching mode overlay, and uses the configured stable Compose project. `install` validates configuration, pulls the exact tagged API/web images, runs migrations, and starts the stack:
 
-`VITE_API_URL` should remain empty for the same-origin deployments described here. It is embedded into the frontend at build time. A separate API origin requires rebuilding the web app and configuring CORS and cookies for that origin.
+```sh
+./deploy/wooble install
+./deploy/wooble status
+./deploy/wooble diagnose
+```
+
+`diagnose` reports mode/project/version, validates origin/bind/HTTPS settings and the Caddy API route, then shows service and API health. The public health endpoint includes database and migration readiness plus the application version. Open the mode's browser URL from a supported device and create an account. The first account is a regular account; promoting a system administrator is a separate operation.
+
+To start an already installed stack after a host reboot, use `./deploy/wooble up`. To inspect service logs, from the repository directory run:
+
+```sh
+docker compose --env-file .env.selfhost --project-name wooble -f compose.selfhost.yml -f compose.selfhost.local.yml logs --tail=100
+```
+
+Replace the project and mode overlay in this diagnostic command when your `.env.selfhost` differs. Stop containers while preserving data with Compose `down`:
+
+```sh
+docker compose --env-file .env.selfhost --project-name wooble -f compose.selfhost.yml -f compose.selfhost.local.yml down
+```
+
+Never add `--volumes` to routine shutdown. It deletes the database volume.
+
+### Build from source
+
+For a source checkout, retain the exact checked-out release/tag and the same required `WOOBLE_VERSION` metadata. Add `compose.selfhost.source.yml` after the base and access-mode files. For example, in local mode:
+
+```sh
+docker compose --env-file .env.selfhost --project-name wooble \
+  -f compose.selfhost.yml -f compose.selfhost.local.yml -f compose.selfhost.source.yml \
+  config -q
+docker compose --env-file .env.selfhost --project-name wooble \
+  -f compose.selfhost.yml -f compose.selfhost.local.yml -f compose.selfhost.source.yml \
+  up --build -d
+```
+
+For private/domain mode, substitute the matching `compose.selfhost.private.yml` or `compose.selfhost.domain.yml`. This overlay builds the API and web services from the local Dockerfile. The convenience CLI uses release images and does not select the source overlay.
+
+## Backup, restore, and upgrade
+
+Backups live in the repository's `backups/` directory. The CLI creates a UTC timestamped custom-format dump with a private directory and file mode (`umask 077`, file mode `0600`):
+
+```sh
+./deploy/wooble backup
+```
+
+Copy each backup off the server and protect that copy with your normal encrypted storage/retention policy. A backup on the same disk is not disaster recovery. Never put database dumps in the source tree outside `backups/`; the Docker context excludes backup/dump artifacts while retaining checked-in SQL migrations.
+
+Restore replaces database contents and requires explicit confirmation. It first takes an automatic pre-restore backup, stops web/API, restores the selected dump, runs migrations, and starts the stack. If restore, migration, or startup fails, the CLI stops web/API, restores the automatic pre-restore dump, reruns migrations, and attempts to restart. It reports whether recovery succeeded and prints the retained backup path; it does not remove either backup. If automatic recovery also fails, the stack may remain stopped, and the pre-restore dump remains available for operator recovery:
+
+```sh
+./deploy/wooble restore --confirm backups/wooble-20261013T120000Z.dump
+```
+
+Use a real backup path in place of the fictional timestamp above. Rehearse recovery on an isolated copy before relying on it. Do not run this against an installation whose data you do not intend to replace.
+
+Upgrade to an exact published version, never `main` or `latest`:
+
+```sh
+./deploy/wooble update v0.2.0
+```
+
+Replace `v0.2.0` with the exact target release that exists in GHCR. The command is only runnable after that exact example tag and images have been published. It makes a backup, pulls the requested API/web/migration images, applies database migrations, then starts services using the same Compose project and volume. The volume is preserved. Migration timing is before the updated API is started; migrations may be forward-only, so preserve and copy the backup off-server before an update. A failed image pull leaves data unchanged. A migration failure reports the retained backup and leaves the current services available where possible; a successful migration followed by a failed start also retains the backup but does not automatically roll the schema back. Diagnose the failure first, then use the explicit confirmed restore flow if recovery is required.
+
+When migrating a legacy v0.1.0 Compose installation, the CLI may reuse the known `postgres-data` volume only when it finds one valid matching Wooble volume. If the prior Compose project used a non-default name, set `WOOBLE_LEGACY_PROJECT_NAME` to that exact old project name in `.env.selfhost`; the CLI validates its Compose labels and expected volume name. If discovery is ambiguous or labels do not match, it refuses to guess. Resolve the install manually before retrying; do not rename or remove volumes as part of discovery.
+
+The `install`/`update` image path and actual upgrade rehearsal are not yet demonstrated against a published image in this delivery. Do not assume a versioned image exists solely because a Git tag exists.
+
+## Evidence checklist
+
+Use a disposable environment for acceptance checks. Record the host, tag, commands, device, and outcome. The following remains required before claiming the complete self-host journey (#6):
+
+- [ ] Fresh Linux host: install Docker/Compose, fetch an exact release, create a fresh `.env.selfhost`, run `deploy/wooble install`, `status`, and `diagnose`, and record health/version/migration readiness.
+- [ ] Second device: from a separate device on the intended private network or public domain, open the exact HTTPS origin, register, sign out, log in again, verify the secure session cookie behavior through the browser, and open a live canvas.
+- [ ] Domain HTTPS: verify DNS, automatic certificate issuance/renewal configuration, browser login, and WebSocket operation using a controlled domain.
+- [ ] Backup recovery: make a fictional-content backup, rehearse `restore --confirm` on a disposable volume, and verify the content after restore and migrations.
+- [ ] Upgrade: install the previous-release fixture, record content, update to the exact next release on the same volume, and verify content plus health.
+
+At this documentation checkpoint, no fresh Linux host, second device, controlled domain HTTPS, local Docker/browser runtime, successful browser login through Caddy, GitHub Actions release workflow run, or multi-architecture runner result is available. These are explicitly unproven. API/WS smoke checks are not browser login evidence, and this guide does not declare issue #6 complete.

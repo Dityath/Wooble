@@ -10,6 +10,16 @@ Tag subsequent releases only after CI passes, installation from a fresh clone is
 
 The initial `v0.2.0`–`v0.6.0` target dates and criteria of done are tracked in the [product roadmap](roadmap.md). Targets may move with contributor capacity; a version is tagged only when its release criteria are met.
 
+## Self-hosted image tags and release workflow
+
+Self-hosted installs use one exact version for the API and web images, for example `v0.2.0` after that release exists. Compose requires `WOOBLE_VERSION`; never configure an install to follow `main`, `latest`, or a floating tag. The existing `v0.1.0` source predates the self-host CLI/access overlays and is a legacy upgrade fixture only. Before relying on a new tag, confirm both `ghcr.io/dityath/wooble-api:<tag>` and `ghcr.io/dityath/wooble-web:<tag>` exist. The Git tag alone does not prove images were published.
+
+`.github/workflows/release.yml` is configured for `vMAJOR.MINOR.PATCH` tag pushes and manual dry runs. A tag push runs CI, then builds and smoke-tests each image on separate `linux/amd64` and `linux/arm64` matrix jobs, including a v0.1.0 source bootstrap and same-volume migration fixture. Only after those jobs succeed does the tag path publish exact-version API/web images and create a draft release. Manual dispatch accepts `MAJOR.MINOR.PATCH` without the leading `v` and does not publish or create a release. This workflow is present in source but has not been run on GitHub; report the actual Actions run separately when one exists. Its smoke checks do not replace the Caddy browser login journey in the Self-hosted stack workflow.
+
+The initial GHCR package visibility is a maintainer setup step. After the first authorized package publication, open the repository's **Packages** page, open each `wooble-api` and `wooble-web` package, then use **Package settings → Change visibility → Public** and confirm the change. Do this once for each package. This repository change does not change package visibility, and no package has been published as part of this delivery. Verify anonymous pulls after a maintainer changes visibility.
+
+The release images pin their Bun and Caddy base images by immutable multi-platform index digest in `deploy/Dockerfile`. The API image runs as the unprivileged `bun` user. Both image variants include `THIRD_PARTY_NOTICES.txt`; review that generated notice file when dependencies change. A release workflow's matrix/build configuration is not evidence of successful `linux/amd64` and `linux/arm64` execution. Record the architectures actually tested by the hosted runner; if only one is available locally, state that limit.
+
 For each release, review the generated notes grouped by [`.github/release.yml`](../.github/release.yml), then use the [release description template](../.github/RELEASE_TEMPLATE.md) to add user-facing highlights, upgrade instructions, validation, and limitations. Generated categories depend on labels on the merged **pull requests**, so maintainers should label those PRs before creating the release. The Markdown template is copied into the release description manually; GitHub does not automatically insert that file.
 
 ## What `v1.0.0` should mean
