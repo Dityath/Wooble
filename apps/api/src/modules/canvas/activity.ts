@@ -1,9 +1,7 @@
-import { desc, eq } from "drizzle-orm";
-import { canvasConnections, canvasEvents, canvasNodes, db, type CanvasEventAction } from "@wooble/db";
+import { asc, desc, eq, inArray } from "drizzle-orm";
+import { canvasConnections, canvasEvents, canvasNodes, canvases, db, type CanvasEventAction } from "@wooble/db";
 import type { Actor } from "../../lib/auth";
-
-type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
-type Executor = typeof db | Transaction;
+import type { Transaction } from "./undo-registry";
 
 export interface CanvasEventInput {
   canvasId: string;
@@ -15,8 +13,15 @@ export interface CanvasEventInput {
   metadata?: Record<string, unknown>;
 }
 
-export async function recordCanvasEvent(executor: Executor, input: CanvasEventInput): Promise<void> {
-  await executor.insert(canvasEvents).values({
+/**
+ * Records an event inside the caller's transaction, so the change and its event commit or roll back together.
+ * Events are ordered by `seq`, which is allocated at insert, so per-canvas commit order equals seq order only
+ * while the writer holds the canvas row lock. Callers lock the canvas row first (lock order: canvas rows, then
+ * entity/connection/placement rows); the `FOR UPDATE` here is a safety net that is a no-op when already held.
+ */
+export async function recordCanvasEvent(tx: Transaction, input: CanvasEventInput): Promise<void> {
+  await tx.select({ id: canvases.id }).from(canvases).where(eq(canvases.id, input.canvasId)).for("update");
+  await tx.insert(canvasEvents).values({
     canvasId: input.canvasId,
     actorUserId: input.actor?.id ?? null,
     actorName: input.actor?.name ?? "System",
@@ -71,7 +76,7 @@ export async function listCanvasEvents(canvasId: string, limit: number) {
     .select()
     .from(canvasEvents)
     .where(eq(canvasEvents.canvasId, canvasId))
-    .orderBy(desc(canvasEvents.createdAt), desc(canvasEvents.id))
+    .orderBy(desc(canvasEvents.seq))
     .limit(limit);
   return rows.map((row) => ({
     id: row.id,
@@ -87,18 +92,67 @@ export async function listCanvasEvents(canvasId: string, limit: number) {
   }));
 }
 
-export async function canvasIdsForEntity(entityId: string): Promise<string[]> {
-  const rows = await db
-    .select({ canvasId: canvasNodes.canvasId })
+/** Canvas ids that place the entity, ascending. A plain read: callers lock the rows afterwards. */
+export async function canvasIdsForEntity(executor: Transaction, entityId: string): Promise<string[]> {
+  const rows = await executor
+    .selectDistinct({ canvasId: canvasNodes.canvasId })
     .from(canvasNodes)
-    .where(eq(canvasNodes.entityId, entityId));
+    .where(eq(canvasNodes.entityId, entityId))
+    .orderBy(asc(canvasNodes.canvasId));
   return rows.map((row) => row.canvasId);
 }
 
-export async function canvasIdsForConnection(connectionId: string): Promise<string[]> {
-  const rows = await db
-    .select({ canvasId: canvasConnections.canvasId })
+/** Canvas ids that place the connection, ascending. A plain read: callers lock the rows afterwards. */
+export async function canvasIdsForConnection(executor: Transaction, connectionId: string): Promise<string[]> {
+  const rows = await executor
+    .selectDistinct({ canvasId: canvasConnections.canvasId })
     .from(canvasConnections)
-    .where(eq(canvasConnections.connectionId, connectionId));
+    .where(eq(canvasConnections.connectionId, connectionId))
+    .orderBy(asc(canvasConnections.canvasId));
   return rows.map((row) => row.canvasId);
+}
+
+class CanvasSetChanged extends Error {}
+const MAX_LOCK_ATTEMPTS = 5;
+
+/**
+ * Runs `work` in one transaction that follows the global lock order: every affected canvas row `FOR UPDATE` in
+ * ascending id order first, then whatever entity/connection rows `work` locks. `work` receives
+ * `currentCanvasIds()`, to call after it has locked its own row.
+ *
+ * The canvas set is read before it can be locked, so it may change in between. A placement added later needs the
+ * new canvas's lock, and its foreign key then waits on the entity row, which `work` already holds, so such a
+ * placement cannot commit before us. A placement committed before our entity lock is caught by
+ * `currentCanvasIds()`: if it names a canvas we do not hold, the whole transaction is rolled back (never locking
+ * a canvas after an entity row, which could deadlock) and retried with the fresh set.
+ */
+export async function withCanvasLocks<T>(
+  findCanvasIds: (tx: Transaction) => Promise<string[]>,
+  work: (tx: Transaction, currentCanvasIds: () => Promise<string[]>) => Promise<T>,
+): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await db.transaction(async (tx) => {
+        const wanted = await findCanvasIds(tx);
+        const locked = wanted.length
+          ? (
+              await tx
+                .select({ id: canvases.id })
+                .from(canvases)
+                .where(inArray(canvases.id, wanted))
+                .orderBy(asc(canvases.id))
+                .for("update")
+            ).map((row) => row.id)
+          : [];
+        const heldSet = new Set(locked);
+        return work(tx, async () => {
+          const fresh = await findCanvasIds(tx);
+          if (fresh.some((id) => !heldSet.has(id))) throw new CanvasSetChanged();
+          return fresh;
+        });
+      });
+    } catch (error) {
+      if (!(error instanceof CanvasSetChanged) || attempt >= MAX_LOCK_ATTEMPTS) throw error;
+    }
+  }
 }

@@ -61,13 +61,24 @@ async function seedPrivateHistory(session: string, canvasId: string) {
   await api.request("PATCH", `/api/entities/${service}`, session, {
     metadata: { documentation: sentinels.documentation },
   });
-  await api.request("PATCH", `/api/entities/${service}`, session, { name: "Orders API v2" });
+  // Version 2 events store only the keys an update changed, so the sentinel is stored as an undo payload
+  // when the same key is edited again.
+  await api.request("PATCH", `/api/entities/${service}`, session, {
+    name: "Orders API v2",
+    metadata: { documentation: "Replacement documentation" },
+  });
   await api.request("PATCH", `/api/connections/${connectionId}`, session, {
     metadata: { contractBody: sentinels.contractBody },
   });
-  await api.request("PATCH", `/api/connections/${connectionId}`, session, { label: "Loads orders" });
+  await api.request("PATCH", `/api/connections/${connectionId}`, session, {
+    label: "Loads orders",
+    metadata: { contractBody: "Replacement contract" },
+  });
   await api.request("PATCH", `/api/entities/${database}`, session, { metadata: { schemaSql: sentinels.schemaSql } });
-  await api.request("PATCH", `/api/entities/${database}`, session, { description: "Primary store" });
+  await api.request("PATCH", `/api/entities/${database}`, session, {
+    description: "Primary store",
+    metadata: { schemaSql: "select 1" },
+  });
   expect((await api.request("DELETE", `/api/canvases/${canvasId}/entities/${retired}`, session)).status).toBe(200);
 
   return { service, database, connectionId, retired };

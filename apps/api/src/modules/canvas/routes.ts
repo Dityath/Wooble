@@ -36,6 +36,7 @@ import {
 } from "../../lib/auth";
 import { listCanvasEvents, recordCanvasEvent } from "./activity";
 import { applyNextUndo } from "./undo";
+import { captureDeleteHooks } from "./undo-registry";
 
 const placementColumns = {
   entityId: canvasNodes.entityId,
@@ -157,30 +158,32 @@ export function canvasRoutes(app: Api) {
       .safeParse(context.body);
     if (!params.success || !body.success || !Object.keys(body.data).length)
       return badRequest(context, "Invalid canvas");
-    const [previous] = await db
-      .select({
-        name: canvases.name,
-        description: canvases.description,
-        shareMode: canvases.shareMode,
-      })
-      .from(canvases)
-      .where(eq(canvases.id, params.data.canvasId))
-      .limit(1);
-    const [row] = await db
-      .update(canvases)
-      .set({ ...body.data, updatedAt: new Date() })
-      .where(eq(canvases.id, params.data.canvasId))
-      .returning();
-    if (!row) return notFound(context, "Canvas not found");
-    await recordCanvasEvent(db, {
-      canvasId: row.id,
-      actor: context.actor,
-      action: "canvas.updated",
-      targetType: "canvas",
-      targetId: row.id,
-      targetName: row.name,
-      metadata: { fields: Object.keys(body.data), previous },
+    const row = await db.transaction(async (tx) => {
+      const [before] = await tx
+        .select({ name: canvases.name, description: canvases.description, shareMode: canvases.shareMode })
+        .from(canvases)
+        .where(eq(canvases.id, params.data.canvasId))
+        .for("update")
+        .limit(1);
+      if (!before) return null;
+      const [updated] = await tx
+        .update(canvases)
+        .set({ ...body.data, updatedAt: new Date() })
+        .where(eq(canvases.id, params.data.canvasId))
+        .returning();
+      const fields = Object.keys(body.data) as Array<keyof typeof before>;
+      await recordCanvasEvent(tx, {
+        canvasId: updated.id,
+        actor: context.actor,
+        action: "canvas.updated",
+        targetType: "canvas",
+        targetId: updated.id,
+        targetName: updated.name,
+        metadata: { fields, previous: Object.fromEntries(fields.map((field) => [field, before[field]])) },
+      });
+      return updated;
     });
+    if (!row) return notFound(context, "Canvas not found");
     return { ...row, updatedAt: row.updatedAt.toISOString() };
   });
   app.delete("/api/canvases/:canvasId", async (context) => {
@@ -487,13 +490,14 @@ export function canvasRoutes(app: Api) {
       if (!canvas) return { kind: "not-found" as const };
       if (canvas.updatedAt.toISOString() !== body.data.expectedUpdatedAt) return { kind: "conflict" as const };
 
-      const [currentNodes, currentLinks] = await Promise.all([
-        tx.select(placementColumns).from(canvasNodes).where(eq(canvasNodes.canvasId, canvas.id)),
-        tx
-          .select({ connectionId: canvasConnections.connectionId, bend: canvasConnections.bend })
-          .from(canvasConnections)
-          .where(eq(canvasConnections.canvasId, canvas.id)),
-      ]);
+      const currentNodes = await tx
+        .select(placementColumns)
+        .from(canvasNodes)
+        .where(eq(canvasNodes.canvasId, canvas.id));
+      const currentLinks = await tx
+        .select({ connectionId: canvasConnections.connectionId, bend: canvasConnections.bend })
+        .from(canvasConnections)
+        .where(eq(canvasConnections.canvasId, canvas.id));
       const currentParents = new Map(currentNodes.map((node) => [node.entityId, node.parentEntityId]));
       if (
         currentNodes.length !== body.data.placements.length ||
@@ -579,6 +583,9 @@ export function canvasRoutes(app: Api) {
           and(eq(canvasConnections.canvasId, canvas.id), eq(canvasConnections.connectionId, params.data.connectionId)),
         )
         .limit(1);
+      const hooks = existing
+        ? await captureDeleteHooks(tx, { kind: "connection", ids: [params.data.connectionId] })
+        : {};
       const [removed] = await tx
         .delete(canvasConnections)
         .where(
@@ -608,6 +615,7 @@ export function canvasRoutes(app: Api) {
                 return { ...connection, bend: existing.bend };
               })()
             : null,
+          ...(Object.keys(hooks).length ? { hooks } : {}),
         },
       });
       return { kind: "deleted" as const };
@@ -649,35 +657,28 @@ export function canvasRoutes(app: Api) {
           ),
         );
       const linkIds = affectedLinks.map((item) => item.id);
-      const [subtreeEntities, subtreePlacements, linkRows] = await Promise.all([
-        tx
-          .select({
-            id: entities.id,
-            workspaceId: entities.workspaceId,
-            type: entities.type,
-            name: entities.name,
-            description: entities.description,
-            metadata: entities.metadata,
-          })
-          .from(entities)
-          .where(inArray(entities.id, entityIds)),
-        tx
-          .select(placementColumns)
-          .from(canvasNodes)
-          .where(and(eq(canvasNodes.canvasId, canvas.id), inArray(canvasNodes.entityId, entityIds))),
-        linkIds.length
-          ? tx
-              .select({ connection: connections, bend: canvasConnections.bend })
-              .from(canvasConnections)
-              .innerJoin(connections, eq(canvasConnections.connectionId, connections.id))
-              .where(and(eq(canvasConnections.canvasId, canvas.id), inArray(canvasConnections.connectionId, linkIds)))
-          : Promise.resolve(
-              [] as Array<{
-                connection: typeof connections.$inferSelect;
-                bend: typeof canvasConnections.$inferInsert.bend;
-              }>,
-            ),
-      ]);
+      const subtreeEntities = await tx
+        .select({
+          id: entities.id,
+          workspaceId: entities.workspaceId,
+          type: entities.type,
+          name: entities.name,
+          description: entities.description,
+          metadata: entities.metadata,
+        })
+        .from(entities)
+        .where(inArray(entities.id, entityIds));
+      const subtreePlacements = await tx
+        .select(placementColumns)
+        .from(canvasNodes)
+        .where(and(eq(canvasNodes.canvasId, canvas.id), inArray(canvasNodes.entityId, entityIds)));
+      const linkRows = linkIds.length
+        ? await tx
+            .select({ connection: connections, bend: canvasConnections.bend })
+            .from(canvasConnections)
+            .innerJoin(connections, eq(canvasConnections.connectionId, connections.id))
+            .where(and(eq(canvasConnections.canvasId, canvas.id), inArray(canvasConnections.connectionId, linkIds)))
+        : [];
       const snapshot = {
         entities: subtreeEntities,
         placements: subtreePlacements,
@@ -686,6 +687,8 @@ export function canvasRoutes(app: Api) {
           return { ...rest, bend };
         }),
       };
+      // Hooks snapshot their own data before the rows go away.
+      const hooks = await captureDeleteHooks(tx, { kind: "entity", ids: subtreeEntities.map((item) => item.id) });
       if (linkIds.length)
         await tx
           .delete(canvasConnections)
@@ -721,6 +724,7 @@ export function canvasRoutes(app: Api) {
           removedNodes: entityIds.length,
           removedConnections: linkIds.length,
           snapshot,
+          ...(Object.keys(hooks).length ? { hooks } : {}),
         },
       });
       return { kind: "deleted" as const, removedNodes: entityIds.length, removedConnections: linkIds.length };
