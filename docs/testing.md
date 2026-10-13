@@ -32,6 +32,8 @@ happy-dom does no layout, so the preload reports inline pixel sizes for elements
 
 API tests call the Elysia app in process against the isolated database. `apiClient()` in `apps/api/tests/support/client.ts` registers fictional accounts with unique emails, promotes admins, and creates canvases, nodes, connections, and invitations. Registration and login share a per-IP rate limit across the suite, so call `resetLoginAttempts()` before each test that signs people in. Cover the permission matrix for a route: managers, editors, viewers, link visitors, outsiders, signed-out requests, and system admins where they differ.
 
+A new route needs an access class in `routeAccess` (`apps/api/src/lib/auth.ts`) and an entry in the route list in `apps/api/tests/route-access.test.ts`; that test fails for any registered route missing from the list. To test a guard rule before a real route uses it, register a probe route with `apiClient({ configure })`.
+
 ## Running coverage locally
 
 ```sh
