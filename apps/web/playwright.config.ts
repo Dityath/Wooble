@@ -10,17 +10,24 @@ if (!TEST_DATABASE_URL) {
   throw new Error("Set BROWSER_TEST_DATABASE_URL to an isolated, migrated PostgreSQL test database.");
 }
 
-// The journeys register people and write canvases, so they must never run against the database `.env.example`
-// documents for development. Refused here because Bun loads a developer's `.env` before this file is imported,
-// which would otherwise let an exported `BROWSER_TEST_DATABASE_URL` quietly target working data.
+// The journeys register people and write canvases, so they may only run against a database whose NAME clearly marks it
+// as disposable, whatever host it lives on. Bun loads a developer's `.env` before this file is imported, so an exported
+// `BROWSER_TEST_DATABASE_URL` could otherwise quietly target working data. The name is an allow-list: only names with a
+// test/browser/journey/e2e word segment pass (for example `browser_journeys` in CI or `wooble_p1_2_browser` locally).
+// The development database is refused explicitly as well. Only the database name is ever printed, never credentials.
 const DEVELOPMENT_DATABASE = "architecture_canvas";
-const testDatabase = new URL(TEST_DATABASE_URL);
-if (
-  testDatabase.pathname.slice(1) === DEVELOPMENT_DATABASE &&
-  ["localhost", "127.0.0.1", "::1", "[::1]"].includes(testDatabase.hostname)
-) {
+const DISPOSABLE_DATABASE_NAME = /(^|_)(test|tests|browser|journey|journeys|e2e)(_|$)/i;
+let testDatabaseName: string;
+try {
+  testDatabaseName = decodeURIComponent(new URL(TEST_DATABASE_URL).pathname.slice(1));
+} catch {
+  throw new Error("BROWSER_TEST_DATABASE_URL must be a valid PostgreSQL URL whose path names the test database.");
+}
+if (testDatabaseName === DEVELOPMENT_DATABASE || !DISPOSABLE_DATABASE_NAME.test(testDatabaseName)) {
   throw new Error(
-    `BROWSER_TEST_DATABASE_URL must not be the development database ${DEVELOPMENT_DATABASE}; point it at a disposable database.`,
+    `BROWSER_TEST_DATABASE_URL names database "${testDatabaseName || "(none)"}", which is refused. ` +
+      `The database name must contain a word segment test, tests, browser, journey, journeys, or e2e ` +
+      `(for example browser_journeys), and must not be ${DEVELOPMENT_DATABASE}.`,
   );
 }
 
