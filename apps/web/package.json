@@ -7,8 +7,9 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tests",
-    "lint": "biome lint --error-on-warnings src e2e vite.config.ts tailwind.config.ts playwright.config.ts",
-    "test:browser": "playwright test"
+    "lint": "biome lint --error-on-warnings src e2e vite.config.ts tailwind.config.ts playwright.config.ts playwright.selfhost.config.ts",
+    "test:browser": "playwright test",
+    "test:selfhost-browser": "playwright test --config playwright.selfhost.config.ts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.14",
