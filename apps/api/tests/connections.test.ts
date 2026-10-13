@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it } from "bun:test";
+import { eq } from "drizzle-orm";
+import { canvasEvents, db } from "@wooble/db";
 import { resetLoginAttempts } from "../src/modules/auth/routes";
 import { apiClient } from "./support/client";
 
@@ -86,8 +88,16 @@ describe("connection updates", () => {
     expect(updates).toHaveLength(3);
     expect(updates.at(-1)).toMatchObject({
       targetName: "Loads orders",
-      metadata: { fields: ["type", "label", "description", "metadata"], previous: { type: "rest", label: "" } },
+      metadata: { fields: ["type", "label", "description", "metadata"] },
     });
+    // The read withholds undo payloads; the previous values are still recorded server-side.
+    expect(updates.at(-1)?.metadata).not.toHaveProperty("previous");
+    const stored = await db
+      .select({ metadata: canvasEvents.metadata })
+      .from(canvasEvents)
+      .where(eq(canvasEvents.canvasId, canvasId));
+    const storedUpdates = stored.filter((row) => (row.metadata as { fields?: string[] }).fields?.includes("label"));
+    expect(storedUpdates[0].metadata).toMatchObject({ previous: { type: "rest", label: "" } });
   });
 
   it("validates the update body", async () => {

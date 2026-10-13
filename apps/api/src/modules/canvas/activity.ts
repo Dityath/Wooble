@@ -28,6 +28,43 @@ export async function recordCanvasEvent(executor: Executor, input: CanvasEventIn
   });
 }
 
+/**
+ * Metadata keys the activity read may expose. Stored metadata also carries undo payloads
+ * (`previous`, `snapshot`, `previousMetadata`, ...) that hold historical content, so the read
+ * is an allowlist: a key that is not listed here is never returned. Each key is a short
+ * descriptor: the changed field names, an entity or connection type, or a count or undo reference.
+ */
+export const ACTIVITY_METADATA_ALLOWLIST = [
+  "fields",
+  "type",
+  "nodes",
+  "connections",
+  "removedNodes",
+  "removedConnections",
+  "undoOf",
+  "undoneAction",
+  "skipped",
+] as const;
+
+type ActivityMetadataValue = string | number | boolean | null | string[];
+
+function isDisplayValue(value: unknown): value is ActivityMetadataValue {
+  if (value === null) return true;
+  if (Array.isArray(value)) return value.every((item) => typeof item === "string");
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+}
+
+/** Keeps only allowlisted keys whose value is a plain scalar (or a list of names), never an object. */
+export function redactActivityMetadata(metadata: unknown): Record<string, ActivityMetadataValue> {
+  const redacted: Record<string, ActivityMetadataValue> = {};
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return redacted;
+  const stored = metadata as Record<string, unknown>;
+  for (const key of ACTIVITY_METADATA_ALLOWLIST) {
+    if (Object.hasOwn(stored, key) && isDisplayValue(stored[key])) redacted[key] = stored[key];
+  }
+  return redacted;
+}
+
 export async function listCanvasEvents(canvasId: string, limit: number) {
   // The feed keeps the full history: undone events stay visible and are flagged to the UI.
   const rows = await db
@@ -44,7 +81,7 @@ export async function listCanvasEvents(canvasId: string, limit: number) {
     targetType: row.targetType,
     targetId: row.targetId,
     targetName: row.targetName,
-    metadata: row.metadata,
+    metadata: redactActivityMetadata(row.metadata),
     undoneAt: row.undoneAt ? row.undoneAt.toISOString() : null,
     createdAt: row.createdAt.toISOString(),
   }));
