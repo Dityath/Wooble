@@ -88,7 +88,7 @@ case "$*" in
   case "$*" in
 ${inspectCases}
   esac ;;
-  *'pg_dump'*) ${options.fail === "backup" ? "exit 19" : `cat '${databaseState}'`} ;;
+  *'pg_dump'*) ${options.fail === "backup" ? "exit 19" : options.fail === "signal-backup" ? `printf partial-data; kill -TERM $PPID; exit 0` : `cat '${databaseState}'`} ;;
   *'pg_restore'*) ${options.fail === "signal-restore" ? `cat > /dev/null; kill -TERM $PPID; exit 0` : options.fail === "restore" ? `cat > '${databaseState}'; if [ ! -e '${base}/restore-failed-once' ]; then touch '${base}/restore-failed-once'; exit 20; fi` : `cat > '${databaseState}'`} ;;
   *'run --rm migrate'*) ${options.fail === "migration" ? "exit 21" : options.fail === "migration-once" ? `if [ ! -e '${base}/migration-failed-once' ]; then touch '${base}/migration-failed-once'; exit 21; fi; exit 0` : "exit 0"} ;;
   *'pull api web migrate'*) exit 0 ;;
@@ -439,6 +439,41 @@ describe("self-host CLI safety", () => {
     expect(at(calls, "up -d", recoveryMigrate)).toBeGreaterThan(recoveryMigrate);
   });
 
+  it("writes the dump to a .partial file and publishes the final name only after pg_dump succeeds", () => {
+    const f = fixture();
+    const shim = readFileSync(join(f.base, "bin/docker"), "utf8").replace(
+      "*'pg_dump'*) cat",
+      `*'pg_dump'*) ls '${f.base}/backups' > '${f.base}/during-dump.txt'; cat`,
+    );
+    writeFileSync(join(f.base, "bin/docker"), shim);
+    const result = f.run("backup");
+    expect(result.status).toBe(0);
+    const final = result.stdout.trim();
+    expect(result.stdout.trim().split("\n")).toHaveLength(1);
+    expect(final.endsWith(".dump")).toBe(true);
+    expect(existsSync(final)).toBe(true);
+    expect(existsSync(`${final}.partial`)).toBe(false);
+    const during = readFileSync(join(f.base, "during-dump.txt"), "utf8").trim().split("\n");
+    expect(during.length).toBe(1);
+    expect(during[0]).toEndWith(".dump.partial");
+    expect(Number.parseInt(statSync(final).mode.toString(8).slice(-3), 8) & 0o077).toBe(0);
+  });
+
+  it("leaves neither a final nor a partial file when the dump fails", () => {
+    const f = fixture({ fail: "backup" });
+    const result = f.run("backup");
+    expect(result.status).not.toBe(0);
+    expect(readdirSync(join(f.base, "backups"))).toEqual([]);
+  });
+
+  it("leaves no partial or final file when SIGTERM arrives during the pre-restore backup", () => {
+    const f = fixture({ fail: "signal-backup" });
+    const result = f.run("restore", "--confirm", f.backupFile);
+    expect(result.status).not.toBe(0);
+    expect(readdirSync(join(f.base, "backups"))).toEqual([]);
+    expect(readFileSync(f.databaseState, "utf8")).toBe("fictional-live-before-restore\n");
+  });
+
   it("on an interrupt before any restore begins, restarts the stack and names the stop state without recovering data", () => {
     const f = fixture({ fail: "signal-stop" });
     const result = f.run("restore", "--confirm", f.backupFile);
@@ -458,6 +493,8 @@ describe("self-host CLI safety", () => {
     expect(result.stderr).toContain("restore interrupted by SIGTERM");
     expect(result.stderr).toContain("may be partially restored");
     expect(result.stderr).toContain("stack was left stopped");
+    expect(result.stderr).toContain("pg_restore may still be running");
+    expect(result.stderr).toContain("before retrying");
     const backup = result.stderr.match(/pre-restore backup retained at (.+)$/m)?.[1];
     expect(backup && existsSync(backup)).toBe(true);
     const calls = commands(f.log);
