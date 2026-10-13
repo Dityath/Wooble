@@ -30,6 +30,8 @@ API tests need an isolated PostgreSQL database. See [self-hosting](docs/self-hos
 
 Canvas browser tests also need a separate, migrated PostgreSQL database and Playwright Chromium. Run `bunx playwright install chromium` once, then run `BROWSER_TEST_DATABASE_URL=<test-database-url> bun run --cwd apps/web test:browser`. The browser test command requires this variable and refuses to reuse an existing API or web server. Its fixtures create fictional users and canvases in the test database and leave them there for inspection; use a disposable database. The test API loads no `.env` file: it uses the browser test database, the test web origin, and a raised sign-in attempt limit (`AUTH_ATTEMPT_LIMIT`, refused in production). To use a Chromium build you already have instead of Playwright's download, set `BROWSER_TEST_CHROMIUM` to its executable. Pull requests run the same journeys in the **Browser journeys** CI job, which uploads the Playwright report when a journey fails.
 
+Set `BROWSER_TEST_API_PORT` and `BROWSER_TEST_WEB_PORT` to move a run off the default ports 41311 and 5177, for example when another run already holds them. Nothing in the run can be redirected by a developer's own settings: both servers start without a `.env` file, the web server keeps `VITE_API_URL` empty so it reaches the API Playwright started, the command refuses the development database named in `.env.example`, and it refuses to start at all when a port is already serving.
+
 Biome is the repository linter and formatter. `bun run lint` treats warnings as errors, so CI fails on any lint warning. Run `bun run format` when formatting needs to be applied. CSS formatting is disabled in `biome.json` to preserve the existing stylesheet.
 
 ## Contribution rights
