@@ -1,7 +1,13 @@
 import { describe, expect, it, mock } from "bun:test";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { DocumentationEditor } from "../src/features/inspector/documentation/documentation-editor";
-import { readDraft, writeDraft } from "../src/features/inspector/documentation/drafts";
+import {
+  clearAllDocumentationDrafts,
+  readDraft,
+  resumeDocumentationDrafts,
+  suspendDocumentationDrafts,
+  writeDraft,
+} from "../src/features/inspector/documentation/drafts";
 import type { EditorLoader } from "../src/features/inspector/documentation/editor-loader";
 import { RichDocumentation } from "../src/features/inspector/rich-documentation";
 import {
@@ -275,6 +281,103 @@ describe("documentation drafts", () => {
       expect(onSave.mock.calls).toEqual([["Saved more"]]);
     });
   });
+
+  describe("a save already in flight when the offer opens", () => {
+    /** The user typed and left before the location was known, so a save of "Saved more" is in flight when the offer opens. */
+    async function inFlightThenOffer() {
+      writeDraft("user-a", "entity", "entity-1", "Older text");
+      const { onSave, settle } = pendingSaves();
+      const view = await renderDocumentation({ value: "Saved", onSave });
+      await typeAndBlur(" more");
+      expect(onSave.mock.calls).toEqual([["Saved more"]]);
+      view.rerender(<RichDocumentation value="Saved" onSave={onSave} draft={location} />);
+      const offer = await findPrompt();
+      expect(offer.textContent).toContain("Restoring puts the earlier draft above what you typed.");
+      return { view, onSave, settle };
+    }
+
+    it("drops the fresh-edits sentence and stores no duplicate when the save lands and the editor closes", async () => {
+      const { view, settle } = await inFlightThenOffer();
+      await act(async () => settle[0]?.resolve());
+      expect((await findPrompt()).textContent).not.toContain("above what you typed");
+      view.unmount();
+      expect(draftOf()?.markdown).toBe("Older text");
+    });
+
+    it("stores no duplicate when the save lands after the editor closed", async () => {
+      const { view, settle } = await inFlightThenOffer();
+      view.unmount();
+      expect(draftOf()?.markdown).toBe("Older text\n\nSaved more");
+      await act(async () => settle[0]?.resolve());
+      expect(draftOf()?.markdown).toBe("Older text");
+    });
+
+    it("Restore does not merge text that is already saved under the older draft", async () => {
+      const { onSave, settle } = await inFlightThenOffer();
+      await act(async () => settle[0]?.resolve());
+      await act(async () => screen.getByRole("button", { name: "Restore" }).click());
+      expect(documentation().textContent).toBe("Older text");
+      expect(onSave.mock.calls).toEqual([["Saved more"]]);
+    });
+
+    it("keeps the fresh text recoverable when the save fails during the offer", async () => {
+      const { view, settle } = await inFlightThenOffer();
+      await act(async () => settle[0]?.reject(new ApiError("Down", 500)));
+      expect((await findPrompt()).textContent).toContain("Restoring puts the earlier draft above what you typed.");
+      view.unmount();
+      expect(draftOf()?.markdown).toBe("Older text\n\nSaved more");
+    });
+
+    it("Restore after a failed save keeps both texts", async () => {
+      const { settle } = await inFlightThenOffer();
+      await act(async () => settle[0]?.reject(new ApiError("Down", 500)));
+      await act(async () => screen.getByRole("button", { name: "Restore" }).click());
+      expect(documentation().textContent).toContain("Older text");
+      expect(documentation().textContent).toContain("Saved more");
+    });
+  });
+
+  it("does not take the focus when it is outside the documentation as the offer appears", async () => {
+    writeDraft("user-a", "entity", "entity-1", "Older text");
+    const onSave = mock(async (_value: string) => {});
+    const view = await renderDocumentation({ value: "Saved", onSave });
+    await caretToEnd();
+    await typeInEditor(documentation(), " more");
+    const elsewhere = document.createElement("button");
+    document.body.append(elsewhere);
+    elsewhere.focus();
+    view.rerender(<RichDocumentation value="Saved" onSave={onSave} draft={location} />);
+    const offer = await findPrompt();
+    expect(offer.getAttribute("role")).toBe("alert");
+    expect(document.activeElement).toBe(elsewhere);
+    elsewhere.remove();
+  });
+
+  for (const finish of ["unmount", "restore", "discard"] as const) {
+    it(`does not re-create a draft after sign-out purged them (${finish} with the offer open)`, async () => {
+      try {
+        writeDraft("user-a", "entity", "entity-1", "Older text");
+        const onSave = mock(async (_value: string) => {});
+        const view = await renderDocumentation({ value: "Saved", onSave });
+        await caretToEnd();
+        await typeInEditor(documentation(), " more");
+        view.rerender(<RichDocumentation value="Saved" onSave={onSave} draft={location} />);
+        await findPrompt();
+        suspendDocumentationDrafts();
+        clearAllDocumentationDrafts();
+        if (finish !== "unmount") {
+          await act(async () =>
+            screen.getByRole("button", { name: finish === "restore" ? "Restore" : "Discard saved copy" }).click(),
+          );
+        }
+        view.unmount();
+        resumeDocumentationDrafts();
+        expect(draftOf()).toBeNull();
+      } finally {
+        resumeDocumentationDrafts();
+      }
+    });
+  }
 
   it("never offers a draft of another user, kind or object", async () => {
     writeDraft("user-a", "entity", "entity-1", "Entity draft of A");
