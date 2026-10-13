@@ -47,6 +47,7 @@ const setup = () => userEvent.setup({ delay: null });
 
 const menu = () => screen.getByRole("listbox", { name: "Insert block" });
 const isMenuOpen = () => screen.queryByRole("listbox", { name: "Insert block" }) !== null;
+const announcement = () => screen.getByRole("status").textContent;
 const option = (name: string) => within(menu()).getByRole("option", { name });
 const activeOption = () => within(menu()).getByRole("option", { selected: true });
 // Elements are compared by id or identity, so that a failure prints a short message rather than a whole DOM tree.
@@ -65,21 +66,29 @@ function expectOptions(titles: string[]) {
 function expectActive(element: HTMLElement, name: string) {
   const active = activeOption();
   expect(active.id).toBe(option(name).id);
+  expect(active.getAttribute("aria-selected")).toBe("true");
+  expect(element.getAttribute("aria-expanded")).toBe("true");
   expect(element.getAttribute("aria-controls")).toBe(menu().id);
   expect(element.getAttribute("aria-activedescendant")).toBe(active.id);
 }
 
 function expectMenuClosed(element: HTMLElement) {
   expect(isMenuOpen()).toBe(false);
+  expect(element.getAttribute("aria-expanded")).toBe("false");
   expect(element.hasAttribute("aria-controls")).toBe(false);
   expect(element.hasAttribute("aria-activedescendant")).toBe(false);
 }
 
+/** Renders an editor whose caret is at `caret` in `markdown`, ready to type the slash there. */
+function renderWithCaretAt(markdown: string, caret: number) {
+  const rendered = renderDocumentationEditor(markdown);
+  rendered.editor.commands.setTextSelection(caret);
+  return rendered;
+}
+
 /** Renders an editor whose caret is at the start of a paragraph of text, ready to type the slash before that text. */
 function renderWithTextAfterCaret(markdown: string) {
-  const rendered = renderDocumentationEditor(markdown);
-  rendered.editor.commands.setTextSelection(1);
-  return rendered;
+  return renderWithCaretAt(markdown, 1);
 }
 
 /** Stands in for the editor component's Escape shortcut, which blurs the editor at a priority below the default. */
@@ -226,14 +235,14 @@ describe("slash commands", () => {
   }
 
   const text = "Rollout plan";
-  const fromParagraphWithText: Array<[string, JSONContent[]]> = [
-    ["Text", [paragraph(text)]],
-    ["Heading 1", [heading(1, text), paragraph()]],
-    ["Heading 2", [heading(2, text), paragraph()]],
-    ["Heading 3", [heading(3, text), paragraph()]],
+  const insertedBeforeText: Array<[string, JSONContent[]]> = [
+    ["Text", [paragraph(), paragraph(text)]],
+    ["Heading 1", [heading(1), paragraph(text)]],
+    ["Heading 2", [heading(2), paragraph(text)]],
+    ["Heading 3", [heading(3), paragraph(text)]],
     [
       "Bulleted list",
-      [{ type: "bulletList", content: [{ type: "listItem", content: [paragraph(text)] }] }, paragraph()],
+      [{ type: "bulletList", content: [{ type: "listItem", content: [paragraph()] }] }, paragraph(text)],
     ],
     [
       "Numbered list",
@@ -241,58 +250,160 @@ describe("slash commands", () => {
         {
           type: "orderedList",
           attrs: { start: 1, type: null },
-          content: [{ type: "listItem", content: [paragraph(text)] }],
+          content: [{ type: "listItem", content: [paragraph()] }],
         },
-        paragraph(),
+        paragraph(text),
       ],
     ],
     [
       "Task list",
       [
-        { type: "taskList", content: [{ type: "taskItem", attrs: { checked: false }, content: [paragraph(text)] }] },
-        paragraph(),
+        { type: "taskList", content: [{ type: "taskItem", attrs: { checked: false }, content: [paragraph()] }] },
+        paragraph(text),
       ],
     ],
-    ["Quote", [{ type: "blockquote", content: [paragraph(text)] }, paragraph()]],
-    ["Code block", [{ type: "codeBlock", attrs: { language: null }, content: [{ type: "text", text }] }, paragraph()]],
-    // A divider or table cannot hold the text, so it goes in before the paragraph, where the caret was.
+    ["Quote", [{ type: "blockquote", content: [paragraph()] }, paragraph(text)]],
+    ["Code block", [{ type: "codeBlock", attrs: { language: null } }, paragraph(text)]],
+    // A divider or a table cannot hold the text, so it takes the caret's place and the text stays in its own block.
     ["Divider", [{ type: "horizontalRule" }, paragraph(text)]],
     ["Table", [table, paragraph(text)]],
   ];
-  for (const [title, blocks] of fromParagraphWithText) {
-    it(`turns a paragraph with text into ${title} and removes the slash query`, async () => {
+  for (const [title, blocks] of insertedBeforeText) {
+    it(`inserts ${title} before the text the caret is in front of`, async () => {
       const { editor, element } = renderWithTextAfterCaret(text);
       await typeInEditor(element, "/");
       await setup().click(option(title));
       expect(blocksOf(editor)).toEqual(blocks);
+      expectMenuClosed(element);
     });
   }
 
-  it("turns a heading back into a paragraph", async () => {
+  // The caret after the space in "Roll out plan", so the text around it is "Roll " and "out plan".
+  const before = paragraph("Roll ");
+  const after = paragraph("out plan");
+  const insertedAtCaret: Array<[string, JSONContent[]]> = [
+    ["Text", [before, paragraph(), after]],
+    ["Heading 1", [before, heading(1), after]],
+    ["Heading 2", [before, heading(2), after]],
+    ["Heading 3", [before, heading(3), after]],
+    ["Bulleted list", [before, { type: "bulletList", content: [{ type: "listItem", content: [paragraph()] }] }, after]],
+    [
+      "Numbered list",
+      [
+        before,
+        {
+          type: "orderedList",
+          attrs: { start: 1, type: null },
+          content: [{ type: "listItem", content: [paragraph()] }],
+        },
+        after,
+      ],
+    ],
+    [
+      "Task list",
+      [
+        before,
+        { type: "taskList", content: [{ type: "taskItem", attrs: { checked: false }, content: [paragraph()] }] },
+        after,
+      ],
+    ],
+    ["Quote", [before, { type: "blockquote", content: [paragraph()] }, after]],
+    ["Code block", [before, { type: "codeBlock", attrs: { language: null } }, after]],
+    ["Divider", [before, { type: "horizontalRule" }, after]],
+    ["Table", [before, table, after]],
+  ];
+  for (const [title, blocks] of insertedAtCaret) {
+    it(`inserts ${title} at the caret, keeping the text around it`, async () => {
+      const { editor, element } = renderWithCaretAt("Roll out plan", 6);
+      await typeInEditor(element, "/");
+      await setup().click(option(title));
+      expect(blocksOf(editor)).toEqual(blocks);
+      expectMenuClosed(element);
+    });
+  }
+
+  // The Markdown the editor writes for the blocks above, once the new block holds text of its own.
+  const storedMarkdown: Array<[string, string, string]> = [
+    ["Heading 1", "Overview", "Roll \n\n# Overview\n\nout plan"],
+    ["Bulleted list", "Gateway", "Roll \n\n- Gateway\n\nout plan"],
+    ["Divider", "", "Roll \n\n---\n\nout plan"],
+    ["Table", "Service", "Roll \n\n\n| Service |  |  |\n| --- | --- | --- |\n|  |  |  |\n|  |  |  |\n\n\nout plan"],
+  ];
+  for (const [title, typed, markdown] of storedMarkdown) {
+    it(`stores ${title} at the caret in the Markdown it writes`, async () => {
+      const { editor, element } = renderWithCaretAt("Roll out plan", 6);
+      await typeInEditor(element, "/");
+      await setup().click(option(title));
+      if (typed) await typeInEditor(element, typed);
+      expect(editor.getMarkdown()).toBe(markdown);
+    });
+  }
+
+  it("inserts a block after the text when the caret is at the end of it", async () => {
+    const { editor, element } = renderWithCaretAt("Rollout plan ", 14);
+    await typeInEditor(element, "/divider");
+    await setup().keyboard("{Enter}");
+    // The empty paragraph after the divider is there to keep a line to type on.
+    expect(blocksOf(editor)).toEqual([paragraph("Rollout plan "), { type: "horizontalRule" }, paragraph()]);
+    expect(editor.getMarkdown()).toBe("Rollout plan \n\n---\n\n");
+  });
+
+  it("undoes the inserted block and the text around it in one step", async () => {
+    const { editor, element } = renderWithCaretAt("Roll out plan", 6);
+    await typeInEditor(element, "/h1");
+    await setup().keyboard("{Enter}");
+    expect(editor.getMarkdown()).not.toBe("Roll out plan");
+    editor.commands.undo();
+    expect(editor.getMarkdown()).toBe("Roll out plan");
+  });
+
+  it("inserts a paragraph at the caret in a heading, instead of turning the heading into one", async () => {
     const { editor, element } = renderWithTextAfterCaret("## Rollout plan");
     await typeInEditor(element, "/text");
     await setup().keyboard("{Enter}");
-    // The empty paragraph after the heading was added when it opened, to keep a line to type on.
-    expect(blocksOf(editor)).toEqual([paragraph("Rollout plan"), paragraph()]);
+    expect(blocksOf(editor)).toEqual([paragraph(), heading(2, "Rollout plan"), paragraph()]);
   });
 
-  const insideOwnType: Array<[string, string, number, JSONContent]> = [
+  it("turns an empty line in a list into a paragraph, taking it out of the list", async () => {
+    const { editor, element } = renderDocumentationEditor("- Gateway\n- ");
+    // The empty line of the second list item.
+    editor.commands.setTextSelection(editor.state.doc.content.size - 1);
+    await typeInEditor(element, "/text");
+    await setup().keyboard("{Enter}");
+    expect(blocksOf(editor)).toEqual([
+      { type: "bulletList", content: [{ type: "listItem", content: [paragraph("Gateway")] }] },
+      paragraph(),
+      paragraph(),
+    ]);
+  });
+
+  const insideOwnType: Array<[string, string, number, JSONContent[], string]> = [
     [
       "- Gateway",
       "/bullet",
       3,
-      { type: "bulletList", content: [{ type: "listItem", content: [paragraph("Gateway")] }] },
+      [{ type: "bulletList", content: [{ type: "listItem", content: [paragraph("Gateway")] }] }],
+      "- Gateway",
     ],
-    ["> Gateway", "/quote", 2, { type: "blockquote", content: [paragraph("Gateway")] }],
+    ["> Gateway", "/quote", 2, [{ type: "blockquote", content: [paragraph("Gateway")] }], "> Gateway"],
+    [
+      // The caret after the space in the quote, so there is text on both sides of it.
+      "> Roll out plan",
+      "/quote",
+      7,
+      [{ type: "blockquote", content: [paragraph("Roll out plan")] }],
+      "> Roll out plan",
+    ],
   ];
-  for (const [markdown, query, caret, block] of insideOwnType) {
-    it(`keeps ${block.type} when its own command is chosen inside it`, async () => {
+  for (const [markdown, query, caret, blocks, written] of insideOwnType) {
+    it(`keeps ${blocks[0].type} and its text when its own command is chosen inside it`, async () => {
       const { editor, element } = renderDocumentationEditor(markdown);
-      // The start of the text inside the list item or quote.
+      // Inside the list item or quote.
       editor.commands.setTextSelection(caret);
       await typeInEditor(element, query);
       await setup().keyboard("{Enter}");
-      expect(blocksOf(editor)[0]).toEqual(block);
+      expect(blocksOf(editor)).toEqual([...blocks, paragraph()]);
+      expect(editor.getMarkdown()).toBe(`${written}\n\n`);
     });
   }
 
@@ -317,6 +428,48 @@ describe("slash commands", () => {
 });
 
 describe("slash menu", () => {
+  it("tells assistive technology what `/` opens, and whether it is open, before it is ever opened", async () => {
+    const { element } = renderDocumentationEditor("");
+    expect(element.getAttribute("aria-haspopup")).toBe("listbox");
+    expect(element.getAttribute("aria-autocomplete")).toBe("list");
+    expectMenuClosed(element);
+    await typeInEditor(element, "/");
+    expectActive(element, "Text");
+  });
+
+  it("announces the match count and the active option as the query and the arrow keys change them", async () => {
+    const { element } = renderDocumentationEditor("");
+    const user = setup();
+    await typeInEditor(element, "/");
+    expect(announcement()).toBe("11 blocks match. Text, highlighted.");
+    await typeInEditor(element, "hea");
+    expect(announcement()).toBe("3 blocks match. Heading 1, highlighted.");
+    await user.keyboard("{ArrowDown}{ArrowDown}{ArrowDown}");
+    // The arrow keys wrap around, so the first option is active again.
+    expect(announcement()).toBe("3 blocks match. Heading 1, highlighted.");
+    await user.keyboard("{ArrowUp}");
+    expect(announcement()).toBe("3 blocks match. Heading 3, highlighted.");
+    await user.keyboard("{Backspace}{Backspace}{Backspace}h3");
+    expect(announcement()).toBe("1 block matches. Heading 3, highlighted.");
+    await typeInEditor(element, "z");
+    expect(announcement()).toBe("No matching blocks.");
+  });
+
+  it("reads out a change once, not on every render", async () => {
+    const { element } = renderDocumentationEditor("");
+    await typeInEditor(element, "/head");
+    const region = screen.getByRole("status");
+    const read: string[] = [];
+    const observer = new MutationObserver(() => read.push(region.textContent ?? ""));
+    observer.observe(region, { childList: true, characterData: true, subtree: true });
+    // "/hea" still matches the same three blocks, with the same one active, so there is nothing new to read out.
+    await setup().keyboard("{Backspace}");
+    expect(read).toEqual([]);
+    await setup().keyboard("{ArrowDown}");
+    expect(read).toEqual(["3 blocks match. Heading 2, highlighted."]);
+    observer.disconnect();
+  });
+
   it("opens at the start of a block with every command and points the editor at it", async () => {
     const { element } = renderDocumentationEditor("");
     await typeInEditor(element, "/");
@@ -442,13 +595,15 @@ describe("slash menu", () => {
     expectMenuClosed(element);
   });
 
-  it("closes on Escape, keeps the typed text, and keeps focus in the editor", async () => {
+  it("closes on Escape, keeps the typed text, and returns focus to the editor", async () => {
     const { editor, element } = renderDocumentationEditor("");
     await typeInEditor(element, "/hea");
     await setup().keyboard("{Escape}");
     expectMenuClosed(element);
-    expect(hasFocus(element)).toBe(true);
+    // The editor is where focus belongs after Escape, never `document.body`, so that the caret is still there to type on.
+    expect(document.activeElement).toBe(element);
     expect(blocksOf(editor)).toEqual([paragraph("/hea")]);
+    expect(screen.queryByRole("status")).toBeNull();
   });
 
   it("claims Escape before the editor's own lower-priority Escape shortcut", async () => {
@@ -457,17 +612,20 @@ describe("slash menu", () => {
     await typeInEditor(element, "/");
     await user.keyboard("{Escape}");
     expectMenuClosed(element);
-    expect(hasFocus(element)).toBe(true);
-    // With the menu closed, Escape reaches the editor's shortcut.
+    expect(document.activeElement).toBe(element);
+    // With the menu closed, Escape reaches the editor's shortcut, which leaves the editor; the next one, in a dialog,
+    // closes the dialog.
     await user.keyboard("{Escape}");
     expect(hasFocus(element)).toBe(false);
+    expectMenuClosed(element);
   });
 
   it("shows an empty state and leaves Enter to the editor when nothing matches", async () => {
     const { editor, element } = renderDocumentationEditor("");
     await typeInEditor(element, "/zzz");
     expect(within(menu()).queryAllByRole("option")).toHaveLength(0);
-    expect(screen.getByRole("status").textContent).toBe("No matching blocks");
+    expect(announcement()).toBe("No matching blocks.");
+    expect(screen.getByText("No matching blocks")).toBeTruthy();
     expect(element.getAttribute("aria-controls")).toBe(menu().id);
     expect(element.hasAttribute("aria-activedescendant")).toBe(false);
     await setup().keyboard("{Enter}");

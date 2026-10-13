@@ -1,6 +1,6 @@
 import { flip, shift } from "@floating-ui/dom";
 import { type Editor, Extension, type Range } from "@tiptap/core";
-import { type EditorState, PluginKey } from "@tiptap/pm/state";
+import { type EditorState, Plugin, PluginKey } from "@tiptap/pm/state";
 import { ReactRenderer } from "@tiptap/react";
 import { exitSuggestion, Suggestion, type SuggestionProps } from "@tiptap/suggestion";
 import { filterSlashCommands, type SlashCommandItem } from "./slash-commands";
@@ -20,6 +20,31 @@ function canOpenAt(state: EditorState, range: Range) {
   // Inline leaves such as hard breaks start a new line, so they count as whitespace.
   const before = $from.parent.textBetween(Math.max(0, $from.parentOffset - 1), $from.parentOffset, undefined, " ");
   return before === "" || /\s/.test(before);
+}
+
+/**
+ * Says whether the menu the editor can open with `/` is showing. It is always on the editor, in both states, so
+ * assistive technology can read the control's state before the menu has ever opened.
+ */
+function setExpanded(dom: HTMLElement, expanded: boolean) {
+  dom.setAttribute("aria-expanded", String(expanded));
+}
+
+/** Points the editor at the listbox, and at the active option in it when there is one. */
+function setControlled(dom: HTMLElement, listboxId: string, activeOptionId?: string) {
+  dom.setAttribute("aria-controls", listboxId);
+  if (activeOptionId) dom.setAttribute("aria-activedescendant", activeOptionId);
+  else dom.removeAttribute("aria-activedescendant");
+}
+
+/**
+ * Returns the editor to the state it has while the menu is closed: the listbox it pointed at is gone, so nothing is
+ * controlled or active any more, and the caret stays in the editor.
+ */
+function setClosed(dom: HTMLElement) {
+  dom.removeAttribute("aria-controls");
+  dom.removeAttribute("aria-activedescendant");
+  setExpanded(dom, false);
 }
 
 const preventFocusChange = (event: Event) => event.preventDefault();
@@ -45,10 +70,9 @@ function slashMenuRenderer(editor: Editor, pluginKey: PluginKey) {
   const update = () => {
     renderer?.updateProps({ items, activeIndex });
     const dom = editor.view.dom;
-    dom.setAttribute("aria-controls", listboxId);
+    setExpanded(dom, true);
     const active = items[activeIndex];
-    if (active) dom.setAttribute("aria-activedescendant", optionId(active));
-    else dom.removeAttribute("aria-activedescendant");
+    setControlled(dom, listboxId, active ? optionId(active) : undefined);
   };
   const activate = (index: number) => {
     if (index === activeIndex) return;
@@ -93,6 +117,14 @@ function slashMenuRenderer(editor: Editor, pluginKey: PluginKey) {
     },
     onKeyDown({ event }: { event: KeyboardEvent }) {
       if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+      if (event.key === "Escape" || event.key === "Esc") {
+        // `@tiptap/suggestion` closes the menu on Escape whatever this returns. Focus belongs to the editor, where the
+        // caret is: it is put back explicitly rather than left wherever it happened to be, which for a reader is
+        // `document.body`, with no caret to return to. A second Escape then leaves the editor, and a third closes the
+        // dialog around it.
+        editor.view.focus();
+        return true;
+      }
       // Without a match, Enter and the arrow keys keep their usual meaning in the editor.
       if (!items.length) return false;
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -110,8 +142,7 @@ function slashMenuRenderer(editor: Editor, pluginKey: PluginKey) {
       editor.off("blur", close);
       unmount?.();
       renderer?.destroy();
-      editor.view.dom.removeAttribute("aria-controls");
-      editor.view.dom.removeAttribute("aria-activedescendant");
+      setClosed(editor.view.dom);
       props = undefined;
       renderer = undefined;
       unmount = undefined;
@@ -151,6 +182,25 @@ export const SlashCommand = Extension.create({
         flip: false,
         floatingUi: { strategy: "fixed", middleware: [flip({ padding: 8 }), shift({ padding: 8 })] },
         render: () => slashMenuRenderer(this.editor, pluginKey),
+      }),
+      // What `/` opens, and whether it is open, is on the editor from the start, so a reader hears it before the menu
+      // has ever been opened rather than only while it is showing.
+      new Plugin({
+        key: new PluginKey("slashMenuControl"),
+        view(view) {
+          const dom = view.dom;
+          dom.setAttribute("aria-haspopup", "listbox");
+          dom.setAttribute("aria-autocomplete", "list");
+          setExpanded(dom, false);
+          return {
+            destroy: () => {
+              dom.removeAttribute("aria-haspopup");
+              dom.removeAttribute("aria-autocomplete");
+              dom.removeAttribute("aria-expanded");
+              setClosed(dom);
+            },
+          };
+        },
       }),
     ];
   },

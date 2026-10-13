@@ -1,4 +1,6 @@
 import type { ChainedCommands, Editor, Range } from "@tiptap/core";
+import type { Node } from "@tiptap/pm/model";
+import { type EditorState, TextSelection, type Transaction } from "@tiptap/pm/state";
 import {
   Heading1,
   Heading2,
@@ -14,7 +16,7 @@ import {
   Table,
 } from "lucide-react";
 
-/** A block the slash menu can turn the current block into. */
+/** A block the slash menu can insert at the caret. */
 export interface SlashCommandItem {
   id: string;
   title: string;
@@ -22,23 +24,87 @@ export interface SlashCommandItem {
   /** Other words that find the command, such as Markdown names (`h1`, `hr`). */
   keywords: string[];
   icon: LucideIcon;
-  /** Deletes the `/query` text in `range`, then turns the block at the caret into this command's block. */
+  /** Deletes the `/query` text in `range`, then inserts this command's block at the caret. */
   run(editor: Editor, range: Range): boolean;
 }
 
-/** Deletes the slash query, then applies `transform` in the same transaction. */
+/** The text of `block` before the caret at `offset` and after the `query` characters that start at that offset. */
+function textAround(block: Node, offset: number, query: number) {
+  // Inline leaves such as hard breaks count as text, so a block that holds only one of them is not an empty block.
+  return {
+    before: block.textBetween(0, offset, undefined, " "),
+    after: block.textBetween(offset + query, block.content.size, undefined, " "),
+  };
+}
+
+/** Whether the caret block in `range` holds text other than the slash query, which the command has to keep. */
+function holdsText(state: EditorState, range: Range) {
+  const $from = state.doc.resolve(range.from);
+  const { before, after } = textAround($from.parent, $from.parentOffset, range.to - range.from);
+  return Boolean(before.trim() || after.trim());
+}
+
+/**
+ * Leaves an empty block where the deleted query was, with the caret in it, so that the command turns that block and only
+ * that block: text before the caret keeps the block it was in, and text after the caret moves into the block that
+ * follows it. The query must already be deleted, so `caret` is where the query was.
+ */
+function openBlockAtCaret(tr: Transaction, caret: number) {
+  const $caret = tr.doc.resolve(caret);
+  const { before, after } = textAround($caret.parent, $caret.parentOffset, 0);
+  const empty = tr.doc.type.schema.nodes.paragraph.create();
+  if (!before.trim()) {
+    // Nothing but spaces precedes the caret, so the new block goes before the block the caret is in, which keeps the
+    // text after it.
+    const start = $caret.before();
+    tr.insert(start, empty);
+    tr.setSelection(TextSelection.create(tr.doc, start + 1));
+    return;
+  }
+  // The block that follows the split starts where the caret was, once past its opening token, so the text after the
+  // caret starts one position further in again.
+  tr.split(caret, 1);
+  if (after.trim()) tr.insert(caret + 1, empty);
+  tr.setSelection(TextSelection.create(tr.doc, caret + 2));
+}
+
+/** Deletes the slash query, then applies `transform` to the block left at the caret, in the same transaction. */
 function turnInto(transform: (chain: ChainedCommands) => ChainedCommands) {
   return (editor: Editor, range: Range) => transform(editor.chain().focus().deleteRange(range)).run();
 }
 
 /**
- * Wraps the block in a list or quote, unless it is already in one: the toggle commands would unwrap it instead, and a
- * slash command never removes the block type it names.
+ * Deletes the slash query, then applies `transform` to a new empty block at the caret, so that the text around the
+ * caret survives. A caret block that holds nothing but the query, which is the case on a blank line, is the block the
+ * command turns, as it always was.
+ *
+ * Opening the block and turning it are two transactions: TipTap's commands read positions from the state they are given,
+ * and one that has already opened the block has them shifted. Both are dispatched together, so the history keeps them in
+ * one undo step, and the first announces no change, so the document is saved once, when the command has finished.
+ */
+function insertAtCaret(transform: (chain: ChainedCommands) => ChainedCommands) {
+  return (editor: Editor, range: Range) => {
+    if (!holdsText(editor.state, range)) return turnInto(transform)(editor, range);
+    const opened = editor.state.tr.delete(range.from, range.to);
+    openBlockAtCaret(opened, range.from);
+    editor.view.dispatch(opened.setMeta("preventUpdate", true));
+    return transform(editor.chain().focus()).run();
+  };
+}
+
+/** Deletes the slash query and leaves the caret where it was, so the block around it is untouched. */
+function deleteQuery(editor: Editor, range: Range) {
+  return editor.chain().focus().deleteRange(range).run();
+}
+
+/**
+ * Inserts a list or quote at the caret, unless the caret is already in one: the toggle commands would unwrap it
+ * instead, and a slash command never removes the block type it names, so there only the query goes.
  */
 function wrapUnlessActive(name: string, wrap: (chain: ChainedCommands) => ChainedCommands) {
   return (editor: Editor, range: Range) => {
-    const isActive = editor.isActive(name);
-    return turnInto((chain) => (isActive ? chain : wrap(chain)))(editor, range);
+    if (editor.isActive(name)) return deleteQuery(editor, range);
+    return insertAtCaret(wrap)(editor, range);
   };
 }
 
@@ -49,7 +115,7 @@ export const slashCommands: SlashCommandItem[] = [
     description: "Plain paragraph text",
     keywords: ["paragraph", "plain", "body"],
     icon: Pilcrow,
-    run: turnInto((chain) => chain.setParagraph()),
+    run: insertAtCaret((chain) => chain.setParagraph()),
   },
   {
     id: "heading-1",
@@ -57,7 +123,7 @@ export const slashCommands: SlashCommandItem[] = [
     description: "Large section heading",
     keywords: ["h1", "title"],
     icon: Heading1,
-    run: turnInto((chain) => chain.setHeading({ level: 1 })),
+    run: insertAtCaret((chain) => chain.setHeading({ level: 1 })),
   },
   {
     id: "heading-2",
@@ -65,7 +131,7 @@ export const slashCommands: SlashCommandItem[] = [
     description: "Medium section heading",
     keywords: ["h2", "subtitle"],
     icon: Heading2,
-    run: turnInto((chain) => chain.setHeading({ level: 2 })),
+    run: insertAtCaret((chain) => chain.setHeading({ level: 2 })),
   },
   {
     id: "heading-3",
@@ -73,7 +139,7 @@ export const slashCommands: SlashCommandItem[] = [
     description: "Small section heading",
     keywords: ["h3", "subheading"],
     icon: Heading3,
-    run: turnInto((chain) => chain.setHeading({ level: 3 })),
+    run: insertAtCaret((chain) => chain.setHeading({ level: 3 })),
   },
   {
     id: "bulleted-list",
@@ -113,7 +179,7 @@ export const slashCommands: SlashCommandItem[] = [
     description: "Code in a monospace block",
     keywords: ["code", "snippet", "fence", "pre"],
     icon: SquareCode,
-    run: turnInto((chain) => chain.setCodeBlock()),
+    run: insertAtCaret((chain) => chain.setCodeBlock()),
   },
   {
     id: "divider",
@@ -121,7 +187,7 @@ export const slashCommands: SlashCommandItem[] = [
     description: "A line between sections",
     keywords: ["horizontal", "rule", "hr", "separator", "line"],
     icon: Minus,
-    run: turnInto((chain) => chain.setHorizontalRule()),
+    run: insertAtCaret((chain) => chain.setHorizontalRule()),
   },
   {
     id: "table",
@@ -129,7 +195,7 @@ export const slashCommands: SlashCommandItem[] = [
     description: "Insert a 3 × 3 table with a header row",
     keywords: ["grid", "rows", "columns"],
     icon: Table,
-    run: turnInto((chain) => chain.insertTable({ rows: 3, cols: 3, withHeaderRow: true })),
+    run: insertAtCaret((chain) => chain.insertTable({ rows: 3, cols: 3, withHeaderRow: true })),
   },
 ];
 
