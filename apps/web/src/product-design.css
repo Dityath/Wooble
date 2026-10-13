@@ -418,6 +418,7 @@ p { text-wrap: pretty; }
 .documentation-mode-toggle:focus-visible { border-color: var(--wooble-primary); box-shadow: var(--focus-ring); }
 .documentation-notice { --tone: var(--wooble-warning); display: flex; align-items: flex-start; gap: 10px; margin: 0 0 8px; padding: 11px 14px; border: 1px solid color-mix(in srgb, var(--tone) 32%, transparent); border-radius: 10px; color: var(--wooble-ink); background: color-mix(in srgb, var(--tone) 8%, var(--wooble-panel)); font-size: 13px; line-height: 1.5; }
 .documentation-notice.is-error { --tone: var(--wooble-danger); align-items: center; }
+.documentation-notice.is-recovery { align-items: center; }.documentation-notice.is-recovery > svg { margin-top: 0; }
 .documentation-notice > svg { flex: 0 0 auto; margin-top: 2px; color: var(--tone); }.documentation-notice.is-error > svg { margin-top: 0; }
 .documentation-notice > span { flex: 1 1 auto; min-width: 0; }
 .documentation-notice button { flex: 0 0 auto; height: 28px; padding: 0 11px; border: 1px solid color-mix(in srgb, var(--tone) 40%, transparent); border-radius: 7px; outline: none; color: var(--wooble-ink); background: var(--wooble-panel); font-size: 12px; font-weight: 600; transition: background-color .15s; }

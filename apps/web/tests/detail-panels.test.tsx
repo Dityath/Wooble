@@ -722,7 +722,7 @@ describe("rich documentation", () => {
 
   // Rendering and editing 20,000 characters under happy-dom takes several seconds when the editor modules are cold.
   it("does not send documentation over 20,000 characters of Markdown", async () => {
-    const limitMessage = "Documentation is limited to 20,000 characters of Markdown. Shorten it to save.";
+    const limitMessage = "Documentation is limited to 20,000 characters of Markdown. Remove 1 character to save.";
     const onSave = mock(async (_value: string) => {});
     // Use prose-sized words so this checks the save boundary rather than linkifying a 20,000-character token.
     const initial = `${"word ".repeat(3999)}word`;
@@ -735,8 +735,8 @@ describe("rich documentation", () => {
     expect(saveState()).toBe("Unsaved changes");
     expect(documentation().textContent).toHaveLength(20_001);
 
-    await actor.click(screen.getByRole("button", { name: "Retry" }));
-    expect(screen.getByRole("alert").textContent).toContain(limitMessage);
+    // Retrying cannot help until the text is shorter, so the notice offers no Retry.
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     expect(onSave).not.toHaveBeenCalled();
 
     await caretToEnd();
