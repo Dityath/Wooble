@@ -33,7 +33,7 @@ The API stores password hashes and hashed session tokens in PostgreSQL. Session 
 
 ## State ownership
 
-TanStack Query owns data fetched from the API. Zustand holds transient editor state such as selection. The browser does not treat XYFlow node data as the database record. Changes are persisted through the API, and other open canvases receive update notifications over WebSocket.
+TanStack Query owns data fetched from the API. Zustand holds transient editor state such as selection. The browser does not treat XYFlow node data as the database record. Changes are persisted through the API, and other open canvases receive update notifications over WebSocket. The proposed (not yet implemented) design for collaborative documentation sync is recorded in the [collaboration sync ADR](decisions/collaboration-sync.md).
 
 ## Source of truth
 

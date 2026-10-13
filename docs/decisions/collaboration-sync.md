@@ -1,0 +1,209 @@
+# ADR: Collaboration sync model for documentation
+
+Status: **Proposed — accepted for follow-up pending maintainer merge.** Nothing in this document is implemented. The only runtime evidence is the isolated [transport spike](../spikes/2026-10-13-collaboration-sync.md). No dependency, contract, schema, migration, route, or UI changes accompany this ADR.
+
+Issue: [#16](https://github.com/Dityath/Wooble/issues/16). Tracking: [release backlog](../release-backlog.md). Date: 2026-10-13.
+
+## Context
+
+The v0.2 roadmap asks for concurrent editing of entity and connection documentation. Today documentation is the Markdown string `metadata.documentation` (Zod `max(20000)`, trimmed) on `entities` and `connections`, written by `PATCH /api/entities/:entityId` and `PATCH /api/connections/:connectionId` with last-write-wins semantics. `contractBody` (connections) and `schemaSql` (entities) are separate strings with `max(100000)`; this ADR does not change them.
+
+Facts about the current code that constrain the design:
+
+- `apps/api/src/lib/live.ts` registers one WebSocket route, `/api/canvases/:canvasId/live`. It sends JSON text, caps inbound messages at 256 bytes by wrapping the Bun message dispatcher, rechecks canvas read access every 30 seconds, and closes sockets on selected canvas mutations. Guests (no account) connect when `canvases.share_mode = 'link'`. It is not a binary sync channel and is not reused for document sync.
+- `apps/api/src/lib/auth.ts` classifies routes by `context.route` pattern. A guest may read `/api/entities/:entityId` only with a `canvasId` query that names a link-shared canvas where `canvas_nodes` contains the entity. Entity and connection writes by a non-manager require the `editor` role on **every** canvas that shows the object; workspace managers (and system admins) pass. Whether that cross-canvas write rule is right is an open decision (`shared/multi-canvas-write-rule` in the [backlog](../release-backlog.md)); sync must not invent a different rule.
+- An entity or connection belongs to one workspace (`entities.workspace_id`, `connections.workspace_id`) and can appear on many canvases through `canvas_nodes (canvas_id, entity_id)` and `canvas_connections (canvas_id, connection_id)`.
+- `PATCH` already takes `SELECT … FOR UPDATE` on the entity row, but records the `canvas_events` row **after** the transaction, and canvas undo of `entity.updated` restores the whole previous `metadata` object (`apps/api/src/modules/canvas/undo.ts`). That is issue #12's scope. Rolling back whole metadata would overwrite collaborative text.
+- This branch is Markdown-first: the inspector uses a plain `maxLength={20000}` textarea with preview (`rich-documentation.tsx`), and no TipTap or Yjs package is installed. The TipTap block editor (#9) and the integrity/registry work (#12) live on other branches and are **dependencies, not inherited behavior**.
+
+## Decision
+
+1. **Yjs 13 with `y-protocols` 1.x, implemented inside Wooble's own Elysia API process**, rather than a separate Hocuspocus server.
+2. **One Y.Doc per stable document identity**, persisted in a new `collab_documents` table (planned), with a bounded Markdown mirror that keeps existing readers, exports, and the legacy `PATCH` contract working.
+3. **Authorization is evaluated per frame on both receive and send**, against the server-derived workspace and the current canvas session context, never against a cached decision.
+4. **Commit before acknowledge or broadcast.** Peers and the author's "saved" indicator only see state that is committed to PostgreSQL.
+5. **Single API instance only** for the first implementation.
+6. v0.3–v0.5 reuse the authorization and ephemeral awareness layer; they do **not** get automatic structured merge of contracts or schemas.
+
+### Why Yjs in-process rather than Hocuspocus
+
+Both are MIT; cost is not a factor. Versions checked 2026-10-13 against the npm registry: `@hocuspocus/server` 4.7.1 (MIT, `engines.node >= 22`, peers `yjs ^13.6.8`, `y-protocols ^1.0.6`); the spike used Yjs 13.6.33, y-protocols 1.0.7, lib0 0.2.119 (all MIT).
+
+| Concern | In-process Yjs on Elysia | Hocuspocus server |
+| --- | --- | --- |
+| Persist-then-ack ordering | We control it: apply, persist, commit, then ack and broadcast. | Its documented persistence path is the debounced `onStoreDocument`; `onChange` fires after the document has changed. The hooks reference documents no pre-commit gate on broadcast. Not shown to be impossible; not offered. |
+| Per-frame authorization | Native: every receive and every send passes the same function. | `beforeHandleMessage` and `beforeHandleAwareness` can reject inbound messages. A per-recipient pre-send hook was not found in the hooks reference (not exhaustively verified). |
+| Auth model | Reuses the HttpOnly cookie, Origin allowlist, `canvasRole`, link-share check, and guard classification already in `apps/api`. | Token-oriented `onAuthenticate`; cookie and canvas-context rules must be re-expressed in hooks. |
+| Wire compatibility | Plain y-protocols framing on a canvas-scoped route; the spike proved it on Elysia/Bun. | `HocuspocusProvider` multiplexes documents over one socket with its own envelope and is not compatible with a custom multiplexed route, so the web client and server must both be Hocuspocus. |
+| Runtime fit | Same Bun process, same shutdown (`closeLivePeers`) and proxy rules. | Node >= 22 engine; Bun support is claimed in its docs, but was not tested by the spike or here. A second process adds a deployment unit and a second place for auth. |
+| Operations | We own protocol correctness, decoder hardening, awareness handling, reconnect behavior, and a future Yjs 14 migration. More code and more tests for Wooble. | Maintained hook chain, retry-on-throw storage, Redis scale-out extension. |
+| Horizontal scale | None; single instance (see Limits). | Redis extension exists; its maintainers note documents on different instances do not fully sync unless users are connected to both (hocuspocus issue 800, from the research brief; not re-fetched). |
+
+Trade-off accepted: Wooble owns more protocol code in exchange for exact control of ordering and authorization that the product's access model requires. Embedding Hocuspocus's core inside Elysia through a custom adapter was **not** evaluated. If the release gates below fail for the in-process design, evaluate it before re-opening this decision.
+
+Do not use `@y/websocket-server` or `@y/protocols`: the default branch of [y-protocols](https://github.com/yjs/y-protocols) now documents `@y/protocols` (the Yjs 14 line). The spike pinned `y-protocols` 1.0.7 with Yjs 13 and used its installed `sync.js` and `awareness.js` as version-specific evidence.
+
+### Editor binding and undo
+
+- TipTap 3 `@tiptap/extension-collaboration` and `@tiptap/extension-collaboration-caret` are MIT. Checked against the npm registry on 2026-10-13: both 3.31.4, peers `@tiptap/y-tiptap ^3.0.7` and (for Collaboration) `yjs ^13`. The Collaboration extension binds through **`@tiptap/y-tiptap`** (a Tiptap-maintained fork of y-prosemirror, MIT); it does not depend on `y-prosemirror`, whose 1.3.7 release is the older binding. Use `@tiptap/y-tiptap`; some documentation snippets still mention `y-prosemirror`.
+- Excluded: Tiptap Cloud / `TiptapCollabProvider`, `@tiptap-pro/*` packages, and any private-registry install. Self-hosted documents in Wooble's database do not need them.
+- Disable StarterKit's history: `StarterKit.configure({ undoRedo: false })`. The [configure page](https://tiptap.dev/docs/editor/getting-started/configure) states this is required with `Collaboration` to avoid conflicts, and the [undo-redo page](https://tiptap.dev/docs/editor/extensions/functionality/undo-redo) says to use the plain extension only for non-collaborative editors.
+- Undo uses Yjs `UndoManager` tracking only the **local** origin ([UndoManager docs](https://docs.yjs.dev/api/undo-manager): `trackedOrigins` selects which origins are tracked; the manager itself is always tracked). Remote updates, bootstrap, and the server's legacy-`PATCH` replacement use other origins and are never undone by a user's local undo.
+- Canvas undo (`canvas_events`) and document undo are separate systems. The #12 activity registry gets **typed exclusions**: an `entity.updated` or `connection.updated` undo restores only the non-collaborative fields and never restores `documentation` (or any other field owned by a document), instead of rolling back the whole `metadata` object. Event metadata should also stop copying large document strings into `previous`.
+
+## Document identity and access
+
+### Identity versus session context
+
+- **Document identity** (stable, storage key): `(workspace_id, object_kind, object_id, field)`, where `object_kind` is `entity` or `connection` and `field` initially `documentation`. The workspace is read from the object's own row on the server; a client-supplied workspace or kind is never trusted.
+- **Session context** (per socket, short-lived): the actor or guest link, the canvas the user opened, the role on that canvas, and the proof that the object is shown there. One entity shown on three canvases is **one** document with three possible session contexts.
+- The route is a new registered Elysia WebSocket route that includes the canvas ID and object reference in its path (exact path to be set by `v0.2/sync-access`). It must be classified explicitly in the access guard: the existing guard works on registered route patterns (`context.route`), and #10/#26 is moving toward default-deny for unclassified routes. On upgrade and on every frame the server verifies, in this order: Origin in the allowlist; session valid and unexpired, or the canvas is link-shared for a guest; canvas exists and its `workspace_id` equals the object's `workspace_id`; the object is included on that canvas (`canvas_nodes` or `canvas_connections`); the role permits the requested capability. A missing object, a non-included object, and a forbidden object are indistinguishable to the client.
+- **Read** requires read access to that canvas. **Write** must call the same eligibility function the legacy `PATCH` guard uses (today: workspace manager, or `editor` on every canvas showing the object). Do not reimplement it for sync; two writers with different rules would let the weaker path bypass the stronger. `v0.2/sync-access` is blocked on the cross-canvas write-rule decision and on #10/#26.
+- Guests are read-only for life: no write capability, no editable caret, and by default no awareness exchange (most restrictive default; a later decision may allow an anonymous viewer count). Signed-in viewers may receive document state and appear in the participant list; their selections are shown, if at all, as read-only highlights.
+
+### Per-frame authorization
+
+- Re-check session, role, link-share state, and object inclusion before **every receive** and **every send**, including initial sync, awareness frames, acknowledgements, and error frames. The result is valid for that one frame; there is no cross-frame cache. If a benchmark shows this is unaffordable, a bounded-TTL cache may only be adopted by amending this ADR.
+- The authorization lookup failing (database error, timeout) **fails closed**: close the socket (1011), send nothing further.
+- Fan-out iterates the room's currently registered peers and authorizes each recipient before sending. No raw Bun topic `publish` / `publishBinary` for document content: a subscribed-but-revoked socket would bypass the check.
+- Work is serialized per socket and per document with a promise queue, so a frame is never processed concurrently with its own authorization. To avoid time-of-check/time-of-use gaps with a concurrent revoke, the persistence transaction re-reads the deciding rows (session, role/membership, share mode, inclusion) with row locks in the same transaction that commits the write; a revoke then orders strictly before or after the write. This is a design to prove with two-connection tests, not a claim.
+- Close codes and reasons are generic and fixed. Every authorization or identity failure uses 1008 with the same reason; internal and lookup failures use 1011; overload uses 1013; shutdown uses 1001; an application code in the 4000–4999 range (reserved for applications per Bun) signals "client upgrade required". No document text, titles, or role names appear in errors.
+
+### Read-only peers
+
+Readers may send a SyncStep1 (state vector) to obtain server state. The server does not initiate SyncStep1 toward readers. It rejects **both** inner `Update` and `SyncStep2` from a reader **before** `Y.applyUpdate`, because `readSyncMessage` applies both variants (the spike confirmed this on installed y-protocols 1.0.7). Authorization is evaluated again immediately before apply for editors.
+
+### Awareness
+
+- Identity is server-bound: the display name and color index come from the authenticated actor, not from the frame (as in `live.ts`, which already slices names to 32 characters).
+- A socket owns exactly the awareness `clientID` it first claims; frames carrying other client IDs are dropped, and the server removes the socket's state on close.
+- Only whitelisted fields (`user` display fields, selection/caret as relative positions) are kept, each size-bounded. Unknown fields are dropped before re-encoding.
+- Awareness is never persisted, never feeds the Markdown mirror, and a connected-but-silent peer expires by timeout. Awareness frames have separate (smaller) caps and rate limits than document updates.
+
+## Persistence: `collab_documents` (planned design)
+
+The following describes **planned** schema; no SQL below exists in the repository. Final migration is a checked-in additive migration generated by `drizzle-kit`.
+
+| Column (planned) | Purpose |
+| --- | --- |
+| `id` | Surrogate key. |
+| `workspace_id` | `NOT NULL`, FK to `workspaces`, `ON DELETE CASCADE` (matches `entities` and `connections`). |
+| `object_kind`, `object_id`, `field` | Document identity. Unique on `(object_kind, object_id, field)`; all `NOT NULL` so uniqueness is not defeated by NULLs. |
+| `state` | `bytea`, Yjs state. Backstop `CHECK (octet_length(state) <= cap)`; `octet_length(bytea)` exists ([binary functions](https://www.postgresql.org/docs/16/functions-binarystring.html)). |
+| `mirror_markdown`, `mirror_sha256` | Markdown projection and its SHA-256 over the exact UTF-8 bytes. Bounded to the existing 20000-**character** contract. |
+| `original_markdown`, `original_sha256` | Exact Markdown (and hash) seen at first bootstrap; written once, immutable. Evidence for audit and operator recovery, not a CRDT substitute. |
+| `schema_version`, `bootstrap_version` | Editor schema version and parser version that produced the state. |
+| `revision` | Monotonic counter incremented in the same statement as `state` and mirror. |
+| `quarantined_at`, `quarantine_reason` | Set instead of partially applying invalid state. |
+| `deleted_at` | Tombstone (see Retention). |
+| `created_at`, `updated_at` | Timestamps. |
+
+Notes:
+
+- **Character versus byte limits are different limits.** The mirror cap is the contract's 20000 characters. The Zod `max` counts JavaScript string length (UTF-16 code units); PostgreSQL `char_length`/`length` counts characters, so a database `CHECK` is a looser backstop, never stricter than the API. Byte caps apply to `state`, updates, and frames.
+- **Integrity gap.** `object_kind` and `object_id` is a polymorphic reference and has no database FK. An FK per kind with `ON DELETE CASCADE` would destroy the document when an entity is deleted, which conflicts with canvas undo restoring the same IDs. So the table depends on the #12 object registry for create, delete-to-tombstone, and restore hooks, plus a reconciliation job that reports orphans. This is a prerequisite, not provided here.
+- **Cascade facts.** Workspace purge cascades to `collab_documents` and intentionally destroys retained history. Per PostgreSQL, deletes caused by foreign-key `ON DELETE CASCADE` fire the relevant row triggers on the affected table ([CREATE TRIGGER](https://www.postgresql.org/docs/16/sql-createtrigger.html)), so an audit trigger on this table would see cascade deletes.
+- **Reader-facing mirror.** `entities.metadata.documentation` and `connections.metadata.documentation` remain the fields existing readers and exports use. They become a projection of `mirror_markdown`, written in the **same transaction**, so legacy API consumers see the same text and hash. A reconciliation check compares the two hashes.
+- **Drizzle.** The installed Drizzle (0.44.7, per the research brief) exposes no `bytea` builder; a `customType` is needed. Whether the `pg` driver returns a Node `Buffer` for `bytea` is unverified here.
+
+### First bootstrap
+
+1. Open a **short** transaction. Insert a placeholder row with `INSERT … ON CONFLICT DO NOTHING` ([INSERT](https://www.postgresql.org/docs/16/sql-insert.html)), then `SELECT … FOR UPDATE` that row ([explicit locking](https://www.postgresql.org/docs/16/explicit-locking.html)). The placeholder first is required: `FOR UPDATE` on a missing row locks nothing. Also lock the semantic owner row (`entities` or `connections`) first, in a fixed lock order, so a concurrent delete cannot race the bootstrap and so the legacy `PATCH` (which also locks that row) is serialized with it.
+2. Run the **single canonical server-side** Markdown to `XmlFragment` parser. Clients never seed documents, and two clients never both seed.
+3. Verify: the parser accepts every construct (no lossy or unsupported content), the result is within the 20000-character mirror cap, and parse → serialize → parse is stable. Otherwise reject: leave `metadata.documentation` untouched and the object on the legacy path, with a reportable reason.
+4. Write state, mirror, original (once), hashes, versions, revision; commit. Do not hold any transaction across a WebSocket.
+
+### Per-document persistence and failure handling
+
+- A per-document queue serializes apply and persistence. Each commit writes `state`, mirror, hash, revision, and the `metadata.documentation` projection in **one transaction**, taking locks in a fixed order (owner row, then `collab_documents`) to avoid deadlock with the legacy `PATCH`.
+- Acknowledgement and broadcast occur **only after COMMIT**. Yjs has no acknowledgement of its own, so durable acks need an application-level message; the spike wire format has none yet.
+- No poisoned in-memory state. Primary design: validate and serialize the candidate update on a **clone** of the resident document, persist, and only after commit apply the same update bytes to the resident document and publish. Fallback if cloning cost fails its benchmark: apply on the resident document while withholding broadcast and ack, and on any persistence failure discard the resident document, reload the committed row, and close that document's sockets with a retryable code so clients reconcile from the authoritative state. Either way a database failure never leaves "acknowledged" and "live" state diverging.
+- Frequent commits are expensive; updates within a short window may be coalesced into one commit (proposal: tens to a few hundred milliseconds), at the price of that much extra latency before peers see an edit.
+- If persisted state fails schema validation (for example after a schema change), the document is **quarantined**: never partially applied, last committed mirror stays readable, writes are refused until an operator resolves it.
+- Decoder risk: applying an untrusted update costs CPU and memory in proportion to its structure, not only its bytes. Size limits alone are insufficient. The research brief reports that an upstream Yjs pull request adding update size limits was open and unmerged on 2026-10-13 (lead, re-verify at implementation). Planned mitigations: reject early on frame size, decode and apply untrusted bytes under a wall-clock and memory budget (for example in a worker that can be terminated), count repeated failures per socket and close it. Not proven by the spike. No exploit payloads are published here.
+
+## Migration, backfill, recovery, rollback
+
+- **Migrations.** Future checked-in, additive migrations only; existing migration files are never edited. `drizzle-kit` has no down migrations, so rollback of schema is a forward migration, and the preferred rollback is to leave the table dormant.
+- **Backfill.** Resumable and idempotent: lazy bootstrap on first open, plus an optional batch job that keyset-paginates by object ID, one short transaction per object, using the same locks and the same `ON CONFLICT DO NOTHING` insert. Objects that fail bootstrap checks are recorded and stay legacy. Bootstrap is application logic, not SQL, so it is not part of a `drizzle-kit` migration.
+- **Cutover order.** (1) Ship additive table and the **gated** legacy `PATCH` (below) with sync disabled; (2) enable bootstrap; (3) enable the sync route. Without step 1 first, a legacy writer would overwrite the mirror and diverge from the CRDT.
+- **Recovery.** PostgreSQL backups and snapshots are authoritative for CRDT history. The immutable first seed and the Markdown mirror can restore text but not history or concurrent-edit structure; they are not a substitute for backups.
+- **Rollback.** Retain the table. Old pre-cutover code writes `metadata.documentation` without touching the CRDT, so blindly restoring the old writer is unsafe. Procedure: freeze writes (sync and legacy document writes), drain per-document queues until committed, export and verify that every mirror hash equals its `metadata.documentation` hash, then roll back. On roll-forward, a mismatch between the two hashes means a legacy writer ran; the server must refuse to serve the stale CRDT silently and require an explicit operator choice (adopt the Markdown as a new baseline, discarding CRDT history for that document, or restore from backup).
+- **Retention.** Object delete sets a tombstone (`deleted_at`) and keeps the state until the **undo horizon** defined by #12. This ADR does not define a duration. Undo restores the same object IDs and the same canonical CRDT state, not a replay of old metadata. Workspace purge cascades and destroys retained history by design.
+
+## Legacy `PATCH metadata.documentation`
+
+A future API change (contracts are **not** changed now). Once an object's `documentation` is bootstrapped:
+
+- The server applies a legacy write as a **server-side replacement inside the Y.Doc** (origin distinct from user and remote origins), then persists as above.
+- It requires a **base-hash precondition**: the client states the SHA-256 of the Markdown it last read, and the server compares it with the current `mirror_sha256` while holding the owner-row lock. Mismatch returns **409** with the current mirror and hash. The exact shape (a request header or a body field next to `metadata`) is for `v0.2/sync-access` to set; it must not be a wildcard.
+- A client that sends no hash **cannot overwrite** a bootstrapped field; it receives 409 telling it to upgrade. There is no force flag.
+- Setting `null` or `""` (which today deletes the key) follows the same precondition.
+- Other metadata fields keep today's contract behavior. Readers and export continue to use the ≤20000-character mirror.
+- Rich or unsupported Markdown that the canonical parser cannot represent is refused (no silent drop, no partial apply); the response says the content is unsupported for collaborative documents.
+- Replacement removes the text positions that peers' cursors and future anchors point to; this is accepted and documented.
+- Mixed legacy/collaborative writers are therefore serialized by the owner-row lock and detected by the hash.
+- `contractBody` and `schemaSql` (≤100000 characters) stay single-field last-write-wins for now; extending the precondition to them is a separate decision.
+
+### Stale and revoked clients
+
+- Clients present their editor schema version during the handshake. A client older than the document's minimum is refused before its bindings run, because a strict editor schema deletes content it does not understand and that deletion would sync to everyone ([Tiptap collaborative-editing guide, Pitfalls](https://tiptap.dev/docs/hocuspocus/guides/collaborative-editing), research-brief source).
+- On revoke or demotion, a client's offline or unsent local buffer is **never** resent until write eligibility is re-established. A stale read-only editor discards local divergence, loads fresh server state, and keeps its unsent changes quarantined with a visible recovery path (for example "copy my unsent text").
+- On reconnect the UI distinguishes **durably acknowledged** (server committed revision) from **merely synced** (received by peers or the socket). "Saved" is shown only for the former.
+
+## Proposed limits
+
+All values are **proposals** to be tuned by measurement in `v0.2/durable-documents`; they are not implemented. Frame and update caps are bytes; the mirror cap is characters.
+
+| Limit | Proposal |
+| --- | --- |
+| Inbound frame (document sync) | 256 KiB; larger rejected without applying |
+| Single update / SyncStep2 payload | 256 KiB |
+| Encoded document state | 2 MiB per document (also the `CHECK` backstop) |
+| Markdown mirror | 20000 characters (existing contract) |
+| Awareness frame / per-client state | 4 KiB / 1 KiB |
+| Resident documents per process | 500 |
+| Peers per document | 25 (guests none writeable) |
+| Sockets per user / per workspace / per guest address | 20 / 100 / 10 |
+| Update rate per socket | 30 per second, burst 60 |
+| Awareness rate per socket | 5 per second |
+| Bytes per socket per second | 256 KiB |
+| Idle document eviction | After last peer leaves and the last revision is committed |
+
+- Backpressure: use Bun's per-socket send result and configured `backpressureLimit`; a socket that cannot drain is closed with 1013 rather than buffered without bound. `maxPayloadLength` is server-wide in Elysia/Bun, not per-route, so it is set low enough for the largest legitimate frame while the existing `live.ts` 256-byte wrapper does not apply to the new route. How Bun 1.3.14 closes on overflow (the research brief reported close code 1006) was not re-verified.
+- Eviction never drops unflushed durable data: a dirty document is flushed first, and if the process is at its resident-document cap, new loads are refused (1013) rather than evicting dirty documents.
+- Residual risk: a legitimate editor can still cost CPU within the caps, and many cheap sockets can still exhaust a single process. This design mitigates, and does not claim to eliminate, denial of service.
+- **Single instance only.** Rooms, authorization fan-out, queues, and resident documents are in-process. PostgreSQL row locks serialize writes to a row, but they do **not** make the system safe for multiple API instances: instances would not see each other's peers, awareness, or pending broadcasts, and revocation closes only local sockets. Horizontal scale needs a separate decision.
+- Operations: the self-hosting proxy rule allows WebSocket upgrades on `/api/canvases/*/live` ([self-hosting](../self-hosting.md)); the new route needs its own proxy and docs update. Shutdown must flush dirty documents before closing sockets. Restart of the single instance interrupts all editing; clients reconnect and resync from committed state.
+
+## Reuse by later releases
+
+- **v0.3 contracts.** `v0.3/contract-sessions` reuses authorization and ephemeral awareness for section presence and a defined conflict flow (optimistic hash precondition with visible recovery). It does **not** merge OpenAPI or Protobuf source automatically; a text-level CRDT merge can produce invalid contract source.
+- **v0.4 schemas.** Presence and conflict handling on `schemaSql` the same way; structural edits wait on stable table, column, and key IDs (`v0.4/schema-identity-layout`).
+- **v0.5 comments.** Text anchors can use `Y.RelativePosition`, which requires the same Y.Doc type history to resolve. `Y.createAbsolutePositionFromRelativePosition` returns `null` when the position cannot be referenced or its type is deleted ([relative positions](https://docs.yjs.dev/api/relative-positions)). So wholesale Markdown import replacement, legacy-`PATCH` replacement, or re-bootstrapping orphans anchors and needs explicit recovery (orphaned comment with its quoted text, plus an import preview warning). Contract-section, table, column, and key anchors require stable IDs and orphan handling as separate backlog issues (`v0.3/contract-identity`, `v0.4/schema-identity-layout`, `v0.5/object-anchors`, `v0.5/text-anchors`).
+
+## What the spike did not prove
+
+The [spike](../spikes/2026-10-13-collaboration-sync.md) passed seven transport scenarios on Bun 1.3.14, Elysia 1.4.30, Yjs 13.6.33, y-protocols 1.0.7, and lib0 0.2.119, including rejection of reader `Update` and `SyncStep2` before apply. It used synthetic roles in an isolated room. It did **not** prove:
+
+- real authentication, cookies, link-share guests, or the existing access guard
+- per-frame and per-recipient authorization against PostgreSQL, or revoke races
+- persistence, commit-before-ack ordering, failure recovery, or bootstrap
+- TipTap binding, `@tiptap/y-tiptap` behavior, server-side headless schema/serializer under Bun, or Markdown round-trip fidelity
+- browser behavior, offline buffers, schema-version gating, reconnect UX
+- any of the proposed caps, decoder budgets, or load behavior
+- the legacy `PATCH` precondition, undo exclusions, or tombstone/restore flow
+
+## Release gates
+
+Before any release claims collaborative documentation: the cross-canvas write-rule and #10/#26 and #12 prerequisites are merged; integration tests with an isolated PostgreSQL cover the access matrix (manager, editor, viewer, link guest, revoked, removed from workspace) for connect, receive, send, and awareness; concurrent two-connection revoke versus write; first-bootstrap races and delete races; commit-failure injection with no divergence; legacy `PATCH` 409 and mixed writers; backfill resume; decoder and cap tests including worker budget; golden Markdown fixtures including unsupported content; browser journeys for reconnect, demotion, and stale schema; and a rollback rehearsal. These map to `v0.2/durable-documents`, `v0.2/sync-access`, `v0.2/coedit-presence`, `v0.2/markdown-fidelity`, and `v0.2/release-evidence` in the [backlog](../release-backlog.md). See [testing](../testing.md) for current checks.
+
+## Sources
+
+Fetched and read on 2026-10-13 unless noted.
+
+- Yjs: [document updates](https://docs.yjs.dev/api/document-updates) (updates are `Uint8Array`, order-independent and idempotent; `Y.applyUpdate` accepts a transaction origin), [relative positions](https://docs.yjs.dev/api/relative-positions), [UndoManager](https://docs.yjs.dev/api/undo-manager), [y-protocols](https://github.com/yjs/y-protocols) (current README documents `@y/protocols`).
+- Tiptap: [undo-redo extension](https://tiptap.dev/docs/editor/extensions/functionality/undo-redo), [configure / StarterKit `undoRedo`](https://tiptap.dev/docs/editor/getting-started/configure), [Hocuspocus hooks](https://tiptap.dev/docs/hocuspocus/server/hooks) (`beforeHandleMessage`, `beforeHandleAwareness`, `onChange`, debounced `onStoreDocument`, `connection.readOnly`).
+- PostgreSQL 16: [explicit locking](https://www.postgresql.org/docs/16/explicit-locking.html) (locks held to transaction end; long transactions discouraged), [INSERT](https://www.postgresql.org/docs/16/sql-insert.html) (`ON CONFLICT DO NOTHING`), [binary string functions](https://www.postgresql.org/docs/16/functions-binarystring.html) (`octet_length(bytea)`), [CREATE TRIGGER](https://www.postgresql.org/docs/16/sql-createtrigger.html) (foreign-key action deletes fire relevant triggers).
+- npm registry metadata read 2026-10-13: `@hocuspocus/server`, `@hocuspocus/provider`, `@tiptap/extension-collaboration`, `@tiptap/extension-collaboration-caret`, `@tiptap/y-tiptap`, `@tiptap/starter-kit`, `y-prosemirror` (license and peer dependencies).
+- Not re-fetched, taken from the earlier research briefs and treated as leads: Hocuspocus issue 800 on multi-instance sync, the upstream Yjs update-size-limit pull request status, Bun overflow close-code behavior, Drizzle 0.44.7 lacking a `bytea` builder, and the Tiptap Cloud pricing/private-registry boundary.
