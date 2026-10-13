@@ -81,6 +81,12 @@ restore_dump() {
   local file="$1"
   compose exec -T postgres pg_restore --clean --if-exists --no-owner -U wooble -d wooble < "$file"
 }
+recover_pre_restore() {
+  compose stop web api || return 1
+  restore_dump "$prebackup" || return 1
+  compose run --rm migrate || return 1
+  start_stack
+}
 start_stack() { compose up -d; }
 
 cmd="${1:-}"; shift || true
@@ -138,10 +144,20 @@ case "$cmd" in
       fail "could not stop web/API before restore; attempted to restart stack; pre-restore backup: $prebackup"
     fi
     if restore_dump "$file"; then
-      if start_stack; then printf 'restore succeeded; pre-restore backup: %s\n' "$prebackup"; else fail "restore completed but stack restart failed; pre-restore backup retained at $prebackup"; fi
+      if compose run --rm migrate; then
+        if start_stack; then printf 'restore succeeded; migrations applied; pre-restore backup: %s\n' "$prebackup"; else
+          printf 'restore stack start failed; attempting recovery from pre-restore backup %s\n' "$prebackup" >&2
+          if recover_pre_restore; then fail "restore start failed; original data recovered and stack restarted; backup retained at $prebackup"; fi
+          fail "restore start and automatic recovery failed; stack may be stopped; pre-restore backup retained at $prebackup"
+        fi
+      else
+        printf 'migration after restore failed; attempting recovery from pre-restore backup %s\n' "$prebackup" >&2
+        if recover_pre_restore; then fail "restore migrations failed; original data recovered and stack restarted; backup retained at $prebackup"; fi
+        fail "restore migrations and automatic recovery failed; stack may be stopped; pre-restore backup retained at $prebackup"
+      fi
     else
       printf 'restore failed; attempting recovery from pre-restore backup %s\n' "$prebackup" >&2
-      if restore_dump "$prebackup" && start_stack; then fail "restore failed; original data recovered and stack restarted; backup retained at $prebackup"; fi
+      if recover_pre_restore; then fail "restore failed; original data recovered and stack restarted; backup retained at $prebackup"; fi
       fail "restore and automatic recovery failed; stack may be stopped; both backups retained, recovery backup: $prebackup"
     fi
     ;;

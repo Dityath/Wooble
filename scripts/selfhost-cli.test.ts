@@ -61,7 +61,7 @@ ${inspectCases}
   esac ;;
   *'pg_dump'*) ${options.fail === "backup" ? "exit 19" : "printf 'fictional-dump\\n'"} ;;
   *'pg_restore'*) ${options.fail === "restore" ? `if [ ! -e '${base}/restore-failed-once' ]; then touch '${base}/restore-failed-once'; exit 20; fi; cat >/dev/null` : "cat >/dev/null"} ;;
-  *'migrate'*) ${options.fail === "migration" ? "exit 21" : "exit 0"} ;;
+  *'migrate'*) ${options.fail === "migration" ? "exit 21" : options.fail === "migration-once" ? `if [ ! -e '${base}/migration-failed-once' ]; then touch '${base}/migration-failed-once'; exit 21; fi; exit 0` : "exit 0"} ;;
   *'up -d'*) ${options.fail === "start" ? "exit 22" : "exit 0"} ;;
   *) exit 0 ;;
 esac
@@ -197,6 +197,27 @@ describe("self-host CLI safety", () => {
     expect(result.stderr).toContain("backup retained");
   });
 
+  it("runs migrations after restore and before restarting the stack", () => {
+    const f = fixture();
+    const result = f.run("restore", "--confirm", f.backupFile);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("restore succeeded; migrations applied");
+    const calls = readFileSync(f.log, "utf8");
+    expect(calls.indexOf("pg_restore")).toBeLessThan(calls.indexOf("migrate"));
+    expect(calls.indexOf("migrate")).toBeLessThan(calls.indexOf("up -d"));
+  });
+
+  it("recovers original data if migration of a restored backup fails", () => {
+    const f = fixture({ fail: "migration-once" });
+    const result = f.run("restore", "--confirm", f.backupFile);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("restore migrations failed; original data recovered and stack restarted");
+    const calls = readFileSync(f.log, "utf8");
+    expect((calls.match(/pg_restore/g) ?? []).length).toBe(2);
+    expect((calls.match(/migrate/g) ?? []).length).toBe(2);
+    expect(calls).toContain("up -d");
+  });
+
   it("backs up before update and runs migrations before starting the target release", () => {
     const f = fixture({ shellVersion: "1.2.3" });
     const result = f.run("update", "2.0.0");
@@ -212,7 +233,7 @@ describe("self-host CLI safety", () => {
     const f = fixture({ fail: "start" });
     const result = f.run("restore", "--confirm", f.backupFile);
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("restore completed but stack restart failed");
+    expect(result.stderr).toContain("restore start and automatic recovery failed");
     const retained = result.stderr.match(/pre-restore backup retained at (.+)$/m)?.[1];
     expect(retained && existsSync(retained)).toBe(true);
   });
