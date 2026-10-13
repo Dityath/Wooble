@@ -2,19 +2,36 @@
  * Smoke test for a running self-hosted stack, used by .github/workflows/docker.yml.
  *
  *   bun scripts/selfhost-smoke.ts setup    register, create a canvas and node, edit it, check live presence and origins
- *   bun scripts/selfhost-smoke.ts verify   sign in again and check that the content is still there
+ *   bun scripts/selfhost-smoke.ts verify   sign in again and check that the original content is still there
+ *   bun scripts/selfhost-smoke.ts mutate   change only the fictional smoke canvas before restore rehearsal
  *   bun scripts/selfhost-smoke.ts ports    read `docker compose ps --format json` on stdin and check published ports
  *
- * SMOKE_BASE_URL is the browser origin (default http://localhost:8080). SMOKE_STATE is a file that carries the
+ * SMOKE_BASE_URL is the supported web origin (default http://localhost:8080). SMOKE_STATE is a file that carries the
  * fictional account between phases; it is created with mode 600 and holds nothing else.
  */
-import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 
 // Not a Turborepo task, so these settings are read from the environment directly rather than declared in turbo.json.
 const settings: Record<string, string | undefined> = process.env;
 const base = settings.SMOKE_BASE_URL ?? "http://localhost:8080";
 const statePath = settings.SMOKE_STATE ?? "selfhost-smoke-state.json";
 const documentation = "Smoke test documentation that must survive restarts.";
+const mutatedDocumentation = "Fictional smoke content changed before restore.";
+
+const parsedBase = new URL(base);
+if (settings.SMOKE_CADDY_CA) {
+  const loopback =
+    parsedBase.hostname === "localhost" || parsedBase.hostname === "127.0.0.1" || parsedBase.hostname === "[::1]";
+  check(
+    parsedBase.protocol === "https:" && loopback,
+    "A Caddy smoke CA is allowed only for an HTTPS loopback smoke origin",
+  );
+  check(existsSync(settings.SMOKE_CADDY_CA), "SMOKE_CADDY_CA must point to the disposable Caddy certificate");
+  check(
+    settings.NODE_EXTRA_CA_CERTS === settings.SMOKE_CADDY_CA,
+    "NODE_EXTRA_CA_CERTS must trust only the configured disposable Caddy certificate",
+  );
+}
 
 type State = { email: string; password: string; canvasId: string; entityId: string };
 
@@ -121,6 +138,27 @@ async function verify() {
   console.log("Verify passed: sign-in, persisted canvas content, and live presence");
 }
 
+async function mutate() {
+  const state = JSON.parse(readFileSync(statePath, "utf8")) as State;
+  const login = await call("POST", "/api/auth/login", { body: { email: state.email, password: state.password } });
+  check(login.status === 200 && login.cookie, `Login before mutation returned ${login.status}`);
+  const edited = await call("PATCH", `/api/entities/${state.entityId}`, {
+    cookie: login.cookie,
+    body: { metadata: { documentation: mutatedDocumentation } },
+  });
+  check(edited.status === 200, `Changing fictional smoke content returned ${edited.status}`);
+  const graph = await call("GET", `/api/canvases/${state.canvasId}/graph`, { cookie: login.cookie });
+  check(graph.status === 200, `Reading the changed canvas returned ${graph.status}`);
+  const entity = (graph.body.entities as Array<{ id: string; metadata: { documentation?: string } }>).find(
+    (candidate) => candidate.id === state.entityId,
+  );
+  check(
+    entity?.metadata.documentation === mutatedDocumentation,
+    "The fictional smoke content did not change before restore",
+  );
+  console.log("Mutation passed: disposable canvas content changed before restore rehearsal");
+}
+
 async function ports() {
   const input = await new Response(Bun.stdin.stream()).text();
   const services = input.trim().startsWith("[")
@@ -148,10 +186,10 @@ async function ports() {
   console.log("Ports passed: only the web service listens, on loopback");
 }
 
-const phases: Record<string, () => Promise<void>> = { setup, verify, ports };
+const phases: Record<string, () => Promise<void>> = { setup, verify, mutate, ports };
 const phase = phases[process.argv[2] ?? ""];
 if (!phase) {
-  console.error("Usage: bun scripts/selfhost-smoke.ts setup|verify|ports");
+  console.error("Usage: bun scripts/selfhost-smoke.ts setup|verify|mutate|ports");
   process.exit(2);
 }
 await phase();
