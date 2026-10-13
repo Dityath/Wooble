@@ -16,13 +16,14 @@ export interface CanvasEventInput {
 }
 
 /**
- * Records an event inside the caller's mutation transaction. Every writer holds
- * the canvas row lock when it gets here, so `clock_timestamp()` (not the
- * transaction-start `now()`) orders a canvas's events in commit order, which
- * is the order undo relies on.
+ * Records an event inside the caller's mutation transaction; a plain `db`
+ * executor is not accepted, so history cannot commit apart from its change.
+ * Every writer holds the canvas row lock when it gets here, so
+ * `clock_timestamp()` (not the transaction-start `now()`) orders a canvas's
+ * events in commit order, which is the order undo relies on.
  */
-export async function recordCanvasEvent(executor: Executor, input: CanvasEventInput): Promise<void> {
-  await executor.insert(canvasEvents).values({
+export async function recordCanvasEvent(tx: Transaction, input: CanvasEventInput): Promise<void> {
+  await tx.insert(canvasEvents).values({
     canvasId: input.canvasId,
     actorUserId: input.actor?.id ?? null,
     actorName: input.actor?.name ?? "System",
