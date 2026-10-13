@@ -210,6 +210,19 @@ async function scratchNames(): Promise<string[]> {
   }
 }
 
+/** Exact lookup for sentinel databases whose names intentionally do not use the harness prefix. */
+async function databaseExists(name: string): Promise<boolean> {
+  const database = admin();
+  try {
+    const result = await database.execute(
+      sql`SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = ${name}) AS present`,
+    );
+    return result.rows[0]?.present === true;
+  } finally {
+    await database.$client.end();
+  }
+}
+
 /** Runs a read on a scratch database through a pool that is closed before it resolves. */
 async function query(databaseUrl: string, statement: string): Promise<unknown[]> {
   const database = drizzle(databaseUrl);
@@ -341,7 +354,7 @@ describe("scratch database safety", () => {
       }
 
       for (const sentinel of sentinels) {
-        expect(await scratchNames()).toContain(sentinel);
+        expect(await databaseExists(sentinel)).toBe(true);
         expect(await query(urlFor(sentinel), "SELECT id, body FROM notes ORDER BY id")).toEqual([
           { id: 1, body: "Written before any scratch database existed" },
         ]);
