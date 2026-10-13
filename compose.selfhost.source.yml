@@ -1,0 +1,16 @@
+services:
+  migrate:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: api
+  api:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: api
+  web:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: web

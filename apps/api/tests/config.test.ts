@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { isLocalHttpOrigin, parseWebOrigins, runtimeConfigErrors } from "../src/lib/config";
+import {
+  isLocalHttpOrigin,
+  isTrustedProxyAddress,
+  parseTrustedProxyCidrs,
+  parseWebOrigins,
+  runtimeConfigErrors,
+} from "../src/lib/config";
 
 const production = { NODE_ENV: "production", DATABASE_URL: "postgres://wooble:secret-value@db:5432/wooble" };
 
@@ -74,9 +80,23 @@ describe("WEB_ORIGIN", () => {
 });
 
 describe("runtime configuration", () => {
+  it("validates explicit trusted proxy CIDRs and matches IPv4 and IPv6 networks", () => {
+    expect(parseTrustedProxyCidrs(" 172.30.0.2/32, 2001:db8::/32 ")).toEqual(["172.30.0.2/32", "2001:db8::/32"]);
+    expect(isTrustedProxyAddress("172.30.0.2", ["172.30.0.2/32"])).toBe(true);
+    expect(isTrustedProxyAddress("172.30.0.3", ["172.30.0.2/32"])).toBe(false);
+    expect(isTrustedProxyAddress("2001:db8::1", ["2001:db8::/32"])).toBe(true);
+    for (const invalid of ["", "172.30.0.2/33", "2001:db8::/129", "not-an-ip", "172.30.0.2,,10.0.0.1"])
+      expect(() => parseTrustedProxyCidrs(invalid)).toThrow("TRUSTED_PROXY_CIDRS");
+  });
+
   it("accepts a complete production configuration", () => {
     expect(
-      runtimeConfigErrors({ ...production, WEB_ORIGIN: "https://wooble.example.com", TRUST_PROXY: "true" }),
+      runtimeConfigErrors({
+        ...production,
+        WEB_ORIGIN: "https://wooble.example.com",
+        TRUST_PROXY: "true",
+        TRUSTED_PROXY_CIDRS: "172.30.0.2/32",
+      }),
     ).toEqual([]);
     expect(
       runtimeConfigErrors({ ...production, WEB_ORIGIN: "https://wooble.example.com", TRUST_PROXY: "false" }),
@@ -105,6 +125,17 @@ describe("runtime configuration", () => {
     expect(
       runtimeConfigErrors({ ...production, WEB_ORIGIN: "https://wooble.example.com", TRUST_PROXY: "yes" }),
     ).toEqual(['TRUST_PROXY must be "true" or "false".']);
+    expect(
+      runtimeConfigErrors({ ...production, WEB_ORIGIN: "https://wooble.example.com", TRUST_PROXY: "true" }),
+    ).toEqual(["TRUSTED_PROXY_CIDRS must be set to a nonempty trusted proxy allowlist when TRUST_PROXY is true."]);
+    expect(
+      runtimeConfigErrors({
+        ...production,
+        WEB_ORIGIN: "https://wooble.example.com",
+        TRUST_PROXY: "true",
+        TRUSTED_PROXY_CIDRS: "172.30.0.2/33",
+      }),
+    ).toEqual(["TRUSTED_PROXY_CIDRS entries must be valid IP addresses or CIDRs."]);
     expect(runtimeConfigErrors({ ...production, WEB_ORIGIN: "https://wooble.example.com", API_PORT: "65536" })).toEqual(
       ["API_PORT must be a port number between 1 and 65535."],
     );
@@ -112,6 +143,10 @@ describe("runtime configuration", () => {
 
   it("allows development without a database URL or proxy setting", () => {
     expect(runtimeConfigErrors({})).toEqual([]);
-    expect(runtimeConfigErrors({ TRUST_PROXY: "yes" })).toEqual([]);
+    expect(runtimeConfigErrors({ TRUST_PROXY: "false" })).toEqual([]);
+    expect(runtimeConfigErrors({ TRUST_PROXY: "yes" })).toEqual(['TRUST_PROXY must be "true" or "false".']);
+    expect(runtimeConfigErrors({ TRUST_PROXY: "true", TRUSTED_PROXY_CIDRS: "172.30.0.2/33" })).toEqual([
+      "TRUSTED_PROXY_CIDRS entries must be valid IP addresses or CIDRs.",
+    ]);
   });
 });
