@@ -30,6 +30,36 @@ Each release is done only when:
 - UI has usable loading, empty, error, save, and reconnect states, plus keyboard and accessible-label behavior for its primary actions.
 - Documentation, migrations, release notes, upgrade steps, and known limitations reflect what actually shipped. No release tag is created solely to meet a target date.
 
+## How tracking works
+
+The detailed, dated tracking lives in [release backlog and acceptance evidence](release-backlog.md), not here. It maps each acceptance criterion one-to-one to an issue, then to a pull request, then to evidence, so this roadmap does not repeat that matrix. The collaboration model for `v0.2.0` is recorded in the [collaboration sync decision](decisions/collaboration-sync.md) (issue #16), together with the [sync transport spike](spikes/2026-10-13-collaboration-sync.md).
+
+Status words are used strictly and match the backlog: **planned** (accepted outcome, no active work), **active** (work is in progress, possibly only as a local branch or an unmerged draft pull request), **draft/unmerged PR** (open for review, not on `main`), **merged** (on `main`, not necessarily released), and **released** (tagged and published). A branch, a draft pull request, or a merged prerequisite does not mean a release criterion is done.
+
+| Release | Status | Notes |
+| --- | --- | --- |
+| `v0.1.0` | Released (preview) | The only publicly released version. |
+| `v0.2.0` | Active | Work exists on the block editor (#9), the reader fix (#13), and the collaboration decision (#16). Nothing here is merged as a finished release. The original 10 October 2026 target has passed and is revisable; it is kept above as the original target. |
+| `v0.3.0` | Planned | Not started as a release. |
+| `v0.4.0` | Planned | Not started as a release. |
+| `v0.5.0` | Planned | Not started as a release. |
+| `v0.6.0` | Not part of this tracking batch | Unchanged. |
+
+The contract and schema inspectors already in Wooble are foundations for `v0.3.0` and `v0.4.0`, not completed releases of those outcomes.
+
+### Dependency order
+
+Releases build on shared work, so the order matters more than the dates:
+
+1. **Collaboration backend.** The decision (#16) and its prerequisites, #10 to #15 (access guard, canvas placement checks, reader access, browser journeys in CI, upgrade harness), come first. These are shared prerequisites for `v0.2.0` through `v0.5.0`.
+2. **Contracts with stable sections.** Contract editing for `v0.3.0` needs identifiable sections so that collaboration and comments can refer to them.
+3. **Schema with stable IDs.** Database diagrams for `v0.4.0` need stable table and column identifiers, kept separate from diagram layout.
+4. **Comment anchors.** `v0.5.0` anchors build on the items above. Text anchors in documentation (Yjs relative positions) and orphan handling for moved or deleted anchors are separate work items from stable IDs.
+
+Self-hosting fresh-install and upgrade validation (#6, with child work #17 to #23) also remains before any release can claim the shared release gate.
+
+Event contracts (Kafka, NATS) get a format-aware source view, not a rich AsyncAPI editor or registry synchronization. Service contracts are not generated automatically from tables.
+
 ## `v0.2.0` — Collaborative documentation
 
 **User journey.** A member opens the documentation of a node, writes using a block editor with a `/` menu, imports an existing Markdown file, and works in the same document as another permitted member. Both can see who has the document open and where the other person is editing. The documentation remains the same when that architecture entity appears on another canvas.
