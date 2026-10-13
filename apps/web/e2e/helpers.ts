@@ -1,4 +1,4 @@
-import type { APIRequestContext, BrowserContext } from "@playwright/test";
+import type { APIRequestContext, BrowserContext, Page } from "@playwright/test";
 
 export const SESSION_COOKIE = "wooble_session";
 export const TEST_PASSWORD = "WoobleBrowserPassword-2026";
@@ -18,7 +18,7 @@ export interface SeededCanvas {
   connectionId: string;
 }
 
-function authHeaders(cookieValue: string) {
+export function authHeaders(cookieValue: string) {
   return { cookie: `${SESSION_COOKIE}=${cookieValue}` };
 }
 
@@ -89,4 +89,47 @@ export async function addCanvasMember(
     data: { email, role },
   });
   if (response.status() !== 201) throw new Error(`member add failed: ${await response.text()}`);
+}
+
+/**
+ * Turns on link sharing so a signed-out browser context can open the canvas. There is no separate share link: the
+ * share mode is the grant, and `/canvases/:canvasId` is the URL a guest is given.
+ */
+export async function shareCanvasByLink(request: APIRequestContext, cookieValue: string, canvasId: string) {
+  const response = await request.patch(`/api/canvases/${canvasId}`, {
+    headers: authHeaders(cookieValue),
+    data: { shareMode: "link" },
+  });
+  if (!response.ok()) throw new Error(`link share failed: ${await response.text()}`);
+}
+
+/** Signs in through the real login form, as a person returning to the app does. Resolves once the app has loaded. */
+export async function signInWithForm(page: Page, email: string, password: string) {
+  await page.goto("/login");
+  await page.locator("#auth-email").fill(email);
+  await page.locator("#auth-password").fill(password);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.waitForURL((url) => !url.pathname.startsWith("/login"));
+}
+
+/** The signed-in person's user id, as the server reports it for this session. */
+export async function currentUserId(request: APIRequestContext, cookieValue: string): Promise<string> {
+  const response = await request.get("/api/auth/me", { headers: authHeaders(cookieValue) });
+  if (!response.ok()) throw new Error(`me failed (${response.status()}): ${await response.text()}`);
+  return ((await response.json()) as { id: string }).id;
+}
+
+/** Changes an existing canvas member's role through the real API, as the canvas owner. */
+export async function setCanvasMemberRole(
+  request: APIRequestContext,
+  ownerCookieValue: string,
+  canvasId: string,
+  userId: string,
+  role: "editor" | "viewer",
+) {
+  const response = await request.patch(`/api/canvases/${canvasId}/members/${userId}`, {
+    headers: authHeaders(ownerCookieValue),
+    data: { role },
+  });
+  if (!response.ok()) throw new Error(`member role change failed (${response.status()}): ${await response.text()}`);
 }
