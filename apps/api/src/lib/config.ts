@@ -133,7 +133,10 @@ export function runtimeConfigErrors(env: Env): string[] {
     }
   }
   const port = env.API_PORT;
-  if (port && !(Number.isInteger(Number(port)) && Number(port) > 0 && Number(port) < 65536))
+  if (
+    port !== undefined &&
+    !(/^\d+$/.test(port) && Number.isInteger(Number(port)) && Number(port) > 0 && Number(port) < 65536)
+  )
     errors.push("API_PORT must be a port number between 1 and 65535.");
   return errors;
 }

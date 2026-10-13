@@ -139,6 +139,10 @@ describe("runtime configuration", () => {
     expect(runtimeConfigErrors({ ...production, WEB_ORIGIN: "https://wooble.example.com", API_PORT: "65536" })).toEqual(
       ["API_PORT must be a port number between 1 and 65535."],
     );
+    for (const API_PORT of ["", "  ", "abc", "80abc", "0", "65536"])
+      expect(runtimeConfigErrors({ ...production, WEB_ORIGIN: "https://wooble.example.com", API_PORT })).toContain(
+        "API_PORT must be a port number between 1 and 65535.",
+      );
   });
 
   it("allows development without a database URL or proxy setting", () => {
