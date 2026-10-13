@@ -112,14 +112,44 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
   function broadcast(canvasId: string, message: object, except?: Peer) {
     for (const peer of rooms.get(canvasId) ?? []) if (peer !== except) send(peer, message);
   }
+  /**
+   * Takes a peer out of every live structure, so nothing reaches it and nothing it sends is relayed,
+   * whether or not its socket has finished closing. The socket's close handler repeats this work,
+   * and clearing `joined` here makes it idempotent.
+   */
+  function detach(peer: Peer) {
+    if (!connected.delete(peer)) return;
+    peer.queued = [];
+    if (peer.recheckTimer) {
+      clearInterval(peer.recheckTimer);
+      peer.recheckTimer = null;
+    }
+    if (!peer.joined) return;
+    peer.joined = false;
+    const room = rooms.get(peer.canvasId);
+    room?.delete(peer);
+    broadcast(peer.canvasId, { type: "left", id: peer.id });
+    if (room && !room.size) rooms.delete(peer.canvasId);
+  }
+  /** Access that cannot be established is no access: close the peer, and stop it first. */
+  function unavailable(peer: Peer) {
+    // Detach before the close handshake starts, otherwise frames still travel during the close window.
+    detach(peer);
+    if (peer.revokeTimer) return;
+    peer.socket.close(1011, "Access check unavailable");
+    // An unresponsive client must not keep a detached socket around.
+    peer.revokeTimer = setTimeout(() => peer.socket.terminate(), 1000);
+  }
   async function revalidatePeers(affected: (peer: Peer) => boolean) {
-    // Checked in parallel, and one failed check does not stop the rest; the periodic recheck retries it.
+    // Checked in parallel, and one failed check does not stop the rest. A peer whose access cannot be
+    // read fails closed: it is detached and closed rather than left waiting for a later check.
     await Promise.all(
       [...connected].filter(affected).map(async (peer) => {
         try {
           if (!(await canReadCanvas(peer, peer.canvasId))) revoke(peer);
         } catch (error) {
           console.error("Could not recheck live canvas access", error);
+          unavailable(peer);
         }
       }),
     );
@@ -288,16 +318,8 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
       const peer = peers.get(ws.raw);
       if (!peer) return;
       peers.delete(ws.raw);
-      connected.delete(peer);
-      peer.queued = [];
-      if (peer.recheckTimer) clearInterval(peer.recheckTimer);
+      detach(peer);
       if (peer.revokeTimer) clearTimeout(peer.revokeTimer);
-      if (peer.joined) {
-        const room = rooms.get(peer.canvasId);
-        room?.delete(peer);
-        broadcast(peer.canvasId, { type: "left", id: peer.id });
-        if (room && !room.size) rooms.delete(peer.canvasId);
-      }
       peer.markClosed();
     },
   });

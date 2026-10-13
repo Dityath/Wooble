@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { sql } from "drizzle-orm";
 import { Elysia } from "elysia";
-import { db } from "@wooble/db";
+import { db, sessions } from "@wooble/db";
 import type { Actor } from "../src/lib/auth";
 import { liveRoutes, stopLiveServer } from "../src/lib/live";
 import { resetLoginAttempts } from "../src/modules/auth/routes";
@@ -379,5 +379,117 @@ describe("live canvas revocation", () => {
     expect((await api.request("PUT", "/api/auth/password", viewer.session, wrongPassword)).status).toBe(403);
     expect((await api.request("PATCH", `/api/admin/users/${viewer.user.id}`, owner.session, {})).status).toBe(403);
     expect(await closedWithin(viewerLive, 300)).toBeNull();
+  });
+});
+
+describe("live canvas recheck failures", () => {
+  const unavailable = { code: 1011, reason: "Access check unavailable" };
+
+  /** The owner's socket, then the editor's, both joined to the same canvas. */
+  async function signedInPair() {
+    const { owner, payments } = await liveFixture();
+    const editor = await api.register("Live Editor");
+    await joinCanvas(owner, editor, payments, "editor");
+    const ownerLive = openLive("guarded", payments, owner.session);
+    await received(ownerLive, "presence");
+    const editorLive = openLive("guarded", payments, editor.session);
+    await received(editorLive, "presence");
+    return { owner, payments, ownerLive, editorLive };
+  }
+
+  /**
+   * Throws the next time live.ts starts a signed-in peer's access check, and only that once.
+   * It is deterministic because canReadCanvas probes the session with a selection of the bare
+   * sessions.userId column, which no other query issues (the access guard reads that column with
+   * expiresAt, and the queries around it select canvases, users or canvas members instead), so the
+   * canvas PATCH below gets through untouched. revalidatePeers then walks `connected` in insertion
+   * order and calls canReadCanvas for the owner before the editor, and every query after the throw
+   * runs normally, so exactly the owner's recheck fails.
+   *
+   * The caller keeps the spy in place until it has seen the failure: onAfterResponse rechecks the
+   * peers after the response resolves, and the throw has to survive until then. The mock disarms
+   * itself on the throw, so it answers every later query as the database does.
+   */
+  function failNextAccessProbe() {
+    const original = db.select.bind(db);
+    let armed = true;
+    const failing = ((fields?: unknown) => {
+      const probe = fields as { userId?: unknown } | undefined;
+      if (armed && probe && Object.keys(probe).length === 1 && probe.userId === sessions.userId) {
+        armed = false;
+        throw new Error("database unavailable");
+      }
+      return original(fields as never);
+    }) as unknown as typeof db.select;
+    return spyOn(db, "select").mockImplementation(failing);
+  }
+
+  it("closes the peer whose recheck failed and keeps revalidating the others", async () => {
+    const { owner, payments, ownerLive, editorLive } = await signedInPair();
+
+    // The rename leaves both peers' access in place, so every peer on the canvas is rechecked.
+    const select = failNextAccessProbe();
+    try {
+      const rename = await api.request("PATCH", `/api/canvases/${payments}`, owner.session, { name: "Payments now" });
+      expect(rename.status).toBe(200);
+
+      expect(await closedWithin(ownerLive)).toEqual(unavailable);
+      expect(await closedWithin(editorLive, 300)).toBeNull();
+      // The editor was rechecked after the failure and still sees the change that triggered it.
+      expect(await received(editorLive, "left")).toMatchObject({ type: "left" });
+      expect(await received(editorLive, "graph:changed")).toMatchObject({ type: "graph:changed" });
+
+      // The editor still relays: a socket that joins afterwards receives its cursor.
+      const laterLive = openLive("guarded", payments, owner.session);
+      expect(await received(laterLive, "presence")).toMatchObject({ peers: [{ name: "Live Editor" }] });
+      editorLive.send({ type: "cursor", x: 5, y: 6 });
+      expect(await received(laterLive, "cursor")).toMatchObject({ name: "Live Editor", x: 5, y: 6 });
+    } finally {
+      select.mockRestore();
+    }
+  });
+
+  it("sends nothing to a peer whose recheck failed, and relays nothing from it", async () => {
+    const { owner, payments, ownerLive, editorLive } = await signedInPair();
+    // The owner is in the room, and the editor receives its frames, before the failure.
+    ownerLive.send({ type: "activity" });
+    expect(await received(editorLive, "activity")).toMatchObject({ type: "activity" });
+
+    const select = failNextAccessProbe();
+    try {
+      const rename = await api.request("PATCH", `/api/canvases/${payments}`, owner.session, { name: "Payments now" });
+      expect(rename.status).toBe(200);
+
+      expect(await closedWithin(ownerLive)).toEqual(unavailable);
+      const left = await received(editorLive, "left");
+      const ownerPeerId = left.id;
+      const afterClose = [...ownerLive.messages];
+
+      // A later socket sees a presence snapshot without the peer that failed its check.
+      const laterLive = openLive("guarded", payments, owner.session);
+      expect(await received(laterLive, "presence")).toMatchObject({ peers: [{ name: "Live Editor" }] });
+      editorLive.send({ type: "cursor", x: 30, y: 40 });
+      editorLive.send({ type: "selection", kind: "node", id: crypto.randomUUID() });
+      editorLive.send({ type: "activity" });
+      expect(await received(laterLive, "cursor")).toMatchObject({ x: 30, y: 40 });
+      expect(await received(laterLive, "selection")).toMatchObject({ selection: { kind: "node" } });
+      expect(await received(laterLive, "activity")).toMatchObject({ type: "activity" });
+
+      // A canvas change broadcasts to the room, and rechecks only the peers that are still in it.
+      const again = await api.request("PATCH", `/api/canvases/${payments}`, owner.session, { name: "Later" });
+      expect(again.status).toBe(200);
+      expect(await received(laterLive, "graph:changed")).toMatchObject({ type: "graph:changed" });
+      await Bun.sleep(100);
+
+      expect(ownerLive.messages).toEqual(afterClose);
+      expect(types(ownerLive)).not.toContain("graph:changed");
+      // Only the activity from before the failure reached the editor, and `left` says it once.
+      expect(editorLive.messages.filter((message) => message.id === ownerPeerId && message.type !== "left")).toEqual([
+        expect.objectContaining({ type: "activity" }),
+      ]);
+      expect(editorLive.messages.filter((message) => message.type === "left")).toHaveLength(1);
+    } finally {
+      select.mockRestore();
+    }
   });
 });
