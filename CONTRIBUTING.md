@@ -30,6 +30,8 @@ API tests need an isolated PostgreSQL database. See [self-hosting](docs/self-hos
 
 Canvas browser tests also need a separate, migrated PostgreSQL database and Playwright Chromium. Run `bunx playwright install chromium` once, then run `BROWSER_TEST_DATABASE_URL=<test-database-url> bun run --cwd apps/web test:browser`. The browser test command requires this variable and refuses to reuse an existing API or web server. Its fixtures create fictional users and canvases in the test database and leave them there for inspection; use a disposable database.
 
+Pull requests that touch the apps, packages, `deploy/`, `compose.selfhost.yml`, or the lockfile also run the **Self-hosted stack** workflow (`.github/workflows/docker.yml`). It builds and starts the Docker stack with a throwaway environment file, checks health through the web server, checks that only the web service publishes a port and only on loopback, and runs `scripts/selfhost-smoke.ts`: it registers a fictional account, edits a canvas, opens the live socket, checks that a write from another origin is refused, restarts the API, and stops and starts the stack to confirm the data is kept. Run it locally with Docker by following the workflow's steps; never point it at an installation with real users, because it creates an account.
+
 Biome is the repository linter and formatter. `bun run lint` treats warnings as errors, so CI fails on any lint warning. Run `bun run format` when formatting needs to be applied. CSS formatting is disabled in `biome.json` to preserve the existing stylesheet.
 
 ## Contribution rights
