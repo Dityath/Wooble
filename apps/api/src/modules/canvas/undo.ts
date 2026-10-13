@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import {
   canvases,
   canvasConnections,
@@ -10,6 +10,8 @@ import {
   type db,
 } from "@wooble/db";
 import type { ConnectionPath, ConnectionType, EntityMetadata, EntityType } from "@wooble/domain";
+import { isUpdateEventMetadataV2, type PreviousMetadataEntry } from "./event-metadata";
+import { isExternalMetadataKey, listNonReversibleActions, restoreDeleteHooks } from "./undo-registry";
 
 type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type CanvasEventRow = typeof canvasEvents.$inferSelect;
@@ -77,11 +79,13 @@ export async function applyNextUndo(tx: Transaction, canvasId: string, actorId: 
       and(
         eq(canvasEvents.canvasId, canvasId),
         isNull(canvasEvents.undoneAt),
-        // Undo entries are historical records, not reversible actions themselves.
-        ne(canvasEvents.action, "canvas.undo"),
+        // Registered actions (canvas.undo by default) are historical records,
+        // not reversible actions themselves.
+        notInArray(canvasEvents.action, listNonReversibleActions()),
       ),
     )
-    .orderBy(desc(canvasEvents.createdAt), desc(canvasEvents.id))
+    // The sequence is monotonic per insert; created_at is clock based and can step backwards.
+    .orderBy(desc(canvasEvents.seq), desc(canvasEvents.id))
     .limit(500);
   const skipped: UndoSkippedEvent[] = [];
   for (const [index, candidate] of rows.entries()) {
@@ -243,6 +247,11 @@ interface AffectedObjects {
   entityIds: Set<string>;
   connectionIds: Set<string>;
   canvasFields: Set<string>;
+  /**
+   * Field-level scope for version 2 updates, keyed by object id. An id with an
+   * entry here is touched only on these fields; ids without one are touched wholesale.
+   */
+  touched: Map<string, Set<string>>;
 }
 
 const CANVAS_FIELDS = ["name", "description", "shareMode"] as const;
@@ -258,12 +267,22 @@ function canvasUpdatedFields(metadata: Record<string, unknown>): Set<string> {
 }
 
 function affectedObjects(event: CanvasEventRow): AffectedObjects {
-  const affected: AffectedObjects = { entityIds: new Set(), connectionIds: new Set(), canvasFields: new Set() };
+  const affected: AffectedObjects = {
+    entityIds: new Set(),
+    connectionIds: new Set(),
+    canvasFields: new Set(),
+    touched: new Map(),
+  };
   const metadata = (event.metadata ?? {}) as Record<string, unknown>;
   switch (event.action) {
     case "entity.created":
-    case "entity.updated":
       if (event.targetId) affected.entityIds.add(event.targetId);
+      break;
+    case "entity.updated":
+      if (event.targetId) {
+        affected.entityIds.add(event.targetId);
+        if (isUpdateEventMetadataV2(metadata)) affected.touched.set(event.targetId, touchedKeys(metadata));
+      }
       break;
     case "entity.deleted": {
       // Undoing a delete restores the whole recorded subtree.
@@ -280,9 +299,14 @@ function affectedObjects(event: CanvasEventRow): AffectedObjects {
       break;
     }
     case "connection.created":
-    case "connection.updated":
     case "connection.deleted":
       if (event.targetId) affected.connectionIds.add(event.targetId);
+      break;
+    case "connection.updated":
+      if (event.targetId) {
+        affected.connectionIds.add(event.targetId);
+        if (isUpdateEventMetadataV2(metadata)) affected.touched.set(event.targetId, touchedKeys(metadata));
+      }
       break;
     case "placement.updated": {
       const entries = snapshotValue<Array<{ entityId?: unknown }> | undefined>(metadata, "placements") ?? [];
@@ -336,9 +360,34 @@ async function affectedObjectsFor(tx: Transaction, event: CanvasEventRow): Promi
   return affected;
 }
 
+/**
+ * Fields and "metadata.<key>" entries a version 2 update touches. Externally
+ * managed metadata keys are owned by another subsystem and never count.
+ */
+function touchedKeys(metadata: Record<string, unknown>): Set<string> {
+  const touched = new Set<string>();
+  const fields = Array.isArray(metadata.fields) ? metadata.fields : [];
+  for (const field of fields) if (typeof field === "string" && field !== "metadata") touched.add(field);
+  const previousMetadata = (metadata.previousMetadata ?? {}) as Record<string, unknown>;
+  for (const key of Object.keys(previousMetadata)) if (!isExternalMetadataKey(key)) touched.add(`metadata.${key}`);
+  return touched;
+}
+
+function sharedObjectConflicts(a: AffectedObjects, b: AffectedObjects, ids: Set<string>, other: Set<string>): boolean {
+  for (const id of ids) {
+    if (!other.has(id)) continue;
+    const mine = a.touched.get(id);
+    const theirs = b.touched.get(id);
+    // Field-level comparison only when both sides are version 2 updates.
+    if (!mine || !theirs) return true;
+    for (const key of mine) if (theirs.has(key)) return true;
+  }
+  return false;
+}
+
 function overlaps(a: AffectedObjects, b: AffectedObjects): boolean {
-  for (const id of a.entityIds) if (b.entityIds.has(id)) return true;
-  for (const id of a.connectionIds) if (b.connectionIds.has(id)) return true;
+  if (sharedObjectConflicts(a, b, a.entityIds, b.entityIds)) return true;
+  if (sharedObjectConflicts(a, b, a.connectionIds, b.connectionIds)) return true;
   for (const field of a.canvasFields) if (b.canvasFields.has(field)) return true;
   return false;
 }
@@ -394,22 +443,37 @@ async function applyUndo(tx: Transaction, event: CanvasEventRow): Promise<boolea
       const entityId = requireTargetId(event);
       const [current] = await tx.select().from(entities).where(eq(entities.id, entityId)).limit(1);
       if (!current) return false;
-      const next = {
-        type: previousField<EntityType>(metadata, "type", current.type),
-        name: previousField<string>(metadata, "name", current.name),
-        description: previousNullableField(metadata, "description"),
-        metadata: previousField<EntityMetadata>(metadata, "metadata", current.metadata),
-      };
+      const currentMetadata = (current.metadata ?? {}) as Record<string, unknown>;
+      let next: { type: EntityType; name: string; description: string | null };
+      let nextMetadata: Record<string, unknown>;
+      if (isUpdateEventMetadataV2(metadata)) {
+        next = {
+          type: v2String(metadata, "type", current.type) as EntityType,
+          name: v2String(metadata, "name", current.name),
+          description: v2Description(metadata, current.description),
+        };
+        nextMetadata = applyPreviousMetadata(currentMetadata, metadata.previousMetadata);
+      } else {
+        next = {
+          type: previousField<EntityType>(metadata, "type", current.type),
+          name: previousField<string>(metadata, "name", current.name),
+          description: previousNullableField(metadata, "description"),
+        };
+        nextMetadata = legacyMetadata(
+          currentMetadata,
+          previousField<Record<string, unknown>>(metadata, "metadata", current.metadata as Record<string, unknown>),
+        );
+      }
       if (
         current.type === next.type &&
         current.name === next.name &&
         current.description === next.description &&
-        JSON.stringify(current.metadata ?? {}) === JSON.stringify(next.metadata ?? {})
+        JSON.stringify(sortKeys(currentMetadata)) === JSON.stringify(sortKeys(nextMetadata))
       )
         return false;
       await tx
         .update(entities)
-        .set({ ...next, updatedAt: new Date() })
+        .set({ ...next, metadata: nextMetadata as EntityMetadata, updatedAt: new Date() })
         .where(eq(entities.id, entityId));
       return true;
     }
@@ -445,18 +509,24 @@ async function applyUndo(tx: Transaction, event: CanvasEventRow): Promise<boolea
         .where(eq(canvases.id, event.canvasId));
       return true;
     }
-    case "connection.deleted":
-      return restoreConnection(
-        tx,
-        event.canvasId,
-        snapshotValue<ConnectionSnapshot | undefined>(metadata, "connection"),
-      );
-    case "entity.deleted":
-      return restoreEntitySubtree(
-        tx,
-        event.canvasId,
-        snapshotValue<Record<string, unknown>>(metadata, "snapshot") ?? {},
-      );
+    case "connection.deleted": {
+      const connection = snapshotValue<ConnectionSnapshot | undefined>(metadata, "connection");
+      const restored = await restoreConnection(tx, event.canvasId, connection);
+      if (restored && connection)
+        await restoreDeleteHooks(tx, { kind: "connection", ids: [connection.id] }, metadata.hooks);
+      return restored;
+    }
+    case "entity.deleted": {
+      const snapshot = snapshotValue<Record<string, unknown>>(metadata, "snapshot") ?? {};
+      const restored = await restoreEntitySubtree(tx, event.canvasId, snapshot);
+      if (restored) {
+        const ids = (Array.isArray(snapshot.entities) ? (snapshot.entities as Array<{ id?: unknown }>) : [])
+          .map((entity) => entity?.id)
+          .filter((id): id is string => typeof id === "string");
+        await restoreDeleteHooks(tx, { kind: "entity", ids }, metadata.hooks);
+      }
+      return restored;
+    }
     case "canvas.auto_neat": {
       const previous = autoNeatPrevious(metadata);
       if (!previous.placements.length && !previous.connections.length) return false;
@@ -664,22 +734,88 @@ async function undoConnectionUpdated(
   }
   const [current] = await tx.select().from(connections).where(eq(connections.id, connectionId)).limit(1);
   if (!current) return false;
-  const next = {
-    type: previousField<ConnectionType>(metadata, "type", current.type),
-    label: previousField<string>(metadata, "label", current.label),
-    description: previousNullableField(metadata, "description"),
-    metadata: previousField<Record<string, unknown>>(metadata, "metadata", current.metadata),
-  };
+  const currentMetadata = (current.metadata ?? {}) as Record<string, unknown>;
+  let next: { type: ConnectionType; label: string; description: string | null };
+  let nextMetadata: Record<string, unknown>;
+  if (isUpdateEventMetadataV2(metadata)) {
+    next = {
+      type: v2String(metadata, "type", current.type) as ConnectionType,
+      label: v2String(metadata, "label", current.label),
+      description: v2Description(metadata, current.description),
+    };
+    nextMetadata = applyPreviousMetadata(currentMetadata, metadata.previousMetadata);
+  } else {
+    next = {
+      type: previousField<ConnectionType>(metadata, "type", current.type),
+      label: previousField<string>(metadata, "label", current.label),
+      description: previousNullableField(metadata, "description"),
+    };
+    nextMetadata = legacyMetadata(
+      currentMetadata,
+      previousField<Record<string, unknown>>(metadata, "metadata", current.metadata),
+    );
+  }
   if (
     current.type === next.type &&
     current.label === next.label &&
     current.description === next.description &&
-    JSON.stringify(current.metadata ?? {}) === JSON.stringify(next.metadata ?? {})
+    JSON.stringify(sortKeys(currentMetadata)) === JSON.stringify(sortKeys(nextMetadata))
   )
     return false;
-  await tx.update(connections).set(next).where(eq(connections.id, connectionId));
+  await tx
+    .update(connections)
+    .set({ ...next, metadata: nextMetadata })
+    .where(eq(connections.id, connectionId));
   await touchCanvas(tx, canvasId);
   return true;
+}
+
+/** Version 2: restore a top-level string field only when the event recorded it. */
+function v2String(metadata: Record<string, unknown>, field: string, fallback: string): string {
+  const previous = (metadata.previous ?? {}) as Record<string, unknown>;
+  const value = previous[field];
+  return typeof value === "string" ? value : fallback;
+}
+
+/** Version 2: description is restored (including back to null) only when the event recorded it. */
+function v2Description(metadata: Record<string, unknown>, fallback: string | null): string | null {
+  const previous = (metadata.previous ?? {}) as Record<string, unknown>;
+  if (!Object.hasOwn(previous, "description")) return fallback;
+  return typeof previous.description === "string" ? previous.description : null;
+}
+
+/**
+ * Version 2: starts from the current metadata and rewrites only the recorded
+ * keys. Absent keys are deleted, present keys (including null) are restored.
+ * Externally managed keys are ignored.
+ */
+function applyPreviousMetadata(
+  current: Record<string, unknown>,
+  previousMetadata: Record<string, PreviousMetadataEntry> | undefined,
+): Record<string, unknown> {
+  const next = { ...current };
+  for (const [key, entry] of Object.entries(previousMetadata ?? {})) {
+    if (isExternalMetadataKey(key)) continue;
+    if (entry?.present === true) next[key] = entry.value;
+    else if (entry?.present === false) delete next[key];
+  }
+  return next;
+}
+
+/**
+ * Legacy full-snapshot restore, except externally managed keys keep their
+ * current values (or stay absent when currently absent).
+ */
+function legacyMetadata(current: Record<string, unknown>, snapshot: Record<string, unknown>): Record<string, unknown> {
+  const next: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(snapshot ?? {})) if (!isExternalMetadataKey(key)) next[key] = value;
+  for (const [key, value] of Object.entries(current)) if (isExternalMetadataKey(key)) next[key] = value;
+  return next;
+}
+
+/** Key-order independent form so jsonb round trips compare equal. */
+function sortKeys(value: Record<string, unknown>): Array<[string, unknown]> {
+  return Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
 async function touchCanvas(tx: Transaction, canvasId: string) {

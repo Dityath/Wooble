@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
+import type { EntityMetadata } from "@wooble/domain";
 import { createApp } from "../src/app";
 import { resetLoginAttempts } from "../src/modules/auth/routes";
-import { canvasEvents, canvasNodes, db, entities } from "@wooble/db";
+import { canvasEvents, canvasNodes, connections, db, entities, users } from "@wooble/db";
+import { registerExternalMetadataKey } from "../src/modules/canvas/undo-registry";
 
 const app = createApp();
 
@@ -1485,5 +1487,328 @@ describe("Canvas undo evaluates dependencies against the post-undo graph", () =>
     expect(await undo(boardCanvas.id)).toEqual({ undone: true, action: "placement.updated", skipped: [] });
     expect((await graph(boardCanvas.id)).placements).toHaveLength(0);
     expect((await graph(homeCanvas.id)).placements).toHaveLength(2);
+  });
+});
+
+interface FieldWorld {
+  canvasId: string;
+  ownerId: string;
+  peerId: string;
+  service: string;
+  database: string;
+  connection: string;
+}
+
+async function userId(address: string): Promise<string> {
+  const [row] = await db.select({ id: users.id }).from(users).where(eq(users.email, address)).limit(1);
+  if (!row) throw new Error("user not found");
+  return row.id;
+}
+
+/** Owner canvas with two entities and a connector; earlier events are retired so only test events are candidates. */
+async function fieldWorld(): Promise<FieldWorld> {
+  const peerEmail = `undo-peer-${crypto.randomUUID().slice(0, 8)}@example.test`;
+  resetLoginAttempts();
+  const registered = await request(
+    "POST",
+    "/api/auth/register",
+    {},
+    { name: "Field Peer", email: peerEmail, password, confirmPassword: password },
+  );
+  expect(registered.status).toBe(201);
+  const workspace = (await (
+    await request("POST", "/api/workspaces", { cookie }, { name: "Field WS", description: "" })
+  ).json()) as { id: string };
+  const canvas = (await (
+    await request("POST", "/api/canvases", { cookie }, { workspaceId: workspace.id, name: "Field", description: "" })
+  ).json()) as { id: string };
+  const createEntity = async (type: string, name: string, x: number) =>
+    (
+      (await (
+        await request(
+          "POST",
+          `/api/canvases/${canvas.id}/entities`,
+          { cookie },
+          { type, name, x, y: 20, parentEntityId: null },
+        )
+      ).json()) as { id: string }
+    ).id;
+  const service = await createEntity("service", "Billing", 10);
+  const database = await createEntity("database", "Main DB", 400);
+  const link = await request(
+    "POST",
+    `/api/canvases/${canvas.id}/connections`,
+    { cookie },
+    { sourceEntityId: service, targetEntityId: database, type: "rest" },
+  );
+  expect(link.status).toBe(201);
+  const connection = ((await link.json()) as { id: string }).id;
+  await db.update(canvasEvents).set({ undoneAt: new Date() }).where(eq(canvasEvents.canvasId, canvas.id));
+  return {
+    canvasId: canvas.id,
+    ownerId: await userId(email),
+    peerId: await userId(peerEmail),
+    service,
+    database,
+    connection,
+  };
+}
+
+async function recordUpdate(
+  world: FieldWorld,
+  actor: "owner" | "peer",
+  kind: "entity" | "connection",
+  targetId: string,
+  metadata: Record<string, unknown>,
+) {
+  const [row] = await db
+    .insert(canvasEvents)
+    .values({
+      canvasId: world.canvasId,
+      actorUserId: actor === "owner" ? world.ownerId : world.peerId,
+      actorName: actor,
+      action: kind === "entity" ? "entity.updated" : "connection.updated",
+      targetType: kind,
+      targetId,
+      targetName: "target",
+      metadata,
+    })
+    .returning();
+  if (!row) throw new Error("event insert failed");
+  return row;
+}
+
+async function entityRow(id: string) {
+  const [row] = await db.select().from(entities).where(eq(entities.id, id)).limit(1);
+  if (!row) throw new Error("entity missing");
+  return row;
+}
+
+async function connectionRow(id: string) {
+  const [row] = await db.select().from(connections).where(eq(connections.id, id)).limit(1);
+  if (!row) throw new Error("connection missing");
+  return row;
+}
+
+describe("Canvas undo of version 2 update events is field and key level", () => {
+  it("restores only the renamed field and keeps collaborator metadata without a conflict", async () => {
+    const world = await fieldWorld();
+    // Entity: owner renamed, peer later wrote metadata.documentation.
+    await db.update(entities).set({ name: "Renamed" }).where(eq(entities.id, world.service));
+    await recordUpdate(world, "owner", "entity", world.service, {
+      version: 2,
+      fields: ["name"],
+      previous: { name: "Billing" },
+      previousMetadata: {},
+    });
+    await recordUpdate(world, "peer", "entity", world.service, {
+      version: 2,
+      fields: ["metadata"],
+      previous: {},
+      previousMetadata: { documentation: { present: false } },
+    });
+    await db
+      .update(entities)
+      .set({ metadata: { documentation: "Peer docs" } })
+      .where(eq(entities.id, world.service));
+    // Database entity: schemaSql by the peer survives a rename undo.
+    await db
+      .update(entities)
+      .set({ name: "DB renamed", metadata: { schemaSql: "create table t();" } })
+      .where(eq(entities.id, world.database));
+    await recordUpdate(world, "owner", "entity", world.database, {
+      version: 2,
+      fields: ["name"],
+      previous: { name: "Main DB" },
+      previousMetadata: {},
+    });
+    await recordUpdate(world, "peer", "entity", world.database, {
+      version: 2,
+      fields: ["metadata"],
+      previous: {},
+      previousMetadata: { schemaSql: { present: false } },
+    });
+    // Connection: label by owner, contractBody by the peer.
+    await db
+      .update(connections)
+      .set({ label: "Renamed link", metadata: { contractBody: "{}" } })
+      .where(eq(connections.id, world.connection));
+    const [original] = await db
+      .select({ label: connections.label })
+      .from(connections)
+      .where(eq(connections.id, world.connection));
+    expect(original?.label).toBe("Renamed link");
+    await recordUpdate(world, "owner", "connection", world.connection, {
+      version: 2,
+      fields: ["label"],
+      previous: { label: "Original link" },
+      previousMetadata: {},
+    });
+    await recordUpdate(world, "peer", "connection", world.connection, {
+      version: 2,
+      fields: ["metadata"],
+      previous: {},
+      previousMetadata: { contractBody: { present: false } },
+    });
+
+    expect(await undoByCookie(world.canvasId, cookie)).toEqual({
+      undone: true,
+      action: "connection.updated",
+      skipped: [],
+    });
+    const link = await connectionRow(world.connection);
+    expect(link.label).toBe("Original link");
+    expect(link.metadata).toEqual({ contractBody: "{}" });
+
+    expect(await undoByCookie(world.canvasId, cookie)).toEqual({ undone: true, action: "entity.updated", skipped: [] });
+    const dbEntity = await entityRow(world.database);
+    expect(dbEntity.name).toBe("Main DB");
+    expect(dbEntity.metadata).toEqual({ schemaSql: "create table t();" });
+
+    expect(await undoByCookie(world.canvasId, cookie)).toEqual({ undone: true, action: "entity.updated", skipped: [] });
+    const service = await entityRow(world.service);
+    expect(service.name).toBe("Billing");
+    expect(service.metadata).toEqual({ documentation: "Peer docs" });
+  });
+
+  it("deletes absent keys, restores null, and restores values", async () => {
+    const world = await fieldWorld();
+    await db
+      .update(entities)
+      .set({
+        metadata: {
+          language: "now",
+          status: "now",
+          framework: "now",
+          engine: "untouched",
+        } as unknown as EntityMetadata,
+      })
+      .where(eq(entities.id, world.service));
+    await recordUpdate(world, "owner", "entity", world.service, {
+      version: 2,
+      fields: ["metadata"],
+      previous: {},
+      previousMetadata: {
+        language: { present: false },
+        status: { present: true, value: null },
+        framework: { present: true, value: "old" },
+      },
+    });
+    expect(await undoByCookie(world.canvasId, cookie)).toEqual({ undone: true, action: "entity.updated", skipped: [] });
+    const row = await entityRow(world.service);
+    expect(row.metadata as Record<string, unknown>).toEqual({ status: null, framework: "old", engine: "untouched" });
+    expect("language" in row.metadata).toBe(false);
+  });
+
+  it("skips as a conflict when a collaborator touched the same field or key", async () => {
+    const world = await fieldWorld();
+    await db
+      .update(entities)
+      .set({ name: "Peer name", metadata: { language: "peer" } })
+      .where(eq(entities.id, world.service));
+    await recordUpdate(world, "owner", "entity", world.service, {
+      version: 2,
+      fields: ["name", "metadata"],
+      previous: { name: "Billing" },
+      previousMetadata: { language: { present: false } },
+    });
+    await recordUpdate(world, "peer", "entity", world.service, {
+      version: 2,
+      fields: ["metadata"],
+      previous: {},
+      previousMetadata: { language: { present: true, value: "x" } },
+    });
+    const refused = await postUndo(world.canvasId, cookie);
+    expect(refused.status).toBe(409);
+    expect(refused.body.skipped).toEqual([{ action: "entity.updated", targetName: "target", reason: "conflict" }]);
+    const row = await entityRow(world.service);
+    expect(row.name).toBe("Peer name");
+    expect(row.metadata).toEqual({ language: "peer" });
+
+    // Same field (name) conflicts too, even when metadata keys differ.
+    const second = await fieldWorld();
+    await recordUpdate(second, "owner", "entity", second.service, {
+      version: 2,
+      fields: ["name"],
+      previous: { name: "Billing" },
+      previousMetadata: {},
+    });
+    await recordUpdate(second, "peer", "entity", second.service, {
+      version: 2,
+      fields: ["name"],
+      previous: { name: "Other" },
+      previousMetadata: {},
+    });
+    expect((await postUndo(second.canvasId, cookie)).status).toBe(409);
+  });
+
+  it("keeps object-level conflicts when the collaborator event is a legacy update", async () => {
+    const world = await fieldWorld();
+    await recordUpdate(world, "owner", "entity", world.service, {
+      version: 2,
+      fields: ["name"],
+      previous: { name: "Billing" },
+      previousMetadata: {},
+    });
+    await recordUpdate(world, "peer", "entity", world.service, {
+      fields: ["description"],
+      previous: { type: "service", name: "Billing", description: null, metadata: {} },
+    });
+    expect((await postUndo(world.canvasId, cookie)).status).toBe(409);
+  });
+
+  it("restores the full snapshot for legacy events but preserves externally managed keys", async () => {
+    const unregister = registerExternalMetadataKey("comments");
+    try {
+      const world = await fieldWorld();
+      await db
+        .update(entities)
+        .set({ name: "Renamed", metadata: { language: "now", comments: ["peer comment"] } as EntityMetadata })
+        .where(eq(entities.id, world.service));
+      await recordUpdate(world, "owner", "entity", world.service, {
+        fields: ["name"],
+        previous: { type: "service", name: "Billing", description: null, metadata: { framework: "old", comments: [] } },
+      });
+      expect(await undoByCookie(world.canvasId, cookie)).toEqual({
+        undone: true,
+        action: "entity.updated",
+        skipped: [],
+      });
+      const row = await entityRow(world.service);
+      expect(row.name).toBe("Billing");
+      // Full snapshot: language is dropped, framework returns; comments keeps its current value.
+      expect(row.metadata as Record<string, unknown>).toEqual({ framework: "old", comments: ["peer comment"] });
+    } finally {
+      unregister();
+    }
+  });
+
+  it("orders candidates by sequence even when the clock stepped backwards", async () => {
+    const world = await fieldWorld();
+    await db.update(entities).set({ name: "Third", metadata: {} }).where(eq(entities.id, world.service));
+    const older = await recordUpdate(world, "owner", "entity", world.service, {
+      version: 2,
+      fields: ["name"],
+      previous: { name: "First" },
+      previousMetadata: {},
+    });
+    const newer = await recordUpdate(world, "owner", "entity", world.service, {
+      version: 2,
+      fields: ["name"],
+      previous: { name: "Second" },
+      previousMetadata: {},
+    });
+    expect(newer.seq).toBeGreaterThan(older.seq);
+    // The newer event carries the earlier timestamp.
+    await db
+      .update(canvasEvents)
+      .set({ createdAt: new Date("2020-01-01T00:00:00Z") })
+      .where(eq(canvasEvents.id, newer.id));
+    await db
+      .update(canvasEvents)
+      .set({ createdAt: new Date("2030-01-01T00:00:00Z") })
+      .where(eq(canvasEvents.id, older.id));
+    await undoByCookie(world.canvasId, cookie);
+    expect((await entityRow(world.service)).name).toBe("Second");
   });
 });
