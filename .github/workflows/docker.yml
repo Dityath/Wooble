@@ -110,6 +110,8 @@ jobs:
           test -s "$backup_path"
           bun scripts/selfhost-smoke.ts mutate
           deploy/wooble restore --confirm "$backup_path"
+          # Restore recreates web and API and returns once they have started, before Caddy serves them.
+          curl --cacert "$SMOKE_CADDY_CA" -fsS --retry 30 --retry-connrefused --retry-all-errors --retry-delay 2 "$SMOKE_BASE_URL/health"
           bun scripts/selfhost-smoke.ts verify
       - name: Restart the API and sign in again
         id: restart
