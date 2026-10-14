@@ -503,7 +503,8 @@ describe("inspector details", () => {
     await waitFor(() => expect(server.calls).toHaveLength(1));
 
     await user.click(screen.getByRole("button", { name: "Documentation" }));
-    const documentation = screen.getByRole("textbox", { name: "Documentation" });
+    // The editor chunk is lazy, so wait for it rather than relying on an earlier test having loaded it.
+    const documentation = await screen.findByRole("textbox", { name: "Documentation" });
     // A heading shortcut, then leaving the editor, which saves.
     await typeInEditor(documentation, "# Backups");
     await act(async () => documentation.blur());
@@ -541,7 +542,7 @@ describe("inspector details", () => {
     await waitFor(() => expect(server.calls).toHaveLength(1));
 
     await user.click(screen.getByRole("button", { name: "Documentation" }));
-    const documentation = screen.getByRole("textbox", { name: "Documentation" });
+    const documentation = await screen.findByRole("textbox", { name: "Documentation" });
     const items = within(documentation).getAllByRole("listitem");
     expect(items.map((item) => item.textContent)).toEqual(["Primary", "Replica"]);
     // Opening and leaving the documentation does not save it, although the editor writes `*` bullets as `-`.
