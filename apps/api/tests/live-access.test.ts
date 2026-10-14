@@ -186,6 +186,30 @@ describe("live canvas upgrade", () => {
     expect(refused.messages).toEqual([]);
   });
 
+  it("answers an anonymous upgrade for an unknown canvas UUID with the JSON 401 the deploy diagnose probe matches", async () => {
+    // deploy/wooble `diagnose` sends exactly this request through Caddy and treats HTTP 101 or this
+    // 401 as proof that the request reached the API. Keep both sides pinned so they cannot drift.
+    const response = await api.app.handle(
+      new Request(`http://localhost/api/canvases/${crypto.randomUUID()}/live`, {
+        headers: {
+          upgrade: "websocket",
+          connection: "Upgrade",
+          "sec-websocket-version": "13",
+          "sec-websocket-key": "d29vYmxlLWRpYWdub3NlIQ==",
+          origin: webOrigin,
+        },
+      }),
+    );
+    expect(response.status).toBe(401);
+    expect(response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase()).toBe("application/json");
+    expect(await response.json()).toEqual({ message: "Sign in to continue" });
+
+    const probe = await Bun.file(new URL("../../../deploy/wooble", import.meta.url)).text();
+    expect(probe).toContain('parsed.message === "Sign in to continue"');
+    expect(probe).toContain('type.trim().toLowerCase() === "application/json"');
+    expect(probe).toContain("status === 401");
+  });
+
   it("closes a socket with an invalid canvas ID or origin, and refuses a missing canvas", async () => {
     const { owner, payments } = await liveFixture();
     const invalid = { code: 1008, reason: "Invalid canvas or origin" };

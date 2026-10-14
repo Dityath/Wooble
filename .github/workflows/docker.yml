@@ -1,0 +1,160 @@
+name: Self-hosted stack
+
+on:
+  pull_request:
+    paths:
+      - "apps/**"
+      - "packages/**"
+      - "deploy/**"
+      - "compose.selfhost.yml"
+      - ".dockerignore"
+      - ".env.selfhost.example"
+      - "bun.lock"
+      - "package.json"
+      - "scripts/selfhost-smoke.ts"
+      - "scripts/selfhost-*.test.ts"
+      - "scripts/release-workflow.test.ts"
+      - "scripts/third-party-notices.test.ts"
+      - ".github/workflows/release.yml"
+      - "scripts/third-party-notices.ts"
+      - "scripts/selfhost-cli-check.ts"
+      - "scripts/selfhost-image-check.ts"
+      - "deploy/wooble"
+      - "compose.selfhost.source.yml"
+      - "compose.selfhost.local.yml"
+      - "apps/web/e2e/selfhost-install.pw.ts"
+      - "apps/web/playwright.selfhost.config.ts"
+      - ".github/workflows/docker.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Docker smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      COMPOSE: docker compose --env-file .env.selfhost --project-name wooble-p1-3-${{ github.run_id }}-${{ github.run_attempt }} -f compose.selfhost.yml -f compose.selfhost.local.yml -f compose.selfhost.source.yml
+      SMOKE_BASE_URL: https://localhost:18083
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install workspace dependencies
+        run: bun install --frozen-lockfile
+      - name: Write a throwaway environment file
+        run: |
+          umask 077
+          echo "SMOKE_STATE=$RUNNER_TEMP/selfhost-smoke.json" >> "$GITHUB_ENV"
+          echo "SMOKE_BACKUP=$RUNNER_TEMP/selfhost-smoke.dump" >> "$GITHUB_ENV"
+          echo "WOOBLE_COMPOSE_PROJECT_NAME=wooble-p1-3-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+          cp .env.selfhost.example .env.selfhost
+          sed -i "s/^WOOBLE_DB_PASSWORD=.*/WOOBLE_DB_PASSWORD=$(openssl rand -hex 24)/" .env.selfhost
+          sed -i "s/^WOOBLE_VERSION=.*/WOOBLE_VERSION=0.0.0-ci.${GITHUB_RUN_NUMBER}/" .env.selfhost
+          sed -i "s/^WOOBLE_COMPOSE_PROJECT_NAME=.*/WOOBLE_COMPOSE_PROJECT_NAME=wooble-p1-3-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/" .env.selfhost
+          sed -i "s|^WOOBLE_ORIGIN=.*|WOOBLE_ORIGIN=https://localhost:18083|" .env.selfhost
+          sed -i "s/^WOOBLE_HTTP_PORT=.*/WOOBLE_HTTP_PORT=18083/" .env.selfhost
+      - name: Run self-host regression suites
+        run: >-
+          bun test scripts/selfhost-compose.test.ts scripts/selfhost-cli.test.ts
+          scripts/selfhost-image-check.test.ts scripts/selfhost-image-check-script.test.ts
+          scripts/selfhost-browser-config.test.ts
+          scripts/release-workflow.test.ts scripts/third-party-notices.test.ts
+      - name: Check self-host operator CLI invariants
+        run: bun scripts/selfhost-cli-check.ts
+      - name: Check build context and API image backup exclusions
+        run: bun scripts/selfhost-image-check.ts
+      - name: Check the Compose file
+        id: config
+        run: $COMPOSE config -q
+      - name: Build and start the stack
+        id: up
+        # Compose starts each service once its dependencies are healthy or, for migrate, completed.
+        run: $COMPOSE up -d --build
+      - name: Trust only this disposable Caddy local CA for API smoke
+        run: |
+          $COMPOSE exec -T web cat /data/caddy/pki/authorities/local/root.crt > "$RUNNER_TEMP/caddy-local-root.crt"
+          chmod 600 "$RUNNER_TEMP/caddy-local-root.crt"
+          echo "SMOKE_CADDY_CA=$RUNNER_TEMP/caddy-local-root.crt" >> "$GITHUB_ENV"
+          echo "NODE_EXTRA_CA_CERTS=$RUNNER_TEMP/caddy-local-root.crt" >> "$GITHUB_ENV"
+          deploy/wooble diagnose
+      - name: Check health through the web server
+        id: health
+        run: curl --cacert "$SMOKE_CADDY_CA" -fsS --retry 30 --retry-connrefused --retry-all-errors --retry-delay 2 "$SMOKE_BASE_URL/health"
+      - name: Check published ports
+        id: ports
+        run: $COMPOSE ps --format json | bun scripts/selfhost-smoke.ts ports
+      - name: Register, edit, and use the live canvas
+        id: setup
+        run: bun scripts/selfhost-smoke.ts setup
+      - name: Run browser login and static-asset journey through Caddy
+        run: |
+          bun run --cwd apps/web playwright install --with-deps chromium
+          SELFHOST_BROWSER_DISPOSABLE=1 \
+            SELFHOST_BROWSER_ORIGIN="$SMOKE_BASE_URL" \
+            SELFHOST_BROWSER_IGNORE_HTTPS_ERRORS=1 \
+            bun run --cwd apps/web test:selfhost-browser
+      - name: Backup, change fictional content, and rehearse confirmed restore
+        id: restore
+        run: |
+          deploy/wooble backup > "$SMOKE_BACKUP"
+          backup_path="$(cat "$SMOKE_BACKUP")"
+          echo "SMOKE_BACKUP_PATH=$backup_path" >> "$GITHUB_ENV"
+          test -s "$backup_path"
+          bun scripts/selfhost-smoke.ts mutate
+          deploy/wooble restore --confirm "$backup_path"
+          # Restore recreates web and API and returns once they have started, before Caddy serves them.
+          curl --cacert "$SMOKE_CADDY_CA" -fsS --retry 30 --retry-connrefused --retry-all-errors --retry-delay 2 "$SMOKE_BASE_URL/health"
+          bun scripts/selfhost-smoke.ts verify
+      - name: Restart the API and sign in again
+        id: restart
+        run: |
+          $COMPOSE restart api
+          curl --cacert "$SMOKE_CADDY_CA" -fsS --retry 30 --retry-connrefused --retry-all-errors --retry-delay 2 "$SMOKE_BASE_URL/health"
+          bun scripts/selfhost-smoke.ts verify
+      - name: Stop and start the stack, keeping its data
+        id: persist
+        run: |
+          $COMPOSE down
+          $COMPOSE up -d
+          curl --cacert "$SMOKE_CADDY_CA" -fsS --retry 30 --retry-connrefused --retry-all-errors --retry-delay 2 "$SMOKE_BASE_URL/health"
+          bun scripts/selfhost-smoke.ts verify
+      - name: Show service logs
+        if: ${{ failure() }}
+        run: $COMPOSE logs --no-color --tail=200
+      - name: Remove the stack and its volumes
+        if: ${{ always() }}
+        run: |
+          $COMPOSE down --volumes --remove-orphans || true
+          rm -f .env.selfhost "$SMOKE_STATE"
+          if [ -n "${SMOKE_BACKUP_PATH:-}" ]; then rm -f -- "$SMOKE_BACKUP_PATH"; fi
+          rm -f -- "$SMOKE_BACKUP"
+          rm -f -- "$RUNNER_TEMP/caddy-local-root.crt"
+      - name: Summarize
+        if: ${{ always() }}
+        env:
+          CONFIG_RESULT: ${{ steps.config.outcome }}
+          UP_RESULT: ${{ steps.up.outcome }}
+          HEALTH_RESULT: ${{ steps.health.outcome }}
+          PORTS_RESULT: ${{ steps.ports.outcome }}
+          SETUP_RESULT: ${{ steps.setup.outcome }}
+          RESTORE_RESULT: ${{ steps.restore.outcome }}
+          RESTART_RESULT: ${{ steps.restart.outcome }}
+          PERSIST_RESULT: ${{ steps.persist.outcome }}
+        run: |
+          bash .github/scripts/report-ci.sh "Self-hosted stack" \
+            "Compose file=$CONFIG_RESULT" \
+            "Build and start=$UP_RESULT" \
+            "Health through web=$HEALTH_RESULT" \
+            "Only web published, on loopback=$PORTS_RESULT" \
+            "Register, edit, live presence, origin check=$SETUP_RESULT" \
+            "Backup and confirmed restore preserved content=$RESTORE_RESULT" \
+            "API restart and sign-in=$RESTART_RESULT" \
+            "Data kept after down and up=$PERSIST_RESULT"

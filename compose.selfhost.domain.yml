@@ -1,0 +1,9 @@
+services:
+  web:
+    environment:
+      WOOBLE_CADDY_SITE: ${WOOBLE_DOMAIN:?Set WOOBLE_DOMAIN for automatic HTTPS}
+      WOOBLE_CADDY_TLS: ""
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
