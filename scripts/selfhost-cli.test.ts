@@ -101,8 +101,14 @@ esac
   const backupFile = join(base, "input.dump");
   writeFileSync(backupFile, "fictional input data\n");
   function run(...args: string[]) {
-    const environment = { ...process.env, PATH: `${bin}:${process.env.PATH}`, WOOBLE_ENV_FILE: join(base, ".env") };
-    delete environment.WOOBLE_VERSION;
+    // Settings come only from the fixture's .env, so a runner that exports Wooble settings (the Docker smoke job sets
+    // WOOBLE_COMPOSE_PROJECT_NAME) cannot override them.
+    const inherited = Object.entries(process.env).filter(([key]) => !key.startsWith("WOOBLE_"));
+    const environment: NodeJS.ProcessEnv = {
+      ...Object.fromEntries(inherited),
+      PATH: `${bin}:${process.env.PATH}`,
+      WOOBLE_ENV_FILE: join(base, ".env"),
+    };
     if (options.shellVersion) environment.WOOBLE_VERSION = options.shellVersion;
     if (options.shellOrigin) environment.WOOBLE_ORIGIN = options.shellOrigin;
     return spawnSync(join(base, "deploy/wooble"), args, {
