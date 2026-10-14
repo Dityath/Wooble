@@ -1,6 +1,8 @@
 import { Elysia } from "elysia";
 import { sql } from "drizzle-orm";
 import { db } from "@wooble/db";
+import apiPackage from "../package.json" with { type: "json" };
+import migrationJournal from "../../../packages/db/drizzle/meta/_journal.json" with { type: "json" };
 import { accessGuard, type Actor, type Api } from "./lib/auth";
 import { liveRoutes } from "./lib/live";
 import { isDatabaseConnectionError } from "./lib/http-error";
@@ -12,6 +14,28 @@ import { workspaceRoutes } from "./modules/workspace/routes";
 import { canvasRoutes } from "./modules/canvas/routes";
 import { entityRoutes } from "./modules/entity/routes";
 import { connectionRoutes } from "./modules/connection/routes";
+
+const requiredMigrationEntries = migrationJournal.entries.length;
+const requiredMigrationTimestamp = Math.max(...migrationJournal.entries.map((entry) => entry.when));
+const safeVersionPattern = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+export type MigrationReadiness = {
+  status: "current" | "pending";
+  applied: number;
+  required: number;
+};
+
+export function migrationReadiness(appliedValue: number | null, latestValue: number | null): MigrationReadiness {
+  const applied = appliedValue !== null && Number.isSafeInteger(appliedValue) && appliedValue >= 0 ? appliedValue : 0;
+  const latest = latestValue !== null && Number.isSafeInteger(latestValue) && latestValue >= 0 ? latestValue : 0;
+  const current = applied >= requiredMigrationEntries && latest >= requiredMigrationTimestamp;
+  return { status: current ? "current" : "pending", applied, required: requiredMigrationEntries };
+}
+
+function runningVersion(): string {
+  const candidate = process.env.WOOBLE_VERSION ?? apiPackage.version;
+  return safeVersionPattern.test(candidate) ? candidate : "unknown";
+}
 
 function registerErrorHandler(app: Api) {
   app.onError((context) => {
@@ -52,10 +76,41 @@ export function createApp(options: { configure?: (app: Api) => void; liveRecheck
   app.get("/health", async (context) => {
     try {
       await db.execute(sql`select 1`);
-      return { status: "ok", database: "connected" };
     } catch {
       context.set.status = 503;
-      return { status: "unavailable", database: "disconnected" };
+      return {
+        status: "unavailable",
+        database: "disconnected",
+        version: runningVersion(),
+        migrations: { status: "unknown", applied: 0, required: requiredMigrationEntries },
+      };
+    }
+
+    try {
+      const result = await db.execute(sql`
+        select count(*)::int as applied, max(created_at)::bigint as latest
+        from drizzle.__drizzle_migrations
+      `);
+      const row = result.rows[0];
+      const migrations = migrationReadiness(
+        row?.applied === null || row?.applied === undefined ? null : Number(row.applied),
+        row?.latest === null || row?.latest === undefined ? null : Number(row.latest),
+      );
+      if (migrations.status !== "current") context.set.status = 503;
+      return {
+        status: migrations.status === "current" ? "ok" : "unavailable",
+        database: "connected",
+        version: runningVersion(),
+        migrations,
+      };
+    } catch {
+      context.set.status = 503;
+      return {
+        status: "unavailable",
+        database: "connected",
+        version: runningVersion(),
+        migrations: migrationReadiness(null, null),
+      };
     }
   });
   options.configure?.(app);

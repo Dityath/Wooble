@@ -1,0 +1,373 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Small, dependency-free operator CLI. Values are read from Compose's dotenv file
+# without evaluating it as shell code; Compose itself remains the env parser.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${WOOBLE_ENV_FILE:-$ROOT/.env.selfhost}"
+COMPOSE_BASE=( -f "$ROOT/compose.selfhost.yml" )
+
+fail() { trap - INT TERM HUP; printf 'error: %s\n' "$*" >&2; exit 1; }
+read_env() {
+  local key="$1"
+  [[ -f "$ENV_FILE" ]] || return 0
+  awk -v wanted="$key" 'BEGIN { FS="=" } /^[[:space:]]*#/ || NF < 2 { next } { k=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", k); if (k == wanted) { sub(/^[^=]*=/, ""); gsub(/^\"|\"$/, ""); gsub(/^\047|\047$/, ""); print; exit } }' "$ENV_FILE"
+}
+read_setting() {
+  local key="$1"
+  if [[ ${!key+x} ]]; then printf '%s' "${!key}"; else read_env "$key"; fi
+}
+MODE="$(read_setting WOOBLE_MODE)"
+MODE="${MODE:-local}"
+PROJECT="$(read_setting WOOBLE_COMPOSE_PROJECT_NAME)"
+PROJECT="${PROJECT:-wooble}"
+LEGACY_PROJECT="$(read_setting WOOBLE_LEGACY_PROJECT_NAME)"
+VERSION="$(read_setting WOOBLE_VERSION)"
+case "$MODE" in
+  local|private|domain) COMPOSE_MODE="$ROOT/compose.selfhost.$MODE.yml" ;;
+  *) fail "WOOBLE_MODE must be local, private, or domain" ;;
+esac
+[[ -f "$ENV_FILE" ]] || fail "environment file not found: $ENV_FILE (copy .env.selfhost.example first)"
+[[ "$PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "invalid WOOBLE_COMPOSE_PROJECT_NAME"
+if [[ -n "$LEGACY_PROJECT" && ! "$LEGACY_PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then fail "invalid WOOBLE_LEGACY_PROJECT_NAME"; fi
+duplicates="$(awk -F= '
+  /^[[:space:]]*#/ || NF < 2 { next }
+  { key=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", key); count[key]++ }
+  END { for (key in count) if (count[key] > 1 && key ~ /^(WOOBLE_(VERSION|MODE|COMPOSE_PROJECT_NAME|LEGACY_PROJECT_NAME|ORIGIN|HTTP_PORT|BIND_ADDRESS|CADDY_HOST|DOMAIN|PROXY_SUBNET|CADDY_IP|API_IP|DB_PASSWORD)|CADDY_TRUSTED_PROXY_CIDRS|TRUSTED_PROXY_CIDRS)$/) print key }
+' "$ENV_FILE")"
+[[ -z "$duplicates" ]] || fail "duplicate self-host settings in env file: ${duplicates//$'\n'/, }"
+
+compose() {
+  docker compose --env-file "$ENV_FILE" --project-name "$PROJECT" "${COMPOSE_BASE[@]}" -f "$COMPOSE_MODE" "$@"
+}
+compose_config_check() {
+  compose config -q >/dev/null 2>&1 || fail "Compose configuration is invalid; check WOOBLE_VERSION, WOOBLE_ORIGIN, WOOBLE_BIND_ADDRESS, WOOBLE_DB_PASSWORD, and mode-specific settings"
+}
+version_required() {
+  [[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || fail "WOOBLE_VERSION is required and must be a release version"
+}
+
+# Reuse only the selected Compose project or a legacy project the operator
+# explicitly named. `postgres-data` is a common logical key, so the key alone
+# never identifies a Wooble volume. The selected project is never rewritten.
+resolve_project() {
+  local volumes name labels logical owner count=0 invalid=0 chosen="" expected_name
+  volumes="$(docker volume ls --filter label=com.docker.compose.volume=postgres-data --format '{{.Name}}')" || fail "cannot discover Docker volumes"
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    labels="$(docker volume inspect --format '{{ index .Labels "com.docker.compose.volume" }}|{{ index .Labels "com.docker.compose.project" }}' "$name" 2>/dev/null)" || {
+      [[ "$name" == wooble_postgres-data || ( -n "$LEGACY_PROJECT" && "$name" == "${LEGACY_PROJECT}_postgres-data" ) ]] && invalid=$((invalid + 1))
+      continue
+    }
+    logical="${labels%%|*}"; owner="${labels#*|}"
+    if [[ "$owner" != "$PROJECT" && ( -z "$LEGACY_PROJECT" || "$owner" != "$LEGACY_PROJECT" ) ]]; then continue; fi
+    expected_name="${owner}_postgres-data"
+    if [[ "$logical" != postgres-data || ! "$owner" =~ ^[a-z0-9][a-z0-9_-]*$ || "$name" != "$expected_name" ]]; then invalid=$((invalid + 1)); continue; fi
+    count=$((count + 1)); chosen="$owner"
+  done <<< "$volumes"
+  if (( invalid > 0 )); then fail "invalid matching Wooble postgres-data volume labels found; refusing to guess which volume to reuse"; fi
+  if (( count > 1 )); then fail "multiple matching Wooble postgres-data volumes found; set WOOBLE_COMPOSE_PROJECT_NAME to the intended project and resolve legacy ambiguity manually"; fi
+  if (( count == 1 )) && [[ "$chosen" != "$PROJECT" ]]; then
+    fail "legacy volume belongs to project '$chosen'; set WOOBLE_COMPOSE_PROJECT_NAME=$chosen explicitly to reuse it"
+  fi
+}
+
+ensure_version_env() { version_required; }
+backup() {
+  local dir="$ROOT/backups" stamp file partial suffix=0
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  (umask 077; mkdir -p "$dir") || fail "cannot create backup directory"
+  while :; do
+    file="$dir/wooble-$stamp-$$-$suffix.dump"
+    partial="$file.partial"
+    if [[ -e "$file" || -e "$partial" ]]; then suffix=$((suffix + 1)); continue; fi
+    (umask 077; set -o noclobber; : > "$partial") && break
+    [[ -e "$partial" ]] || fail "cannot create backup file"
+    suffix=$((suffix + 1))
+  done
+  # The dump is written to <final>.partial and renamed only after pg_dump succeeds,
+  # so an interrupted or failed backup can never look like a valid one. The trap
+  # removes exactly this run's partial file.
+  # shellcheck disable=SC2064
+  trap "rm -f -- $(printf '%q' "$partial")" EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+  if ! compose exec -T postgres pg_dump -U wooble -Fc wooble > "$partial"; then
+    fail "backup failed"
+  fi
+  chmod 600 "$partial"
+  mv -- "$partial" "$file" || fail "could not finalize backup"
+  trap - EXIT INT TERM HUP
+  printf '%s\n' "$file"
+}
+restore_dump() {
+  local file="$1"
+  compose exec -T postgres pg_restore --clean --if-exists --no-owner -U wooble -d wooble < "$file"
+}
+recover_pre_restore() {
+  compose stop web api || return 1
+  restore_dump "$prebackup" || return 1
+  compose run --rm migrate || return 1
+  start_stack
+}
+start_stack() { compose up -d; }
+# Signal handling for restore, active from before web/api are stopped until the
+# stack is handed back. It never restores data: replacing data on a signal would be
+# a surprise. Before the user's dump touches the database it only restarts the stack;
+# afterwards the database may be partially restored, so the stack is left stopped.
+RESTORE_PHASE=""
+restore_interrupted() {
+  local signal="$1" code="$2"
+  trap - INT TERM HUP
+  printf 'restore interrupted by SIG%s\n' "$signal" >&2
+  case "$RESTORE_PHASE" in
+    quiesce)
+      if start_stack; then printf 'no restore had begun; the stack was restarted\n' >&2
+      else printf 'no restore had begun, but restarting the stack failed; the stack may be stopped; run deploy/wooble up\n' >&2; fi ;;
+    restoring)
+      printf 'the database may be partially restored or not yet migrated; the stack was left stopped\n' >&2
+      printf 'pg_restore may still be running inside the postgres container; wait for it to finish or stop it (check deploy/wooble status or pg_stat_activity) before retrying\n' >&2 ;;
+    *)
+      printf 'the stack may be stopped or partly started; check deploy/wooble status\n' >&2 ;;
+  esac
+  if [[ -n "${prebackup:-}" && -e "$prebackup" ]]; then printf 'pre-restore backup retained at %s\n' "$prebackup" >&2; fi
+  exit "$code"
+}
+# Runs inside the api container (bun) on the Compose proxy network and talks to
+# the Caddy service ("web") on 443 exactly as a browser would: TLS with SNI and
+# Host for the configured origin, verified against the supplied CA (stdin; empty
+# means system roots). TLS verification is never disabled.
+# PROBE_KIND=https expects 200 from /health.
+# PROBE_KIND=ws sends an unauthenticated WebSocket upgrade for a random, valid,
+# non-existent canvas UUID. The API guard answers such a request before the upgrade
+# with its own JSON 401 ({"message":"Sign in to continue"}, application/json), because
+# an anonymous visitor may only open a link-shared canvas. Reaching the API is proven by
+# either HTTP 101 or that exact 401; Caddy's own 502/503/404, the SPA's HTML fallback, a
+# 200, or a timeout all fail. The observed outcome is printed. The message literal must
+# stay in sync with apps/api/tests/live-access.test.ts, which pins the API side.
+read -r -d '' PROBE_SCRIPT <<'JS' || true
+const tls = require("node:tls");
+const kind = process.env.PROBE_KIND;
+const origin = new URL(process.env.PROBE_ORIGIN);
+const name = origin.hostname.replace(/^\[|\]$/g, "");
+const ca = require("node:fs").readFileSync(0, "utf8").trim();
+const isIp = /^[0-9.]+$/.test(name) || name.includes(":");
+const ws = kind === "ws";
+const path = ws ? `/api/canvases/${crypto.randomUUID()}/live` : "/health";
+const headers = [`GET ${path} HTTP/1.1`, `Host: ${origin.host}`, "Connection: " + (ws ? "Upgrade" : "close")];
+if (ws) headers.push("Upgrade: websocket", "Sec-WebSocket-Version: 13", "Sec-WebSocket-Key: d29vYmxlLWRpYWdub3NlIQ==", `Origin: ${origin.origin}`);
+const socket = tls.connect({
+  host: process.env.PROBE_TARGET,
+  port: Number(process.env.PROBE_PORT || 443),
+  servername: isIp ? undefined : name,
+  ca: ca ? ca : undefined,
+  checkServerIdentity: (_host, cert) => tls.checkServerIdentity(name, cert),
+});
+const fail = (why) => { console.error(why); process.exit(1); };
+let data = "";
+const decide = (final) => {
+  const split = data.indexOf("\r\n\r\n");
+  if (split < 0) return final ? fail(`${kind} probe: connection closed before a complete response`) : undefined;
+  const head = data.slice(0, split);
+  const body = data.slice(split + 4);
+  const status = Number(head.split(" ")[1]);
+  const type = (/^content-type:\s*([^\r\n;]*)/im.exec(head) || [])[1] || "";
+  if (!ws) {
+    if (status === 200) { console.log(`https probe through Caddy: HTTP 200`); process.exit(0); }
+    return fail(`https probe through Caddy: unexpected HTTP ${status}`);
+  }
+  if (status === 101) { console.log("ws probe through Caddy: HTTP 101 (upgrade accepted by the API)"); process.exit(0); }
+  if (status === 401 && type.trim().toLowerCase() === "application/json") {
+    let parsed;
+    try { parsed = JSON.parse(body.slice(body.indexOf("{"), body.lastIndexOf("}") + 1)); } catch { if (!final) return; }
+    if (parsed && parsed.message === "Sign in to continue") { console.log("ws probe through Caddy: HTTP 401 JSON from the API access guard (request reached the API)"); process.exit(0); }
+    return fail("ws probe through Caddy: HTTP 401 JSON was not the API's expected unauthorized body");
+  }
+  return fail(`ws probe through Caddy: unexpected HTTP ${status} (${type || "no content-type"}); expected 101 or the API's JSON 401`);
+};
+socket.setTimeout(10000, () => fail(`${kind} probe: timed out`));
+socket.on("error", (error) => fail("TLS/connection error: " + error.message));
+socket.on("secureConnect", () => socket.write(headers.join("\r\n") + "\r\n\r\n"));
+socket.on("data", (chunk) => { data += chunk.toString("latin1"); decide(false); });
+socket.on("end", () => decide(true));
+JS
+
+# Read Caddy's internal CA (local/private modes) into CADDY_CA. Its own step so a
+# failure here is never confused with a probe's exit status.
+CADDY_CA=""
+read_caddy_ca() {
+  CADDY_CA=""
+  if [[ "$MODE" == domain ]]; then return 0; fi
+  CADDY_CA="$(compose exec -T web cat /data/caddy/pki/authorities/local/root.crt 2>/dev/null)" || return 1
+  [[ -n "$CADDY_CA" ]]
+}
+# Probe the public entry point (Caddy, the compose "web" service) from the api
+# container, so the host only needs Docker Compose.
+probe_caddy() {
+  local kind="$1" origin="$2"
+  printf '%s\n' "$CADDY_CA" | compose exec -T -e PROBE_KIND="$kind" -e PROBE_ORIGIN="$origin" -e PROBE_TARGET=web api bun -e "$PROBE_SCRIPT"
+}
+# scheme://host[:port] only: never path, query, fragment, or userinfo.
+display_origin() {
+  local o="$1" scheme rest
+  scheme="${o%%://*}"; rest="${o#*://}"
+  rest="${rest%%[/?#]*}"; rest="${rest##*@}"
+  printf '%s://%s' "$scheme" "$rest"
+}
+https_origin_matches_host() {
+  local host="$1" origin="$2" expected_port="$3" port
+  [[ "$expected_port" =~ ^[1-9][0-9]{0,4}$ ]] || return 1
+  ((10#$expected_port <= 65535)) || return 1
+  if [[ "$origin" == "https://$host" ]]; then
+    ((10#$expected_port == 443))
+    return
+  fi
+  [[ "$origin" == "https://$host:"* ]] || return 1
+  port="${origin#"https://$host:"}"
+  [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || return 1
+  ((10#$port >= 1 && 10#$port <= 65535 && 10#$port == 10#$expected_port))
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  install|up)
+    ensure_version_env
+    resolve_project
+    compose_config_check
+    if [[ "$cmd" == install ]]; then
+      compose pull
+      compose run --rm migrate
+    fi
+    start_stack || fail "stack start failed; inspect with deploy/wooble diagnose"
+    ;;
+  status)
+    resolve_project
+    compose ps
+    ;;
+  diagnose)
+    version_required
+    resolve_project
+    printf 'mode=%s project=%s version=%s\n' "$MODE" "$PROJECT" "$VERSION"
+    origin="$(read_setting WOOBLE_ORIGIN)"
+    http_port="$(read_setting WOOBLE_HTTP_PORT)"
+    case "$MODE" in
+      local)
+        https_origin_matches_host localhost "$origin" "$http_port" || fail "local mode requires an HTTPS localhost origin whose port matches WOOBLE_HTTP_PORT"
+        ;;
+      private)
+        host="$(read_setting WOOBLE_CADDY_HOST)"
+        bind="$(read_setting WOOBLE_BIND_ADDRESS)"
+        [[ -n "$host" && -n "$bind" ]] || fail "private mode requires explicit WOOBLE_CADDY_HOST and WOOBLE_BIND_ADDRESS"
+        https_origin_matches_host "$host" "$origin" "$http_port" || fail "private mode origin must use HTTPS and exactly match WOOBLE_CADDY_HOST and WOOBLE_HTTP_PORT"
+        ;;
+      domain)
+        domain="$(read_setting WOOBLE_DOMAIN)"
+        [[ "$origin" != *@* ]] || fail "WOOBLE_ORIGIN must not contain credentials (userinfo)"
+        [[ -n "$domain" && "$origin" == "https://$domain" ]] || fail "domain mode origin must exactly match https://WOOBLE_DOMAIN"
+        ;;
+    esac
+    compose_config_check
+    compose ps
+    printf 'note: HTTPS/WebSocket probes run from the api container against the Caddy service; Caddy'"'"'s CA is read from its data volume and TLS verification stays on\n'
+    failed=0
+    shown="$(display_origin "$origin")"
+    compose exec -T api bun -e 'fetch("http://127.0.0.1:3001/health").then(async r => { const body = await r.json(); console.log(JSON.stringify(body)); if (!r.ok) process.exit(1) }).catch(() => process.exit(1))' || { printf 'FAILED [api-internal]: API health check inside the api container failed; inspect migration and service logs\n' >&2; failed=1; }
+    if read_caddy_ca; then
+      probe_caddy https "$origin" || { printf 'FAILED [caddy-https]: %s/health was not served successfully through Caddy; check the web service, TLS, and proxy route\n' "$shown" >&2; failed=1; }
+      probe_caddy ws "$origin" || { printf 'FAILED [caddy-websocket]: WebSocket upgrade through Caddy to the API live route did not reach the API (expected HTTP 101 or the API'"'"'s JSON 401); check the Caddy /api route and WebSocket proxying\n' >&2; failed=1; }
+    else
+      printf 'FAILED [caddy-ca]: cannot read Caddy'"'"'s CA from the web container; is the web service running? [caddy-https] and [caddy-websocket] were not checked\n' >&2; failed=1
+    fi
+    (( failed == 0 )) || fail "diagnose found failing layers (see FAILED lines above)"
+    printf 'diagnose ok: API health, HTTPS through Caddy, and WebSocket upgrade through Caddy passed\n'
+    ;;
+  backup)
+    resolve_project
+    backup
+    ;;
+  restore)
+    [[ "${1:-}" == "--confirm" && -n "${2:-}" && -z "${3:-}" ]] || fail "usage: deploy/wooble restore --confirm BACKUP.dump (explicit confirmation required)"
+    file="$2"
+    [[ -f "$file" ]] || fail "backup file does not exist"
+    resolve_project
+    # Stop writers first so the pre-restore backup captures every accepted write.
+    # backup() only needs the postgres service, which stays running.
+    RESTORE_PHASE=quiesce
+    trap 'restore_interrupted INT 130' INT
+    trap 'restore_interrupted TERM 143' TERM
+    trap 'restore_interrupted HUP 129' HUP
+    if ! compose stop web api; then
+      start_stack || true
+      fail "could not stop web/API before restore; no backup or restore was attempted; attempted to restart stack"
+    fi
+    if ! prebackup="$(backup)"; then
+      start_stack || true
+      fail "automatic pre-restore backup failed; restore was not attempted; attempted to restart stack"
+    fi
+    RESTORE_PHASE=restoring
+    if restore_dump "$file"; then
+      if compose run --rm migrate; then
+        RESTORE_PHASE=starting
+        if start_stack; then trap - INT TERM HUP; printf 'restore succeeded; migrations applied; pre-restore backup: %s\n' "$prebackup"; else
+          printf 'restore stack start failed; attempting recovery from pre-restore backup %s\n' "$prebackup" >&2
+          if recover_pre_restore; then fail "restore start failed; original data recovered and stack restarted; backup retained at $prebackup"; fi
+          fail "restore start and automatic recovery failed; stack may be stopped; pre-restore backup retained at $prebackup"
+        fi
+      else
+        printf 'migration after restore failed; attempting recovery from pre-restore backup %s\n' "$prebackup" >&2
+        if recover_pre_restore; then fail "restore migrations failed; original data recovered and stack restarted; backup retained at $prebackup"; fi
+        fail "restore migrations and automatic recovery failed; stack may be stopped; pre-restore backup retained at $prebackup"
+      fi
+    else
+      printf 'restore failed; attempting recovery from pre-restore backup %s\n' "$prebackup" >&2
+      if recover_pre_restore; then fail "restore failed; original data recovered and stack restarted; backup retained at $prebackup"; fi
+      fail "restore and automatic recovery failed; stack may be stopped; both backups retained, recovery backup: $prebackup"
+    fi
+    ;;
+  update)
+    [[ -n "${1:-}" && -z "${2:-}" ]] || fail "usage: deploy/wooble update <version>"
+    [[ "$1" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || fail "update version must be an exact release version"
+    [[ -f "$ENV_FILE" ]] || fail "environment file not found"
+    [[ ! -L "$ENV_FILE" ]] || fail "update requires a regular env file so its version can be persisted safely"
+    original_env="$ENV_FILE"
+    tmp_env="$(umask 077; mktemp "${original_env}.update.XXXXXX")" || fail "cannot prepare a safe env-file update"
+    trap 'rm -f -- "${tmp_env:-}"' EXIT
+    awk -v version="$1" '
+      BEGIN { done=0 }
+      {
+        key=$0
+        if (match(key, /^[[:space:]]*[^=[:space:]]+[[:space:]]*=/)) {
+          key=substr(key, RSTART, RLENGTH)
+          sub(/[[:space:]]*=$/, "", key)
+          gsub(/[[:space:]]/, "", key)
+          if (key == "WOOBLE_VERSION") { print "WOOBLE_VERSION=" version; done=1; next }
+        }
+        print
+      }
+      END { if (!done) print "WOOBLE_VERSION=" version }
+    ' "$original_env" > "$tmp_env" || fail "cannot prepare a safe env-file update"
+    chmod 600 "$tmp_env"
+    resolve_project
+    prebackup="$(backup)" || fail "update backup failed; update was not attempted"
+    ENV_FILE="$tmp_env"
+    export WOOBLE_VERSION="$1"
+    compose pull api web migrate || fail "image pull failed; data unchanged; backup retained at $prebackup"
+    if compose run --rm migrate; then
+      if start_stack; then
+        if mv -f "$tmp_env" "$original_env"; then
+          tmp_env=""
+          trap - EXIT
+          printf 'updated to %s; version persisted; volume preserved; pre-update backup: %s\n' "$1" "$prebackup"
+        else
+          fail "stack started at the new version but could not persist WOOBLE_VERSION; original env file remains unchanged; backup retained at $prebackup"
+        fi
+      else
+        fail "migration succeeded but stack start failed; original version retained; backup retained at $prebackup; restore it with deploy/wooble restore --confirm"
+      fi
+    else
+      fail "migration failed; original version retained; previous services/data remain available where possible; backup retained at $prebackup; restore it with deploy/wooble restore --confirm"
+    fi
+    ;;
+  *) fail "usage: deploy/wooble {install|up|status|diagnose|backup|restore --confirm BACKUP.dump|update VERSION}" ;;
+esac

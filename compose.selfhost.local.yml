@@ -1,0 +1,7 @@
+services:
+  web:
+    environment:
+      WOOBLE_CADDY_SITE: localhost
+      WOOBLE_CADDY_TLS: "tls internal"
+    ports:
+      - "127.0.0.1:${WOOBLE_HTTP_PORT:?Set WOOBLE_HTTP_PORT}:443"

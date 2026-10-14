@@ -25,9 +25,18 @@ import {
 } from "@wooble/db";
 import { canvasSubtreeIds } from "@wooble/domain";
 import { badRequest, notFound } from "../../lib/http-error";
-import { requireActor, canvasRole, hashToken, newToken, materializeLinkViewer, type Api } from "../../lib/auth";
+import {
+  requireActor,
+  canvasRole,
+  hashToken,
+  newToken,
+  materializeLinkViewer,
+  type Actor,
+  type Api,
+} from "../../lib/auth";
 import { listCanvasEvents, recordCanvasEvent } from "./activity";
-import { applyNextUndo } from "./undo";
+import { applyNextUndo, retryOnLockConflict } from "./undo";
+import { captureDeleteHooks } from "./undo-registry";
 
 const placementColumns = {
   entityId: canvasNodes.entityId,
@@ -149,30 +158,32 @@ export function canvasRoutes(app: Api) {
       .safeParse(context.body);
     if (!params.success || !body.success || !Object.keys(body.data).length)
       return badRequest(context, "Invalid canvas");
-    const [previous] = await db
-      .select({
-        name: canvases.name,
-        description: canvases.description,
-        shareMode: canvases.shareMode,
-      })
-      .from(canvases)
-      .where(eq(canvases.id, params.data.canvasId))
-      .limit(1);
-    const [row] = await db
-      .update(canvases)
-      .set({ ...body.data, updatedAt: new Date() })
-      .where(eq(canvases.id, params.data.canvasId))
-      .returning();
-    if (!row) return notFound(context, "Canvas not found");
-    await recordCanvasEvent(db, {
-      canvasId: row.id,
-      actor: context.actor,
-      action: "canvas.updated",
-      targetType: "canvas",
-      targetId: row.id,
-      targetName: row.name,
-      metadata: { fields: Object.keys(body.data), previous },
+    const row = await db.transaction(async (tx) => {
+      const [before] = await tx
+        .select({ name: canvases.name, description: canvases.description, shareMode: canvases.shareMode })
+        .from(canvases)
+        .where(eq(canvases.id, params.data.canvasId))
+        .for("update")
+        .limit(1);
+      if (!before) return null;
+      const [updated] = await tx
+        .update(canvases)
+        .set({ ...body.data, updatedAt: new Date() })
+        .where(eq(canvases.id, params.data.canvasId))
+        .returning();
+      const fields = Object.keys(body.data) as Array<keyof typeof before>;
+      await recordCanvasEvent(tx, {
+        canvasId: updated.id,
+        actor: context.actor,
+        action: "canvas.updated",
+        targetType: "canvas",
+        targetId: updated.id,
+        targetName: updated.name,
+        metadata: { fields, previous: Object.fromEntries(fields.map((field) => [field, before[field]])) },
+      });
+      return updated;
     });
+    if (!row) return notFound(context, "Canvas not found");
     return { ...row, updatedAt: row.updatedAt.toISOString() };
   });
   app.delete("/api/canvases/:canvasId", async (context) => {
@@ -479,13 +490,14 @@ export function canvasRoutes(app: Api) {
       if (!canvas) return { kind: "not-found" as const };
       if (canvas.updatedAt.toISOString() !== body.data.expectedUpdatedAt) return { kind: "conflict" as const };
 
-      const [currentNodes, currentLinks] = await Promise.all([
-        tx.select(placementColumns).from(canvasNodes).where(eq(canvasNodes.canvasId, canvas.id)),
-        tx
-          .select({ connectionId: canvasConnections.connectionId, bend: canvasConnections.bend })
-          .from(canvasConnections)
-          .where(eq(canvasConnections.canvasId, canvas.id)),
-      ]);
+      const currentNodes = await tx
+        .select(placementColumns)
+        .from(canvasNodes)
+        .where(eq(canvasNodes.canvasId, canvas.id));
+      const currentLinks = await tx
+        .select({ connectionId: canvasConnections.connectionId, bend: canvasConnections.bend })
+        .from(canvasConnections)
+        .where(eq(canvasConnections.canvasId, canvas.id));
       const currentParents = new Map(currentNodes.map((node) => [node.entityId, node.parentEntityId]));
       if (
         currentNodes.length !== body.data.placements.length ||
@@ -571,6 +583,9 @@ export function canvasRoutes(app: Api) {
           and(eq(canvasConnections.canvasId, canvas.id), eq(canvasConnections.connectionId, params.data.connectionId)),
         )
         .limit(1);
+      const hooks = existing
+        ? await captureDeleteHooks(tx, { kind: "connection", ids: [params.data.connectionId] })
+        : {};
       const [removed] = await tx
         .delete(canvasConnections)
         .where(
@@ -600,6 +615,7 @@ export function canvasRoutes(app: Api) {
                 return { ...connection, bend: existing.bend };
               })()
             : null,
+          ...(Object.keys(hooks).length ? { hooks } : {}),
         },
       });
       return { kind: "deleted" as const };
@@ -641,35 +657,28 @@ export function canvasRoutes(app: Api) {
           ),
         );
       const linkIds = affectedLinks.map((item) => item.id);
-      const [subtreeEntities, subtreePlacements, linkRows] = await Promise.all([
-        tx
-          .select({
-            id: entities.id,
-            workspaceId: entities.workspaceId,
-            type: entities.type,
-            name: entities.name,
-            description: entities.description,
-            metadata: entities.metadata,
-          })
-          .from(entities)
-          .where(inArray(entities.id, entityIds)),
-        tx
-          .select(placementColumns)
-          .from(canvasNodes)
-          .where(and(eq(canvasNodes.canvasId, canvas.id), inArray(canvasNodes.entityId, entityIds))),
-        linkIds.length
-          ? tx
-              .select({ connection: connections, bend: canvasConnections.bend })
-              .from(canvasConnections)
-              .innerJoin(connections, eq(canvasConnections.connectionId, connections.id))
-              .where(and(eq(canvasConnections.canvasId, canvas.id), inArray(canvasConnections.connectionId, linkIds)))
-          : Promise.resolve(
-              [] as Array<{
-                connection: typeof connections.$inferSelect;
-                bend: typeof canvasConnections.$inferInsert.bend;
-              }>,
-            ),
-      ]);
+      const subtreeEntities = await tx
+        .select({
+          id: entities.id,
+          workspaceId: entities.workspaceId,
+          type: entities.type,
+          name: entities.name,
+          description: entities.description,
+          metadata: entities.metadata,
+        })
+        .from(entities)
+        .where(inArray(entities.id, entityIds));
+      const subtreePlacements = await tx
+        .select(placementColumns)
+        .from(canvasNodes)
+        .where(and(eq(canvasNodes.canvasId, canvas.id), inArray(canvasNodes.entityId, entityIds)));
+      const linkRows = linkIds.length
+        ? await tx
+            .select({ connection: connections, bend: canvasConnections.bend })
+            .from(canvasConnections)
+            .innerJoin(connections, eq(canvasConnections.connectionId, connections.id))
+            .where(and(eq(canvasConnections.canvasId, canvas.id), inArray(canvasConnections.connectionId, linkIds)))
+        : [];
       const snapshot = {
         entities: subtreeEntities,
         placements: subtreePlacements,
@@ -678,6 +687,8 @@ export function canvasRoutes(app: Api) {
           return { ...rest, bend };
         }),
       };
+      // Hooks snapshot their own data before the rows go away.
+      const hooks = await captureDeleteHooks(tx, { kind: "entity", ids: subtreeEntities.map((item) => item.id) });
       if (linkIds.length)
         await tx
           .delete(canvasConnections)
@@ -713,6 +724,7 @@ export function canvasRoutes(app: Api) {
           removedNodes: entityIds.length,
           removedConnections: linkIds.length,
           snapshot,
+          ...(Object.keys(hooks).length ? { hooks } : {}),
         },
       });
       return { kind: "deleted" as const, removedNodes: entityIds.length, removedConnections: linkIds.length };
@@ -750,10 +762,18 @@ export function canvasRoutes(app: Api) {
         .from(entities)
         .where(inArray(entities.id, [...referencedEntityIds]));
       const entitiesById = new Map(referencedEntities.map((entity) => [entity.id, entity]));
-      if ([...referencedEntityIds].some((entityId) => entitiesById.get(entityId)?.workspaceId !== canvas.workspaceId)) {
+      const existingByEntityId = new Map(existingRows.map((placement) => [placement.entityId, placement]));
+      // Placing an entity on this canvas exposes it to everyone who can read the canvas, and the object write rule then
+      // requires editor access here too. Only someone who can already read the entity may add it. An unreadable entity
+      // gets the same response as a missing one, so the response does not confirm that it exists.
+      const newEntityIds = [...placementEntityIds].filter((entityId) => !existingByEntityId.has(entityId));
+      if (
+        [...referencedEntityIds].some((entityId) => entitiesById.get(entityId)?.workspaceId !== canvas.workspaceId) ||
+        !(await canReadEntities(tx, context.actor, canvas.workspaceId, newEntityIds))
+      ) {
         return {
           kind: "invalid" as const,
-          message: "Placement entities and parents must belong to the canvas workspace",
+          message: "Placement entities and parents must belong to the canvas workspace and be visible to you",
         };
       }
 
@@ -770,7 +790,6 @@ export function canvasRoutes(app: Api) {
         return { kind: "invalid" as const, message: "Parent relationships cannot contain a cycle" };
       }
 
-      const existingByEntityId = new Map(existingRows.map((placement) => [placement.entityId, placement]));
       const changedPlacements = body.data.placements.filter((placement) => {
         const existing = existingByEntityId.get(placement.entityId);
         return (
@@ -829,38 +848,41 @@ export function canvasRoutes(app: Api) {
     const params = canvasIdParamsSchema.safeParse(context.params);
     if (!params.success) return badRequest(context, "Canvas ID must be a UUID");
     const actor = requireActor(context.actor);
-    const result = await db.transaction(async (tx) => {
-      const [canvas] = await tx
-        .select({ id: canvases.id })
-        .from(canvases)
-        .where(eq(canvases.id, params.data.canvasId))
-        .for("update")
-        .limit(1);
-      if (!canvas) return { kind: "not-found" as const };
-      const outcome = await applyNextUndo(tx, canvas.id, actor.id);
-      if (!outcome.undoneEvent && !outcome.skipped.length) return { kind: "nothing" as const };
-      if (!outcome.undoneEvent) {
-        // No-op-only walks are honestly reported as "nothing undone"; only
-        // collaborator conflicts deserve the explicit refusal.
-        if (!outcome.skipped.some((item) => item.reason === "conflict")) return { kind: "nothing" as const };
-        return { kind: "conflict" as const, skipped: outcome.skipped };
-      }
-      await recordCanvasEvent(tx, {
-        canvasId: canvas.id,
-        actor,
-        action: "canvas.undo",
-        targetType: outcome.undoneEvent.targetType,
-        targetId: outcome.undoneEvent.targetId,
-        targetName: outcome.undoneEvent.targetName,
-        metadata: {
-          undoOf: outcome.undoneEvent.id,
-          undoneAction: outcome.undoneEvent.action,
-          skipped: outcome.skipped,
-        },
-      });
-      await tx.update(canvases).set({ updatedAt: new Date() }).where(eq(canvases.id, canvas.id));
-      return { kind: "undone" as const, action: outcome.undoneEvent.action, skipped: outcome.skipped };
-    });
+    // A deadlock or serialization abort reruns the whole transaction (503 if it keeps failing), never a 500.
+    const result = await retryOnLockConflict(() =>
+      db.transaction(async (tx) => {
+        const [canvas] = await tx
+          .select({ id: canvases.id })
+          .from(canvases)
+          .where(eq(canvases.id, params.data.canvasId))
+          .for("update")
+          .limit(1);
+        if (!canvas) return { kind: "not-found" as const };
+        const outcome = await applyNextUndo(tx, canvas.id, actor);
+        if (!outcome.undoneEvent && !outcome.skipped.length) return { kind: "nothing" as const };
+        if (!outcome.undoneEvent) {
+          // No-op-only walks are honestly reported as "nothing undone"; only
+          // collaborator conflicts deserve the explicit refusal.
+          if (!outcome.skipped.some((item) => item.reason === "conflict")) return { kind: "nothing" as const };
+          return { kind: "conflict" as const, skipped: outcome.skipped };
+        }
+        await recordCanvasEvent(tx, {
+          canvasId: canvas.id,
+          actor,
+          action: "canvas.undo",
+          targetType: outcome.undoneEvent.targetType,
+          targetId: outcome.undoneEvent.targetId,
+          targetName: outcome.undoneEvent.targetName,
+          metadata: {
+            undoOf: outcome.undoneEvent.id,
+            undoneAction: outcome.undoneEvent.action,
+            skipped: outcome.skipped,
+          },
+        });
+        await tx.update(canvases).set({ updatedAt: new Date() }).where(eq(canvases.id, canvas.id));
+        return { kind: "undone" as const, action: outcome.undoneEvent.action, skipped: outcome.skipped };
+      }),
+    );
     if (result.kind === "not-found") return notFound(context, "Canvas not found");
     if (result.kind === "nothing") return { undone: false };
     if (result.kind === "conflict") {
@@ -868,12 +890,45 @@ export function canvasRoutes(app: Api) {
       return {
         error: "undo_conflict",
         message:
-          "Your recent changes can't be undone because collaborators changed the same objects since. Nothing was undone.",
+          "Your last changes can't be undone: someone else changed the same objects, or you can no longer edit them. Nothing was undone.",
         skipped: result.skipped,
       };
     }
     return { undone: true, action: result.action, skipped: result.skipped };
   });
+}
+
+type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Whether the actor can read every entity, using the read rule of the entity routes: a workspace manager or system admin,
+ * or a role on (or a link share of) a canvas in the workspace that already shows the entity.
+ */
+async function canReadEntities(
+  tx: Transaction,
+  actor: Actor | null,
+  workspaceId: string,
+  entityIds: string[],
+): Promise<boolean> {
+  if (!entityIds.length) return true;
+  if (!actor) return false;
+  if (actor.systemRole === "admin") return true;
+  // Read through the transaction, not the shared pool: the caller holds a connection and a canvas row lock, so waiting
+  // for a second pooled connection could deadlock once concurrent requests have taken the rest of the pool.
+  const [membership] = await tx
+    .select({ role: workspaceMembers.role })
+    .from(workspaceMembers)
+    .where(and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, actor.id)))
+    .limit(1);
+  if (membership?.role === "manager") return true;
+  const rows = await tx
+    .select({ entityId: canvasNodes.entityId, shareMode: canvases.shareMode, role: canvasMembers.role })
+    .from(canvasNodes)
+    .innerJoin(canvases, eq(canvases.id, canvasNodes.canvasId))
+    .leftJoin(canvasMembers, and(eq(canvasMembers.canvasId, canvases.id), eq(canvasMembers.userId, actor.id)))
+    .where(and(inArray(canvasNodes.entityId, entityIds), eq(canvases.workspaceId, workspaceId)));
+  const readable = new Set(rows.filter((row) => row.role || row.shareMode === "link").map((row) => row.entityId));
+  return entityIds.every((entityId) => readable.has(entityId));
 }
 
 function connectionTitle(

@@ -28,7 +28,25 @@ Run `bun run coverage` to see full-source coverage for the API, web app, and sha
 
 API tests need an isolated PostgreSQL database. See [self-hosting](docs/self-hosting.md) for the database setup and `apps/api/scripts/test-isolated.sh` for the test database workflow. Do not point the isolated test script at a database containing data you want to keep: it recreates its target database.
 
-Canvas browser tests also need a separate, migrated PostgreSQL database and Playwright Chromium. Run `bunx playwright install chromium` once, then run `BROWSER_TEST_DATABASE_URL=<test-database-url> bun run --cwd apps/web test:browser`. The browser test command requires this variable and refuses to reuse an existing API or web server. Its fixtures create fictional users and canvases in the test database and leave them there for inspection; use a disposable database.
+Canvas browser tests also need a separate, migrated PostgreSQL database and Playwright Chromium. Run `bunx playwright install chromium` once, then run `BROWSER_TEST_DATABASE_URL=<test-database-url> bun run --cwd apps/web test:browser`. The browser test command requires this variable and refuses to reuse an existing API or web server. Its fixtures create fictional users and canvases in the test database and leave them there for inspection; use a disposable database. The test API loads no `.env` file: it uses the browser test database, the test web origin, and a raised sign-in attempt limit (`AUTH_ATTEMPT_LIMIT`, refused in production). To use a Chromium build you already have instead of Playwright's download, set `BROWSER_TEST_CHROMIUM` to its executable. Pull requests run the same journeys in the **Browser journeys** CI job, which uploads the Playwright report when a journey fails.
+
+Set `BROWSER_TEST_API_PORT` and `BROWSER_TEST_WEB_PORT` to move a run off the default ports 41311 and 5177, for example when another run already holds them. Nothing in the run can be redirected by a developer's own settings: both servers start without a `.env` file, the web server keeps `VITE_API_URL` empty so it reaches the API Playwright started, the command refuses any database whose name does not contain a test, tests, browser, journey, journeys, or e2e word segment (such as `browser_journeys`) and refuses the development database `architecture_canvas` on any host, and it refuses to start at all when a port is already serving.
+
+Self-host browser login is a separate journey from canvas browser tests. It needs a running disposable self-host Compose stack at an HTTPS origin and Playwright Chromium. For local Caddy TLS, the HTTPS-error override is restricted to loopback:
+
+```sh
+bun run --cwd apps/web playwright install chromium
+SELFHOST_BROWSER_DISPOSABLE=1 \
+  SELFHOST_BROWSER_ORIGIN=https://localhost:18083 \
+  SELFHOST_BROWSER_IGNORE_HTTPS_ERRORS=1 \
+  bun run --cwd apps/web test:selfhost-browser
+```
+
+This test loads the actual static web assets through Caddy, registers a fictional account, checks the browser-created Secure/HttpOnly session cookie, signs out, and logs in again. It does not inject a cookie. API smoke tests that call registration/login directly prove API behavior, not the browser cookie or Caddy journey. Use only fictional data and a disposable stack.
+
+Pull requests touching the application, deployment, Compose, image-check, or self-host scripts are configured to run the **Self-hosted stack** workflow (`.github/workflows/docker.yml`). It builds the source stack with a throwaway environment, checks the API image/build-context backup exclusion and SQL migrations, runs CLI static checks, verifies HTTPS health and that only the web service publishes a loopback port, then exercises API registration/canvas edits/live presence/foreign-Origin rejection, browser login through Caddy, backup and confirmed restore, API restart, and persistence across stop/start. The workflow's configuration is not a passed GitHub run; check the Actions result for the branch/commit. Docker/browser runtime, fresh-host, second-device, domain HTTPS, and multi-architecture results must be reported separately. Never run these checks against an installation with real users because they create fictional accounts and mutate a smoke canvas.
+
+The release workflow is a separate path. Its tag/manual dry-run behavior and architecture results must be read from the actual workflow and GitHub run; do not infer a passing release from CI configuration or a local source build. See [versioning](versioning.md) and [self-hosting](self-hosting.md) for exact image tags, maintainer GHCR package visibility setup, and release limitations.
 
 Biome is the repository linter and formatter. `bun run lint` treats warnings as errors, so CI fails on any lint warning. Run `bun run format` when formatting needs to be applied. CSS formatting is disabled in `biome.json` to preserve the existing stylesheet.
 

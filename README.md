@@ -66,7 +66,7 @@ The database defaults are suitable for local Docker development. To customize th
 
 For a private self-hosted installation with Docker or Bun, follow [the self-hosting guide](docs/self-hosting.md). The setup above is for local development.
 
-To contribute, follow [CONTRIBUTING.md](CONTRIBUTING.md) and the [issue reporting guide](docs/reporting-issues.md). AI-assisted contributors should read the [AI agent guide](docs/ai-agents.md) and [repository guardrails](AGENTS.md). Pull requests run two sequential GitHub Actions jobs: code quality (lint, formatting, typecheck, build), then web and API tests. Each job publishes a result table in the workflow summary.
+To contribute, follow [CONTRIBUTING.md](CONTRIBUTING.md) and the [issue reporting guide](docs/reporting-issues.md). AI-assisted contributors should read the [AI agent guide](docs/ai-agents.md) and [repository guardrails](AGENTS.md). Pull requests run code quality (lint, formatting, typecheck, build) first, then two jobs in parallel: web, shared, and API tests with coverage, and the Playwright browser journeys. Each job publishes a result table in the workflow summary.
 
 | Command | Purpose |
 | --- | --- |
@@ -107,7 +107,7 @@ Email ownership is not verified in this local implementation, and there is no em
 
 The seed creates a separate fictional **Example Engineering** workspace, visible to system admins until they add members. Its **Enterprise Architecture** canvas contains Core Identity and Operations Platform systems, web frontends, API gateways, Go and Rust services, PostgreSQL and SQLite databases, REST and gRPC calls, database connections, and a cross system REST link.
 
-Canvas placement changes are saved through `PUT /api/canvases/:canvasId/placements`. The `GET /api/canvases/:canvasId/graph` response joins the visual placements with shared entities and first class connections. Protocol contracts and database schema details can be edited manually. Automated import and synchronization are future work.
+Canvas placement changes are saved through `PUT /api/canvases/:canvasId/placements`. Placing an entity that is not yet on the canvas requires being able to read it already, through a workspace manager role or a canvas that shows it. The `GET /api/canvases/:canvasId/graph` response joins the visual placements with shared entities and first class connections. Protocol contracts and database schema details can be edited manually. Automated import and synchronization are future work.
 
 ## API routes
 

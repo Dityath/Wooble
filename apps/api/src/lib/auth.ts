@@ -17,6 +17,7 @@ import {
   workspaceMembers,
 } from "@wooble/db";
 import type { ReplyContext } from "./http-error";
+import { isLocalHttpOrigin, isTrustedProxyAddress, parseTrustedProxyCidrs } from "./config";
 import { allowedWebOrigins } from "./web-origins";
 
 const scrypt = promisify(scryptCallback);
@@ -58,15 +59,7 @@ export async function verifyPassword(password: string, stored: string) {
   return timingSafeEqual(actual, derived);
 }
 export function sessionCookie(token: string, maxAge = SESSION_AGE_SECONDS) {
-  const localHttp = process.env.WEB_ORIGIN?.split(",").every((origin) => {
-    try {
-      const url = new URL(origin.trim());
-      return url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
-    } catch {
-      return false;
-    }
-  });
-  const secure = process.env.NODE_ENV === "production" && !localHttp ? "; Secure" : "";
+  const secure = process.env.NODE_ENV === "production" && !allowedWebOrigins.every(isLocalHttpOrigin) ? "; Secure" : "";
   return `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
 }
 export async function createSession(userId: string, reply: ReplyContext) {
@@ -87,31 +80,58 @@ export function clientIp(context: {
   server: { requestIP(request: Request): { address: string } | null } | null;
   request: Request;
 }): string {
-  if (process.env.TRUST_PROXY === "true") {
-    const forwarded = context.request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-    if (forwarded && isIP(forwarded)) return forwarded;
+  const peer = context.server?.requestIP(context.request)?.address ?? "127.0.0.1";
+  if (process.env.TRUST_PROXY !== "true") return peer;
+  let trustedCidrs: string[];
+  try {
+    trustedCidrs = parseTrustedProxyCidrs(process.env.TRUSTED_PROXY_CIDRS ?? "");
+  } catch {
+    return peer;
   }
-  return context.server?.requestIP(context.request)?.address ?? "127.0.0.1";
+  if (!isTrustedProxyAddress(peer, trustedCidrs)) return peer;
+
+  const header = context.request.headers.get("x-forwarded-for");
+  if (!header) return peer;
+  const chain = header.split(",").map((address) => address.trim());
+  if (chain.some((address) => !address || !isIP(address))) return peer;
+
+  let client = peer;
+  for (const address of chain.reverse()) {
+    if (!isTrustedProxyAddress(client, trustedCidrs)) break;
+    client = address;
+  }
+  return client;
 }
-export async function workspaceRole(actor: Actor, workspaceId: string): Promise<"manager" | "member" | null> {
+/** Anything that can run selects: the shared client or a transaction. */
+export type SelectExecutor = Pick<typeof db, "select">;
+
+export async function workspaceRole(
+  actor: Actor,
+  workspaceId: string,
+  executor: SelectExecutor = db,
+): Promise<"manager" | "member" | null> {
   if (actor.systemRole === "admin") return "manager";
-  const [row] = await db
+  const [row] = await executor
     .select({ role: workspaceMembers.role })
     .from(workspaceMembers)
     .where(and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, actor.id)))
     .limit(1);
   return row?.role ?? null;
 }
-export async function canvasRole(actor: Actor, canvasId: string): Promise<"manager" | "editor" | "viewer" | null> {
-  const [canvas] = await db
+export async function canvasRole(
+  actor: Actor,
+  canvasId: string,
+  executor: SelectExecutor = db,
+): Promise<"manager" | "editor" | "viewer" | null> {
+  const [canvas] = await executor
     .select({ workspaceId: canvases.workspaceId, shareMode: canvases.shareMode })
     .from(canvases)
     .where(eq(canvases.id, canvasId))
     .limit(1);
   if (!canvas) return null;
-  const workspace = await workspaceRole(actor, canvas.workspaceId);
+  const workspace = await workspaceRole(actor, canvas.workspaceId, executor);
   if (workspace === "manager") return "manager";
-  const [row] = await db
+  const [row] = await executor
     .select({ role: canvasMembers.role })
     .from(canvasMembers)
     .where(and(eq(canvasMembers.canvasId, canvasId), eq(canvasMembers.userId, actor.id)))
@@ -134,6 +154,91 @@ export async function materializeLinkViewer(actor: Actor, canvasId: string): Pro
   if (existing) return;
   await db.insert(canvasMembers).values({ canvasId, userId: actor.id, role: "viewer" }).onConflictDoNothing();
 }
+
+export type ObjectKind = "entity" | "connection";
+
+/** Whether the canvas shows the entity (placement) or connection (link). */
+export async function objectOnCanvas(kind: ObjectKind, objectId: string, canvasId: string): Promise<boolean> {
+  const [row] =
+    kind === "entity"
+      ? await db
+          .select({ canvasId: canvasNodes.canvasId })
+          .from(canvasNodes)
+          .where(and(eq(canvasNodes.canvasId, canvasId), eq(canvasNodes.entityId, objectId)))
+          .limit(1)
+      : await db
+          .select({ canvasId: canvasConnections.canvasId })
+          .from(canvasConnections)
+          .where(and(eq(canvasConnections.canvasId, canvasId), eq(canvasConnections.connectionId, objectId)))
+          .limit(1);
+  return !!row;
+}
+
+async function linkSharedCanvas(canvasId: string) {
+  const [canvas] = await db
+    .select({ id: canvases.id })
+    .from(canvases)
+    .where(and(eq(canvases.id, canvasId), eq(canvases.shareMode, "link")))
+    .limit(1);
+  return !!canvas;
+}
+
+/**
+ * The access rule for an entity or connection, and for every route nested under it. Workspace
+ * managers (and system admins) may read and write. Otherwise the canvases of the object's workspace
+ * that show it decide: reading needs a role on one of them or one of them shared by link; writing
+ * needs the editor role on all of them. "missing" means the object does not exist.
+ */
+export async function objectAccess(
+  actor: Actor,
+  kind: ObjectKind,
+  objectId: string,
+  mode: "read" | "write",
+  executor: SelectExecutor = db,
+): Promise<"allowed" | "denied" | "missing"> {
+  const [object] =
+    kind === "entity"
+      ? await executor
+          .select({ workspaceId: entities.workspaceId })
+          .from(entities)
+          .where(eq(entities.id, objectId))
+          .limit(1)
+      : await executor
+          .select({ workspaceId: connections.workspaceId })
+          .from(connections)
+          .where(eq(connections.id, objectId))
+          .limit(1);
+  if (!object) return "missing";
+  if ((await workspaceRole(actor, object.workspaceId, executor)) === "manager") return "allowed";
+  const canvasIds = (
+    kind === "entity"
+      ? await executor
+          .select({ canvasId: canvasNodes.canvasId })
+          .from(canvasNodes)
+          .innerJoin(canvases, eq(canvases.id, canvasNodes.canvasId))
+          .where(and(eq(canvasNodes.entityId, objectId), eq(canvases.workspaceId, object.workspaceId)))
+      : await executor
+          .select({ canvasId: canvasConnections.canvasId })
+          .from(canvasConnections)
+          .innerJoin(canvases, eq(canvases.id, canvasConnections.canvasId))
+          .where(and(eq(canvasConnections.connectionId, objectId), eq(canvases.workspaceId, object.workspaceId)))
+  ).map((row) => row.canvasId);
+  if (!canvasIds.length) return "denied";
+  const memberships = await executor
+    .select({ canvasId: canvasMembers.canvasId, role: canvasMembers.role })
+    .from(canvasMembers)
+    .where(and(eq(canvasMembers.userId, actor.id), inArray(canvasMembers.canvasId, canvasIds)));
+  const roles = new Map(memberships.map((row) => [row.canvasId, row.role]));
+  if (mode === "write") return canvasIds.every((id) => roles.get(id) === "editor") ? "allowed" : "denied";
+  if (canvasIds.some((id) => roles.has(id))) return "allowed";
+  const [shared] = await executor
+    .select({ id: canvases.id })
+    .from(canvases)
+    .where(and(inArray(canvases.id, canvasIds), eq(canvases.shareMode, "link")))
+    .limit(1);
+  return shared ? "allowed" : "denied";
+}
+
 const publicCanvasRoutes = new Set([
   "/api/canvases/:canvasId",
   "/api/canvases/:canvasId/graph",
@@ -150,37 +255,75 @@ async function publicReadAllowed(
   if (method !== "GET") return false;
   if (publicCanvasRoutes.has(route)) {
     const parsed = canvasIdParamsSchema.safeParse(params);
-    if (!parsed.success) return false;
-    const [canvas] = await db
-      .select({ id: canvases.id })
-      .from(canvases)
-      .where(and(eq(canvases.id, parsed.data.canvasId), eq(canvases.shareMode, "link")))
-      .limit(1);
-    return !!canvas;
+    return parsed.success && (await linkSharedCanvas(parsed.data.canvasId));
   }
+  // Routes nested under an entity are not public: a new anonymous read needs its own decision.
   if (route !== "/api/entities/:entityId") return false;
   const entity = entityIdParamsSchema.safeParse(params);
   const canvasId = canvasIdQuery ? uuidSchema.safeParse(canvasIdQuery) : null;
   if (!entity.success || !canvasId?.success) return false;
-  const [placement] = await db
-    .select({ entityId: canvasNodes.entityId })
-    .from(canvasNodes)
-    .innerJoin(canvases, eq(canvases.id, canvasNodes.canvasId))
-    .where(
-      and(
-        eq(canvasNodes.canvasId, canvasId.data),
-        eq(canvasNodes.entityId, entity.data.entityId),
-        eq(canvases.shareMode, "link"),
-      ),
-    )
-    .limit(1);
-  return !!placement;
+  return (
+    (await linkSharedCanvas(canvasId.data)) && (await objectOnCanvas("entity", entity.data.entityId, canvasId.data))
+  );
 }
 function unauthorized(message: string): never {
   throw Object.assign(new Error(message), { status: 401 });
 }
 function deny(): never {
   throw Object.assign(new Error("You do not have access to this resource"), { status: 403 });
+}
+
+/**
+ * How `accessGuard` authorizes a registered route:
+ * - auth: sign-in and registration, no session needed.
+ * - profile, invitations: any signed-in user; the handler scopes to the actor or the token.
+ * - admin: system admins only.
+ * - workspaces, canvases: the collection lists or creates the actor's own; a single workspace or
+ *   canvas, and every route nested under it, needs a role on it.
+ * - live: the canvas read rule for the socket upgrade; live.ts checks it again when the socket opens.
+ * - entities, connections: objectAccess, for the object and every route nested under it.
+ * - health: outside /api and unguarded.
+ * An /api route that matches no class is denied, with 403 when signed in and 401 otherwise. A new
+ * route is classified here, and tests/route-access.test.ts lists every registered route's class.
+ */
+export type RouteAccess =
+  | "auth"
+  | "profile"
+  | "invitations"
+  | "admin"
+  | "workspaces"
+  | "canvases"
+  | "live"
+  | "entities"
+  | "connections"
+  | "health";
+
+const exactRouteAccess = new Map<string, RouteAccess>([
+  ["/health", "health"],
+  ["/api/auth/login", "auth"],
+  ["/api/auth/register", "auth"],
+  ["/api/auth/me", "profile"],
+  ["/api/auth/logout", "profile"],
+  ["/api/auth/profile", "profile"],
+  ["/api/auth/password", "profile"],
+  ["/api/invitations/:token", "invitations"],
+  ["/api/invitations/:token/accept", "invitations"],
+  ["/api/workspaces", "workspaces"],
+  ["/api/canvases", "canvases"],
+  ["/api/canvases/:canvasId/live", "live"],
+]);
+const scopedRouteAccess: Array<[string, RouteAccess]> = [
+  ["/api/admin", "admin"],
+  ["/api/workspaces/:workspaceId", "workspaces"],
+  ["/api/canvases/:canvasId", "canvases"],
+  ["/api/entities/:entityId", "entities"],
+  ["/api/connections/:connectionId", "connections"],
+];
+
+export function routeAccess(route: string): RouteAccess | null {
+  const exact = exactRouteAccess.get(route);
+  if (exact) return exact;
+  return scopedRouteAccess.find(([base]) => route === base || route.startsWith(`${base}/`))?.[1] ?? null;
 }
 
 export function accessGuard() {
@@ -223,10 +366,12 @@ export function accessGuard() {
       context.actor = user;
     })
     .onBeforeHandle({ as: "global" }, async (context) => {
-      const requestPath = new URL(context.request.url).pathname;
+      // Decide by the registered route, not the request path, so no spelling of a path can match an
+      // /api route and skip the guard.
       const route = context.route;
-      if (!requestPath.startsWith("/api/")) return;
-      if (route === "/api/auth/login" || route === "/api/auth/register") return;
+      if (!route.startsWith("/api/")) return;
+      const access = routeAccess(route);
+      if (access === "auth") return;
       const actor = context.actor;
       if (!actor) {
         const url = new URL(context.request.url);
@@ -234,113 +379,55 @@ export function accessGuard() {
           return;
         unauthorized("Sign in to continue");
       }
-      if (route.startsWith("/api/auth/") || route.startsWith("/api/invitations/")) return;
-      if (route.startsWith("/api/admin/")) {
-        if (actor.systemRole !== "admin") return deny();
-        return;
-      }
-      if (route === "/api/workspaces" || route === "/api/canvases") return;
-      const isWorkspaceRoute =
-        route === "/api/workspaces/:workspaceId" || route.startsWith("/api/workspaces/:workspaceId/");
-      if (isWorkspaceRoute) {
-        const id = uuidSchema.safeParse(context.params.workspaceId);
-        if (!id.success) return;
-        const role = await workspaceRole(actor, id.data);
-        if (!role || (context.request.method !== "GET" && role !== "manager")) return deny();
-        return;
-      }
-      const isCanvasRoute = route === "/api/canvases/:canvasId" || route.startsWith("/api/canvases/:canvasId/");
-      if (isCanvasRoute) {
-        const parsed = canvasIdParamsSchema.safeParse(context.params);
-        if (!parsed.success) return;
-        const role = await canvasRole(actor, parsed.data.canvasId);
-        const managerOnly =
-          route.includes("/members") ||
-          route.includes("/invitations") ||
-          (route === "/api/canvases/:canvasId" && context.request.method !== "GET");
-        if (!role || (managerOnly && role !== "manager") || (context.request.method !== "GET" && role === "viewer"))
-          return deny();
-        return;
-      }
-      const isEntityRoute = route === "/api/entities/:entityId";
-      const isConnectionRoute = route === "/api/connections/:connectionId";
-      if (isEntityRoute || isConnectionRoute) {
-        let resourceId: string;
-        if (isEntityRoute) {
-          const parsed = entityIdParamsSchema.safeParse(context.params);
-          if (!parsed.success) return;
-          resourceId = parsed.data.entityId;
-        } else {
-          const parsed = connectionIdParamsSchema.safeParse(context.params);
-          if (!parsed.success) return;
-          resourceId = parsed.data.connectionId;
+      const method = context.request.method;
+      // Elysia answers HEAD with the GET handler, so it reads like GET.
+      const reads = method === "GET" || method === "HEAD";
+      // Invalid params identify nothing, so they pass through and the handler answers 400. An entity
+      // or connection that does not exist passes through to the handler's 404. A missing workspace
+      // or canvas is denied like one without a role (admins get the workspace handler's 404).
+      switch (access) {
+        case "profile":
+        case "invitations":
+          return;
+        case "admin":
+          if (actor.systemRole !== "admin") deny();
+          return;
+        case "workspaces": {
+          if (route === "/api/workspaces") return;
+          const id = uuidSchema.safeParse(context.params.workspaceId);
+          if (!id.success) return;
+          const role = await workspaceRole(actor, id.data);
+          if (!role || (!reads && role !== "manager")) deny();
+          return;
         }
-        const [resource] = isEntityRoute
-          ? await db
-              .select({ workspaceId: entities.workspaceId })
-              .from(entities)
-              .where(eq(entities.id, resourceId))
-              .limit(1)
-          : await db
-              .select({ workspaceId: connections.workspaceId })
-              .from(connections)
-              .where(eq(connections.id, resourceId))
-              .limit(1);
-        if (!resource) return;
-        if ((await workspaceRole(actor, resource.workspaceId)) === "manager") return;
-        const rows = isEntityRoute
-          ? await db
-              .select({ canvasId: canvasNodes.canvasId })
-              .from(canvasNodes)
-              .innerJoin(canvases, eq(canvases.id, canvasNodes.canvasId))
-              .where(and(eq(canvasNodes.entityId, resourceId), eq(canvases.workspaceId, resource.workspaceId)))
-          : await db
-              .select({ canvasId: canvasConnections.canvasId })
-              .from(canvasConnections)
-              .innerJoin(canvases, eq(canvases.id, canvasConnections.canvasId))
-              .where(
-                and(eq(canvasConnections.connectionId, resourceId), eq(canvases.workspaceId, resource.workspaceId)),
-              );
-        if (!rows.length) return deny();
-        const memberships = await db
-          .select({ canvasId: canvasMembers.canvasId, role: canvasMembers.role })
-          .from(canvasMembers)
-          .where(
-            and(
-              eq(canvasMembers.userId, actor.id),
-              inArray(
-                canvasMembers.canvasId,
-                rows.map((row) => row.canvasId),
-              ),
-            ),
-          );
-        const roles = new Map(memberships.map((row) => [row.canvasId, row.role]));
-        const linkSharedCanvasIds =
-          context.request.method === "GET"
-            ? new Set(
-                (
-                  await db
-                    .select({ id: canvases.id })
-                    .from(canvases)
-                    .where(
-                      and(
-                        inArray(
-                          canvases.id,
-                          rows.map((row) => row.canvasId),
-                        ),
-                        eq(canvases.shareMode, "link"),
-                      ),
-                    )
-                ).map((row) => row.id),
-              )
-            : new Set<string>();
-        if (
-          context.request.method === "GET"
-            ? !rows.some((row) => roles.has(row.canvasId) || linkSharedCanvasIds.has(row.canvasId))
-            : rows.some((row) => roles.get(row.canvasId) !== "editor")
-        )
-          return deny();
-        return;
+        case "canvases":
+        case "live": {
+          if (route === "/api/canvases") return;
+          const parsed = canvasIdParamsSchema.safeParse(context.params);
+          if (!parsed.success) return;
+          const role = await canvasRole(actor, parsed.data.canvasId);
+          const managerOnly =
+            route.includes("/members") ||
+            route.includes("/invitations") ||
+            (route === "/api/canvases/:canvasId" && !reads);
+          if (!role || (managerOnly && role !== "manager") || (!reads && role === "viewer")) deny();
+          return;
+        }
+        case "entities":
+        case "connections": {
+          const parsed =
+            access === "entities"
+              ? entityIdParamsSchema.safeParse(context.params)
+              : connectionIdParamsSchema.safeParse(context.params);
+          if (!parsed.success) return;
+          const id = "entityId" in parsed.data ? parsed.data.entityId : parsed.data.connectionId;
+          const kind = access === "entities" ? "entity" : "connection";
+          if ((await objectAccess(actor, kind, id, reads ? "read" : "write")) === "denied") deny();
+          return;
+        }
+        default:
+          // No access class: deny until the route is classified in routeAccess.
+          deny();
       }
     });
 }

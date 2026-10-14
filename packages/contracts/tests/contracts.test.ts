@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   autoNeatCanvasSchema,
   canvasActivityQuerySchema,
+  canvasEventSchema,
   createCanvasConnectionSchema,
   createCanvasEntitySchema,
   createCanvasSchema,
@@ -111,6 +112,30 @@ describe("canvas contracts", () => {
     expect(canvasActivityQuerySchema.parse({ limit: "200" })).toEqual({ limit: 200 });
     expect(canvasActivityQuerySchema.safeParse({ limit: "0" }).success).toBe(false);
     expect(canvasActivityQuerySchema.safeParse({ limit: "201" }).success).toBe(false);
+  });
+});
+
+describe("canvas event contract", () => {
+  const event = {
+    id: first,
+    actorUserId: null,
+    actorName: "Ada",
+    action: "entity.updated",
+    targetType: "entity",
+    targetId: second,
+    targetName: "Orders API",
+    undoneAt: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+
+  it("accepts redacted display metadata", () => {
+    const metadata = { fields: ["name", "metadata"], type: "rest", nodes: 3, flag: true, undoOf: null };
+    expect(canvasEventSchema.parse({ ...event, metadata }).metadata).toEqual(metadata);
+  });
+
+  it("rejects metadata that carries objects or mixed lists", () => {
+    expect(canvasEventSchema.safeParse({ ...event, metadata: { previous: { name: "Old" } } }).success).toBe(false);
+    expect(canvasEventSchema.safeParse({ ...event, metadata: { fields: ["name", 1] } }).success).toBe(false);
   });
 });
 

@@ -38,6 +38,7 @@ import { AppShell } from "../../components/app-shell";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogTitle,
   Button,
   Tooltip,
@@ -50,6 +51,7 @@ import { connectionTitle } from "../../lib/connection-title";
 import { useEditorStore } from "../../stores/editor-store";
 import { InspectorPanel } from "../inspector/inspector-panel";
 import { ContractPreview } from "../inspector/contract-editor";
+import { MarkdownContent } from "../inspector/rich-documentation";
 import type { ArchitectureFlowEdge } from "./architecture-edge";
 import { ConnectorEditContext } from "./connector-edit-context";
 import { edgeTypes } from "./edge-types";
@@ -351,6 +353,17 @@ function CanvasViewer({
             {selectedConnection && (
               <ContractPreview value={selectedConnection.metadata.contractBody ?? ""} kind={selectedConnection.type} />
             )}
+            {selectedConnection && (
+              // Connections have no read-only details page, so their documentation is shown here.
+              <section className="viewer-documentation" aria-label="Connection documentation">
+                <h3>Documentation</h3>
+                {selectedConnection.metadata.documentation ? (
+                  <MarkdownContent value={selectedConnection.metadata.documentation} />
+                ) : (
+                  <p className="rich-empty">No documentation yet.</p>
+                )}
+              </section>
+            )}
             {selectedEntity && (
               <Button
                 size="sm"
@@ -398,6 +411,18 @@ function CanvasEditor({
   const [undoNotice, setUndoNotice] = useState<string | null>(null);
   const [deleteRequest, setDeleteRequest] = useState<{ serial: number } | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [documentationUnsaved, setDocumentationUnsaved] = useState(false);
+  const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
+  // Set while the confirm closes because the user chose "Close anyway", so focus is left to Radix's trigger restore.
+  const closingAnywayRef = useRef(false);
+  // A confirm left open when the documentation was saved must not pop up again on the next keystroke.
+  useEffect(() => {
+    if (!documentationUnsaved) setCloseConfirmOpen(false);
+  }, [documentationUnsaved]);
+  const keepEditingRef = useRef<HTMLButtonElement>(null);
+  const detailsDialogRef = useRef<HTMLDivElement>(null);
+  // The control that opened the details. The dialog is opened programmatically, so Radix has no trigger to restore to.
+  const detailsOpenerRef = useRef<HTMLElement | null>(null);
   const [detailSection, setDetailSection] = useState<"overview" | "documentation" | "schema" | "contract">("overview");
   const [activityOpen, setActivityOpen] = useState(false);
   const queryClient = useQueryClient();
@@ -669,12 +694,18 @@ function CanvasEditor({
     [setConnectionSelected, tool],
   );
   const clearSelection = useCallback(() => {
+    // Defensive: the modal details dialog and the shortcut resolver (which ignores keys while details are open) make
+    // this unreachable with unsaved documentation, but if it ever happens the same close guard applies.
+    if (detailsOpen && documentationUnsaved) {
+      setCloseConfirmOpen(true);
+      return;
+    }
     setEntitySelected(null);
     setConnectionSelected(null);
     setNodes((current) => current.map((node) => (node.selected ? { ...node, selected: false } : node)));
     setEdges((current) => current.map((edge) => (edge.selected ? { ...edge, selected: false } : edge)));
     setDetailsOpen(false);
-  }, [setConnectionSelected, setEdges, setEntitySelected, setNodes]);
+  }, [detailsOpen, documentationUnsaved, setConnectionSelected, setEdges, setEntitySelected, setNodes]);
 
   const handleActivityOpenChange = useCallback(
     (open: boolean) => {
@@ -1060,16 +1091,43 @@ function CanvasEditor({
             canvasId={canvasId}
             deleteRequest={deleteRequest}
             onOpenDetails={(section) => {
+              const active = document.activeElement;
+              detailsOpenerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
               setDetailSection(section);
               setDetailsOpen(true);
             }}
           />
         )}
       </div>
-      <Dialog open={detailsOpen && Boolean(selectedEntityId || selectedConnectionId)} onOpenChange={setDetailsOpen}>
+      <Dialog
+        open={detailsOpen && Boolean(selectedEntityId || selectedConnectionId)}
+        onOpenChange={(open) => {
+          if (!open && documentationUnsaved) {
+            setCloseConfirmOpen(true);
+            return;
+          }
+          setDetailsOpen(open);
+        }}
+      >
         <DialogContent
+          ref={detailsDialogRef}
           className="canvas-details-dialog"
           aria-describedby={undefined}
+          onCloseAutoFocus={(event) => {
+            // Back to the control that opened the details; never <body>.
+            event.preventDefault();
+            const opener = detailsOpenerRef.current;
+            detailsOpenerRef.current = null;
+            if (opener?.isConnected) {
+              opener.focus();
+              return;
+            }
+            const fallback =
+              document.querySelector<HTMLElement>(".react-flow__node.selected") ??
+              document.querySelector<HTMLElement>(".react-flow__pane") ??
+              document.querySelector<HTMLElement>(".react-flow");
+            fallback?.focus();
+          }}
           onEscapeKeyDown={(event) => {
             if (
               document.activeElement instanceof Element &&
@@ -1088,8 +1146,53 @@ function CanvasEditor({
               mode="details"
               detailSection={detailSection}
               onSelectDetailSection={setDetailSection}
+              onUnsavedDocumentationChange={setDocumentationUnsaved}
             />
           )}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={closeConfirmOpen && documentationUnsaved} onOpenChange={setCloseConfirmOpen}>
+        <DialogContent
+          className="inspector-delete-dialog"
+          role="alertdialog"
+          aria-describedby="close-unsaved-description"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            keepEditingRef.current?.focus();
+          }}
+          onCloseAutoFocus={(event) => {
+            // Only when the details dialog stays open (Keep editing, Escape): back into its editor. "Close anyway"
+            // closes everything, so focus is left to Radix to restore to the trigger.
+            if (closingAnywayRef.current) {
+              closingAnywayRef.current = false;
+              return;
+            }
+            const details = detailsDialogRef.current;
+            if (!details) return;
+            event.preventDefault();
+            (details.querySelector<HTMLElement>("[contenteditable='true']") ?? details).focus();
+          }}
+        >
+          <DialogTitle>Close with unsaved documentation?</DialogTitle>
+          <DialogDescription id="close-unsaved-description">
+            Your changes are not saved yet. Wooble keeps trying to save them; if that is not possible, the text is kept
+            on this device and offered again when you reopen this item's documentation.
+          </DialogDescription>
+          <div className="inspector-delete-actions">
+            <Button ref={keepEditingRef} variant="secondary" onClick={() => setCloseConfirmOpen(false)}>
+              Keep editing
+            </Button>
+            <Button
+              onClick={() => {
+                closingAnywayRef.current = true;
+                setCloseConfirmOpen(false);
+                setDocumentationUnsaved(false);
+                setDetailsOpen(false);
+              }}
+            >
+              Close anyway
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

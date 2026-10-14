@@ -1,19 +1,32 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { screen, waitFor } from "@testing-library/react";
 import { FakeApi, failWith } from "./support/fake-api";
 import { canvasSummary, ids, user, workspace } from "./support/fixtures";
 import { renderRoute } from "./support/render";
+import {
+  draftKey,
+  readDraft,
+  resumeDocumentationDrafts,
+  suspendDocumentationDrafts,
+  writeDraft,
+} from "../src/features/inspector/documentation/drafts";
 
 let server: FakeApi;
 
 beforeEach(() => {
+  localStorage.clear();
+  resumeDocumentationDrafts();
   server = new FakeApi()
     .install()
     .on("GET /api/auth/me", user())
     .on("GET /api/workspaces", [workspace()])
     .on("GET /api/canvases", [canvasSummary()]);
 });
-afterEach(() => server.restore());
+afterEach(() => {
+  server.restore();
+  localStorage.clear();
+  resumeDocumentationDrafts();
+});
 
 describe("profile", () => {
   it("renames the account and confirms the update", async () => {
@@ -187,5 +200,74 @@ describe("invitations", () => {
     const { user: actor } = await renderRoute("/invite/used");
     await actor.click(await screen.findByRole("button", { name: /Accept invitation/ }));
     expect((await screen.findByRole("alert")).textContent).toBe("Invitation already used");
+  });
+});
+
+describe("draft lifecycle tied to the session", () => {
+  const expired = JSON.stringify({ markdown: "stale", savedAt: Date.now() - 8 * 24 * 60 * 60 * 1000 });
+  const draftKeys = () => Object.keys(localStorage).filter((key) => key.startsWith("wooble:draft:"));
+
+  it("resumes drafts and sweeps other users' and expired drafts when the app loads signed in", async () => {
+    suspendDocumentationDrafts();
+    writeDraft(ids.otherUser, "entity", ids.service, "ignored while suspended");
+    localStorage.setItem(
+      draftKey(ids.otherUser, "entity", ids.service),
+      JSON.stringify({ markdown: "Grace", savedAt: Date.now() }),
+    );
+    localStorage.setItem(draftKey(ids.user, "entity", ids.database), expired);
+    localStorage.setItem(
+      draftKey(ids.user, "entity", ids.service),
+      JSON.stringify({ markdown: "Mine", savedAt: Date.now() }),
+    );
+
+    await renderRoute("/profile");
+    await screen.findByRole("heading", { name: "Personal details" });
+
+    await waitFor(() => expect(readDraft(ids.user, "entity", ids.service)?.markdown).toBe("Mine"));
+    expect(draftKeys()).toEqual([draftKey(ids.user, "entity", ids.service)]);
+    writeDraft(ids.user, "entity", ids.database, "writable again");
+    expect(readDraft(ids.user, "entity", ids.database)?.markdown).toBe("writable again");
+  });
+
+  it("resumes drafts and sweeps the previous person's drafts when someone signs in", async () => {
+    const assign = spyOn(window.location, "assign").mockImplementation(() => {});
+    try {
+      server.on("GET /api/auth/me", failWith(401, "Unauthorized")).on("POST /api/auth/login", user());
+      suspendDocumentationDrafts();
+      localStorage.setItem(
+        draftKey(ids.otherUser, "entity", ids.service),
+        JSON.stringify({ markdown: "Grace", savedAt: Date.now() }),
+      );
+      const { user: actor } = await renderRoute("/login");
+      await actor.type(await screen.findByLabelText("Email"), "ada@example.test");
+      await actor.type(screen.getByLabelText("Password"), "correct horse battery");
+      await actor.click(screen.getByRole("button", { name: /sign in/i }));
+      await waitFor(() => expect(assign).toHaveBeenCalled());
+
+      expect(draftKeys()).toEqual([]);
+      writeDraft(ids.user, "entity", ids.service, "Mine");
+      expect(readDraft(ids.user, "entity", ids.service)?.markdown).toBe("Mine");
+    } finally {
+      assign.mockRestore();
+    }
+  });
+
+  it("suspends drafts after a password change, so a late write cannot bring them back", async () => {
+    server.on("PUT /api/auth/password", () => {
+      // Once the password changed, the session is gone, as on the real server.
+      server.on("GET /api/auth/me", failWith(401, "Unauthorized"));
+      return { ok: true };
+    });
+    writeDraft(ids.user, "entity", ids.service, "Unsaved");
+    const { user: actor, router } = await renderRoute("/profile");
+    await actor.click(await screen.findByRole("button", { name: /Change password/ }));
+    await actor.type(screen.getByLabelText("Current password"), "old-password");
+    await actor.type(screen.getByLabelText("New password"), "a-new-long-password");
+    await actor.click(screen.getAllByRole("button", { name: "Change password" }).at(-1) as HTMLElement);
+    await waitFor(() => expect(router.state.location.pathname).toBe("/login"));
+
+    expect(draftKeys()).toEqual([]);
+    writeDraft(ids.user, "entity", ids.service, "late write from an unmounting editor");
+    expect(draftKeys()).toEqual([]);
   });
 });

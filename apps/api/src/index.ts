@@ -1,6 +1,16 @@
-import { createApp } from "./app";
-import { stopLiveServer } from "./lib/live";
-import { pool } from "@wooble/db";
+import { runtimeConfigErrors } from "./lib/config";
+
+// Check the configuration before importing the app, whose modules read it as they load.
+const configErrors = runtimeConfigErrors(process.env);
+if (configErrors.length) {
+  console.error(
+    `The Wooble API cannot start because its configuration is invalid:\n${configErrors.map((error) => `- ${error}`).join("\n")}`,
+  );
+  process.exit(1);
+}
+const { createApp } = await import("./app");
+const { stopLiveServer } = await import("./lib/live");
+const { pool } = await import("@wooble/db");
 
 const app = await createApp();
 const port = Number(process.env.API_PORT ?? 3001);

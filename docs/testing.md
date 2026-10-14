@@ -6,9 +6,40 @@ Wooble has three test suites, and each one runs with Bun:
 | --- | --- | --- |
 | Web | `bun run test:web` (`apps/web/tests`) | Nothing extra; a happy-dom DOM is preloaded |
 | Shared runtime | `packages/*/tests` | Nothing extra |
-| API | `apps/api/tests` | An isolated, migrated PostgreSQL database in `DATABASE_URL` |
+| API | `apps/api/tests` | An isolated, migrated PostgreSQL database in `DATABASE_URL`, whose user can create databases (for the upgrade test) |
 
-Canvas browser journeys run separately with Playwright; see [CONTRIBUTING.md](../CONTRIBUTING.md#local-checks).
+Canvas browser journeys (`apps/web/e2e`) run with Playwright against a real API, web server, and PostgreSQL database; see [CONTRIBUTING.md](../CONTRIBUTING.md#local-checks). CI runs them in the **Browser journeys** job after code quality, in parallel with the test suites.
+
+```sh
+# Locally, against a disposable, migrated database and away from any busy dev port.
+BROWSER_TEST_DATABASE_URL=<test-database-url> \
+  BROWSER_TEST_API_PORT=41311 BROWSER_TEST_WEB_PORT=5177 \
+  bun run --cwd apps/web test:browser
+```
+
+Playwright starts both servers itself, so nothing in the run can be redirected by a developer's own settings. Neither server loads a `.env` file, the web server keeps `VITE_API_URL` empty so the journeys reach the API Playwright started, the command refuses any database whose name lacks a test, tests, browser, journey, journeys, or e2e word segment (such as `browser_journeys`) and refuses the development database `architecture_canvas` on any host, and it fails rather than reuse a server already holding a port. `apps/api/scripts/test-isolated.sh` shows how to create and migrate the throwaway database this needs.
+
+The self-host browser journey (`apps/web/e2e/selfhost-install.pw.ts`) also runs separately with Playwright; see [CONTRIBUTING.md](../CONTRIBUTING.md#local-checks). API smoke tests and browser login tests prove different things: only the browser journey verifies the real web assets, browser-managed Secure/HttpOnly cookies, and login through Caddy.
+
+## Self-host stack checks
+
+`scripts/selfhost-cli-check.ts` performs static safety checks on `deploy/wooble`. `scripts/selfhost-image-check.ts` requires Docker and creates a fictional backup sentinel to check that it is excluded from the build context and final API image while checked-in SQL migrations remain present. The script removes only its own sentinel and temporary image.
+
+The Self-hosted stack GitHub Actions workflow (`.github/workflows/docker.yml`) is configured to build a disposable source stack, verify its published ports and health, run API registration/canvas/WebSocket/Origin smoke, exercise browser login and static assets through local Caddy HTTPS, and rehearse backup/restore using fictional content. It then tests restart and persistence. Workflow configuration is not evidence of a completed GitHub Actions run; report the run URL/status and each phase result when it has actually run. Do not use these commands against a real installation or real account data.
+
+To run the browser-specific journey against a disposable local Compose stack, start a stack using a supported HTTPS origin (for example `https://localhost:18083`), install Playwright's Chromium once, then run:
+
+```sh
+bun run --cwd apps/web playwright install chromium
+SELFHOST_BROWSER_DISPOSABLE=1 \
+  SELFHOST_BROWSER_ORIGIN=https://localhost:18083 \
+  SELFHOST_BROWSER_IGNORE_HTTPS_ERRORS=1 \
+  bun run --cwd apps/web test:selfhost-browser
+```
+
+`SELFHOST_BROWSER_IGNORE_HTTPS_ERRORS=1` is permitted only for loopback origins and a disposable stack using Caddy's local certificate. It does not turn off HTTPS or alter cookie policy. For a trusted certificate or a controlled domain, omit that option. The browser test creates one fictional registration, signs out, logs in again, checks static assets, and inspects the browser-set cookie attributes; it never injects a cookie. A successful API smoke test does not replace this browser test.
+
+At this documentation checkpoint Docker/browser execution for the local self-host stack has not been available, and the new GitHub workflow has not been run. This section describes configured checks, not passed results.
 
 ## Writing web tests
 
@@ -31,6 +62,32 @@ happy-dom does no layout, so the preload reports inline pixel sizes for elements
 ## Writing API tests
 
 API tests call the Elysia app in process against the isolated database. `apiClient()` in `apps/api/tests/support/client.ts` registers fictional accounts with unique emails, promotes admins, and creates canvases, nodes, connections, and invitations. Registration and login share a per-IP rate limit across the suite, so call `resetLoginAttempts()` before each test that signs people in. Cover the permission matrix for a route: managers, editors, viewers, link visitors, outsiders, signed-out requests, and system admins where they differ.
+
+A new route needs an access class in `routeAccess` (`apps/api/src/lib/auth.ts`) and an entry in the route list in `apps/api/tests/route-access.test.ts`; that test fails for any registered route missing from the list. To test a guard rule before a real route uses it, register a probe route with `apiClient({ configure })`.
+
+Live-socket tests that use the raw client (`apps/api/tests/support/raw-websocket.ts`) prove frame isolation for a peer that never answers a close frame, not detach-before-close ordering: on Bun 1.3.14 the server's close handler runs synchronously inside `ws.close()`, so the two cannot be told apart. The terminate fallback timer is not observed by any test and is unverified.
+
+## Database migrations and upgrades
+
+Each release must upgrade from the previous one without losing content. Two checks guard this:
+
+- `packages/db/tests/migrations.test.ts` runs without a database. It checks that the journal in `packages/db/drizzle/meta/_journal.json` is numbered contiguously, that its `when` timestamps strictly increase, that every entry has exactly one SQL file, and that migrations shipped in a release still match their recorded SHA-256. Drizzle applies a migration only when its timestamp is newer than the last one applied, so an out-of-order timestamp would be skipped silently on upgraded installations.
+- `apps/api/tests/migration-upgrade.test.ts` creates a scratch database beside the API test database (see below). It migrates only up to the last migration of `v0.1.0`, writes fictional content through that schema (documentation, schema SQL, contract bodies, a node shown on two canvases, canvas events), applies the remaining migrations, and checks that the content is unchanged and that every journal entry ran. `apps/api/tests/support/migrations.ts` builds a temporary copy of the migrations folder for the partial run; checked-in files are never edited.
+
+`scratchDatabase()` in `apps/api/tests/support/migrations.ts` creates one scratch database per run. The name is `wooble_p1_1_<test database>_<suffix>_<random token>`, cut to PostgreSQL's 63-byte identifier limit, because PostgreSQL would otherwise truncate a longer name with only a notice. It retries with a new name only when `CREATE DATABASE` reports a duplicate (SQLSTATE `42P04`); any other error fails the run. The handle it returns drops only the database that call created, never one it did not create, and it never terminates other sessions. Each statement runs on its own short-lived connection to the `postgres` database, and the test closes its own connections before it drops, so a drop does not meet the harness's own sessions. The drop has no `FORCE`, so it fails while another session is still connected to the scratch database, and it can be retried after that session closes. Parallel runs and agents can therefore share one PostgreSQL instance. If a run is killed, its database stays behind; the `wooble_p1_1_` prefix makes it recognisable in `pg_database`.
+
+The `DATABASE_URL` user needs the `CREATEDB` privilege on a disposable instance. Never use the production app user for tests.
+
+Run API tests with `bun run test` (which runs `bun test ./tests/`) or `bun test tests/*.test.ts` from `apps/api`. A bare `bun test`, or a substring filter such as `tests`, also picks up the ignored `apps/api/dist/tests` build output.
+
+`apps/api/scripts/test-isolated.sh` does not work this way. It uses a fixed default database name (`architecture_canvas_test`, overridable with `TEST_DB_NAME`) and recreates it with `DROP DATABASE IF EXISTS ... WITH (FORCE)`, which ends any session connected to it. Two runs against the same instance and name drop each other's database, so give each run its own `TEST_DB_NAME` or instance.
+
+When a branch adds a migration:
+
+1. Generate the schema migration with `drizzle-kit generate`. If `main` gains another migration first, regenerate yours after merging `main` so it gets the next number and a newer timestamp. Never edit a migration that has been released or merged.
+2. Keep hand-written data changes, such as copying existing values into a new table, in a separate custom migration (`drizzle-kit generate --custom`) that is never regenerated. Regenerating the schema migration would otherwise drop them.
+3. Extend the upgrade test's seed and snapshot when the migration converts existing content, and assert the converted values.
+4. When a release is tagged, add its migrations to the `released` hashes and, for the next release, add an upgrade case from that release.
 
 ## Running coverage locally
 
