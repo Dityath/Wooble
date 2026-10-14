@@ -5,6 +5,12 @@ import { ChevronDown, ChevronRight, Layers3, LogOut, Menu, Plus, Settings2, Shar
 import type { ArchitectureEntity } from "@wooble/domain";
 import { CanvasShareDialog } from "../features/workspace/canvas-share-dialog";
 import { EntityKindIcon } from "../features/canvas/architecture-nodes";
+import {
+  clearAllDocumentationDrafts,
+  pruneDocumentationDrafts,
+  resumeDocumentationDrafts,
+  suspendDocumentationDrafts,
+} from "../features/inspector/documentation/drafts";
 import { api, type CanvasGraph } from "../lib/api";
 import { useAppearance } from "../lib/use-appearance";
 import { Separator } from "./ui";
@@ -30,6 +36,14 @@ export function AppShell({
 }) {
   const meQuery = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
   const me = meQuery.data;
+  const meId = me?.id;
+  useEffect(() => {
+    // A signed-in app load (including a reload after sign-in) must have drafts on, and a shared browser must not keep
+    // other people's or expired drafts.
+    if (!meId) return;
+    resumeDocumentationDrafts();
+    pruneDocumentationDrafts(meId);
+  }, [meId]);
   const guest = !!canvasId && !me;
   const { data: canvases = [] } = useQuery({
     queryKey: ["canvases"],
@@ -133,6 +147,9 @@ export function AppShell({
               setSignOutError("");
               try {
                 await api.logout();
+                // Suspended first, so an editor still mounted cannot write its text back after the purge.
+                suspendDocumentationDrafts();
+                clearAllDocumentationDrafts();
                 queryClient.clear();
                 setOpenMenu(null);
                 await navigate({ to: "/login" });

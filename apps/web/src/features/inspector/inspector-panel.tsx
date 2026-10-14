@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowDownLeft,
   ArrowLeft,
@@ -101,6 +101,29 @@ function TechnologyStackTags({ entity }: { entity: ArchitectureEntity }) {
   );
 }
 
+/**
+ * The user id to key local documentation drafts under, or undefined when drafts must not be
+ * read, written or offered: identity or access still loading/failed, or the role cannot write.
+ * The API lets a workspace manager (reported as "manager") and a canvas "editor" PATCH
+ * documentation; a "viewer" (including link guests) can not.
+ */
+function useDocumentationDraftUserId(canvasId: string): string | undefined {
+  const meQuery = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
+  const accessQuery = useQuery({
+    queryKey: ["canvas-access", canvasId],
+    queryFn: () => api.canvasAccess(canvasId),
+    // Other observers (the shell, the canvas page) have usually fetched this key within `staleTime`. This observer must
+    // still fetch on its own mount, or `isFetchedAfterMount` would never turn true and no draft would be kept.
+    refetchOnMount: "always",
+  });
+  // A cached "editor" may be stale: access could have been revoked since it was fetched. Drafts are enabled only for a
+  // result fetched after this mount and not being refetched (e.g. after a revocation invalidation).
+  const accessSettled = accessQuery.isSuccess && accessQuery.isFetchedAfterMount && !accessQuery.isFetching;
+  const role = accessSettled ? accessQuery.data.role : undefined;
+  if (!meQuery.isSuccess || !meQuery.data?.id) return undefined;
+  return role === "editor" || role === "manager" ? meQuery.data.id : undefined;
+}
+
 export function InspectorPanel({
   graph,
   canvasId,
@@ -109,6 +132,7 @@ export function InspectorPanel({
   mode = "overview",
   detailSection = "overview",
   onSelectDetailSection,
+  onUnsavedDocumentationChange,
 }: {
   graph: CanvasGraph;
   canvasId: string;
@@ -118,6 +142,8 @@ export function InspectorPanel({
   mode?: "overview" | "details";
   detailSection?: DetailSection;
   onSelectDetailSection?: (section: DetailSection) => void;
+  /** Reports whether the documentation editor holds unsaved, in-flight, failed or over-limit text. */
+  onUnsavedDocumentationChange?: (unsaved: boolean) => void;
 }) {
   const selectedEntityId = useEditorStore((state) => state.selectedEntityId);
   const selectedConnectionId = useEditorStore((state) => state.selectedConnectionId);
@@ -219,6 +245,7 @@ export function InspectorPanel({
               canvasId={canvasId}
               section={detailSection}
               onSelect={onSelectDetailSection}
+              onUnsavedDocumentationChange={onUnsavedDocumentationChange}
             />
           )}
         </div>
@@ -242,6 +269,7 @@ export function InspectorPanel({
               canvasId={canvasId}
               section={detailSection}
               onSelect={onSelectDetailSection}
+              onUnsavedDocumentationChange={onUnsavedDocumentationChange}
             />
           )}
         </div>
@@ -1255,14 +1283,17 @@ function EntityDetailContent({
   canvasId,
   section,
   onSelect,
+  onUnsavedDocumentationChange,
 }: {
   entity: ArchitectureEntity;
   graph: CanvasGraph;
   canvasId: string;
   section: DetailSection;
   onSelect?: (section: DetailSection) => void;
+  onUnsavedDocumentationChange?: (unsaved: boolean) => void;
 }) {
   const queryClient = useQueryClient();
+  const draftUserId = useDocumentationDraftUserId(canvasId);
   return (
     <div className="detail-page">
       <div className="detail-page-intro">
@@ -1335,6 +1366,8 @@ function EntityDetailContent({
           )}
           {section === "documentation" && (
             <RichDocumentation
+              draft={draftUserId ? { userId: draftUserId, kind: "entity", objectId: entity.id } : undefined}
+              onUnsavedChange={onUnsavedDocumentationChange}
               value={entity.metadata.documentation ?? ""}
               onSave={async (value) => {
                 await api.updateEntity(entity.id, { metadata: { documentation: value || null } });
@@ -1354,14 +1387,17 @@ function ConnectionDetailContent({
   canvasId,
   section,
   onSelect,
+  onUnsavedDocumentationChange,
 }: {
   connection: ArchitectureConnection;
   entities: Map<string, ArchitectureEntity>;
   canvasId: string;
   section: DetailSection;
   onSelect?: (section: DetailSection) => void;
+  onUnsavedDocumentationChange?: (unsaved: boolean) => void;
 }) {
   const queryClient = useQueryClient();
+  const draftUserId = useDocumentationDraftUserId(canvasId);
   return (
     <div className="detail-page">
       <div className="detail-page-intro">
@@ -1428,6 +1464,8 @@ function ConnectionDetailContent({
           )}
           {section === "documentation" && (
             <RichDocumentation
+              draft={draftUserId ? { userId: draftUserId, kind: "connection", objectId: connection.id } : undefined}
+              onUnsavedChange={onUnsavedDocumentationChange}
               value={connection.metadata.documentation ?? ""}
               onSave={async (value) => {
                 await api.updateConnection(connection.id, { metadata: { documentation: value || null } });

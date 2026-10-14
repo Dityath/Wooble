@@ -8,7 +8,16 @@ Wooble has three test suites, and each one runs with Bun:
 | Shared runtime | `packages/*/tests` | Nothing extra |
 | API | `apps/api/tests` | An isolated, migrated PostgreSQL database in `DATABASE_URL`, whose user can create databases (for the upgrade test) |
 
-Canvas browser journeys run separately with Playwright; see [CONTRIBUTING.md](../CONTRIBUTING.md#local-checks).
+Canvas browser journeys (`apps/web/e2e`) run with Playwright against a real API, web server, and PostgreSQL database; see [CONTRIBUTING.md](../CONTRIBUTING.md#local-checks). CI runs them in the **Browser journeys** job after code quality, in parallel with the test suites.
+
+```sh
+# Locally, against a disposable, migrated database and away from any busy dev port.
+BROWSER_TEST_DATABASE_URL=<test-database-url> \
+  BROWSER_TEST_API_PORT=41311 BROWSER_TEST_WEB_PORT=5177 \
+  bun run --cwd apps/web test:browser
+```
+
+Playwright starts both servers itself, so nothing in the run can be redirected by a developer's own settings. Neither server loads a `.env` file, the web server keeps `VITE_API_URL` empty so the journeys reach the API Playwright started, the command refuses any database whose name lacks a test, tests, browser, journey, journeys, or e2e word segment (such as `browser_journeys`) and refuses the development database `architecture_canvas` on any host, and it fails rather than reuse a server already holding a port. `apps/api/scripts/test-isolated.sh` shows how to create and migrate the throwaway database this needs.
 
 ## Writing web tests
 
