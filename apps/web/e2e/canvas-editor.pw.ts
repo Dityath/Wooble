@@ -1,5 +1,16 @@
 import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
-import { MOD, MOD_SYMBOL, registerUser, seedCanvas, signIn, type SeededCanvas, type TestUser } from "./helpers";
+import {
+  authHeaders,
+  MOD,
+  MOD_SYMBOL,
+  registerUser,
+  seedCanvas,
+  signIn,
+  type SeededCanvas,
+  type TestUser,
+} from "./helpers";
+// The chip the canvas renders and the box the layout reserves for it come from the same cap.
+import { EDGE_LABEL_MAX_WIDTH } from "../src/features/canvas/edge-label";
 
 const TOOL_NAMES = ["Select", "Hand", "Add node", "Connector", "System box", "Edit connector"] as const;
 
@@ -228,6 +239,7 @@ test("Delete and Backspace on a focused connector bend point remove only that po
   await expect(firstPoint).toBeVisible();
 
   await firstPoint.focus();
+  await expect(firstPoint).toBeFocused();
   await page.keyboard.press("Delete");
   await expect(firstPoint).toBeHidden();
   await expect(edgeLabel(page)).toBeVisible();
@@ -238,6 +250,9 @@ test("Delete and Backspace on a focused connector bend point remove only that po
   const secondPoint = page.getByRole("button", { name: /Connector point 1/ });
   await expect(secondPoint).toBeVisible();
   await secondPoint.focus();
+  // The graph refresh that follows every save must leave this handle alone; losing it made the following Backspace
+  // fall through to the canvas shortcut, which asked to delete the whole connector instead of one point.
+  await expect(secondPoint).toBeFocused();
   await page.keyboard.press("Backspace");
   await expect(secondPoint).toBeHidden();
   await expect(edgeLabel(page)).toBeVisible();
@@ -247,6 +262,161 @@ test("Delete and Backspace on a focused connector bend point remove only that po
   await page.reload();
   await awaitEditorReady(page);
   await expect(edgeLabel(page)).toBeVisible();
+});
+
+test("a connector save in flight keeps its bend point focused, so Delete never opens the connector dialog", async ({
+  page,
+}) => {
+  await signIn(await page.context(), owner.cookieValue);
+  await openCanvasAsEditor(page);
+  await switchToolByKeyboard(page, "e", "connector");
+  await edgeLabel(page).click();
+
+  // Hold the save open so the graph refresh lands while the point is still being edited.
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let holding = true;
+  let saves = 0;
+  await page.route("**/connections/*/bend", async (route) => {
+    if (holding) await held;
+    saves += 1;
+    await route.continue();
+  });
+
+  const hitbox = page.getByRole("button", { name: "Add connector point" });
+  await expect(hitbox).toHaveAttribute("tabindex", "0");
+  await hitbox.focus();
+  await page.keyboard.press("Enter");
+  const point = page.getByRole("button", { name: /Connector point 1/ });
+  await expect(point).toBeVisible();
+  await point.focus();
+  await expect(point).toBeFocused();
+
+  // The save is still open: nothing may have moved the point or the focus away.
+  await page.waitForTimeout(500);
+  await expect(point).toBeFocused();
+  expect(saves).toBe(0);
+
+  holding = false;
+  release();
+  await page.waitForResponse(
+    (response) => response.url().includes("/connections/") && response.url().endsWith("/bend"),
+  );
+  await expect(page.getByRole("button", { name: /Connector point 1/ })).toBeFocused();
+
+  await page.keyboard.press("Delete");
+  await expect(page.getByRole("button", { name: /Connector point 1/ })).toHaveCount(0);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(edgeLabel(page)).toBeVisible();
+});
+
+test("adding and removing connector points faster than the saves keeps the route consistent", async ({ page }) => {
+  await signIn(await page.context(), owner.cookieValue);
+  await openCanvasAsEditor(page);
+  await switchToolByKeyboard(page, "e", "connector");
+  await edgeLabel(page).click();
+
+  const point = (name: string | RegExp) => page.getByRole("button", { name });
+  const handles = () => point(/Connector point/);
+  const hitbox = point("Add connector point");
+  await expect(hitbox).toHaveAttribute("tabindex", "0");
+
+  // Three adds in a row, each one pressed before the previous save can come back. Every edit has to build on the
+  // route the one before it produced, so the canvas ends up with all three points.
+  for (let added = 1; added <= 3; added += 1) {
+    await hitbox.focus();
+    await page.keyboard.press("Enter");
+    await expect(point(`Connector point ${added}`)).toBeVisible();
+  }
+  await expect(handles()).toHaveCount(3);
+
+  // And three removes in a row, each aimed at the last remaining point.
+  for (let remaining = 2; remaining >= 0; remaining -= 1) {
+    const last = point(`Connector point ${remaining + 1}`);
+    await expect(last).toBeVisible();
+    await last.focus();
+    await expect(last).toBeFocused();
+    await page.keyboard.press("Delete");
+    await expect(handles()).toHaveCount(remaining);
+  }
+  // Nothing along the way was mistaken for the connector itself, so no confirmed delete was ever asked for.
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(edgeLabel(page)).toBeVisible();
+
+  // The queued saves settle on the route the canvas ended up showing.
+  await page.reload();
+  await awaitEditorReady(page);
+  await switchToolByKeyboard(page, "e", "connector");
+  await edgeLabel(page).click();
+  await expect(edgeLabel(page)).toBeVisible();
+  await expect(handles()).toHaveCount(0);
+});
+
+// The same edit on a slow machine: everything between a keystroke and the next render takes longer, which is where a
+// connector that is rebuilt instead of updated loses the point the keyboard is aimed at.
+test("editing connector points on a slow machine never falls back to deleting the connector", async ({ page }) => {
+  const session = await page.context().newCDPSession(page);
+  await signIn(await page.context(), owner.cookieValue);
+  await openCanvasAsEditor(page);
+  await session.send("Emulation.setCPUThrottlingRate", { rate: 6 });
+  try {
+    await switchToolByKeyboard(page, "e", "connector");
+    await edgeLabel(page).click();
+
+    const point = (name: string | RegExp) => page.getByRole("button", { name });
+    const handles = () => point(/Connector point/);
+    const hitbox = point("Add connector point");
+    await expect(hitbox).toHaveAttribute("tabindex", "0");
+
+    for (let added = 1; added <= 2; added += 1) {
+      await hitbox.focus();
+      await page.keyboard.press("Enter");
+      await expect(point(`Connector point ${added}`)).toBeVisible();
+    }
+    for (let remaining = 1; remaining >= 0; remaining -= 1) {
+      const last = point(`Connector point ${remaining + 1}`);
+      await expect(last).toBeVisible();
+      await last.focus();
+      await expect(last).toBeFocused();
+      await page.keyboard.press("Backspace");
+      await expect(handles()).toHaveCount(remaining);
+    }
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(edgeLabel(page)).toBeVisible();
+  } finally {
+    await session.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+    await session.detach();
+  }
+});
+
+// A connection name can be up to 100 characters, so the label chip is wider than any fixed box Auto Neat could
+// assume. It has to stay inside the width the layout reserved for it, or label collisions come back.
+test("a long connection label stays inside the width Auto Neat reserved for it", async ({ page, request }) => {
+  await signIn(await page.context(), owner.cookieValue);
+  const headers = authHeaders(owner.cookieValue);
+  const name = "Nightly reconciliation export to the regional warehouse and its audit trail";
+  const renamed = await request.patch(`/api/connections/${seeded.connectionId}`, { headers, data: { label: name } });
+  expect(renamed.status()).toBe(200);
+
+  await openCanvas(page);
+  const label = page.locator(".architecture-edge-label").filter({ hasText: "Nightly" });
+  await expect(label).toBeVisible();
+  // offsetWidth is the laid-out width; the bounding box would also carry the canvas zoom.
+  const longWidth = await label.evaluate((element) => element.offsetWidth);
+  expect(longWidth).toBeLessThanOrEqual(EDGE_LABEL_MAX_WIDTH);
+  // The clipped name stays readable, and the whole of it is still available.
+  await expect(label).toHaveAttribute("title", name);
+  await expect(label).toHaveText(name);
+
+  // A shorter name is a narrower chip, so the width follows the text instead of a fixed box.
+  await request.patch(`/api/connections/${seeded.connectionId}`, { headers, data: { label: "Sync" } });
+  await page.reload();
+  await awaitEditorReady(page);
+  const short = page.locator(".architecture-edge-label").filter({ hasText: "Sync" });
+  await expect(short).toBeVisible();
+  expect(await short.evaluate((element) => element.offsetWidth)).toBeLessThan(longWidth);
 });
 
 test("cursor feedback matches the active tool and the element under the pointer", async ({ page }) => {

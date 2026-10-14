@@ -537,7 +537,8 @@ code, kbd, .sidebar-shortcut > span:first-child, .flow-watermark, .architecture-
 .system-boundary { background: #f9f7f1; }
 .architecture-node { background: #fffdf8; }
 .flow-surface .react-flow__edgelabel-renderer { z-index: 5; }
-.architecture-edge-label { z-index: 6; min-height: 24px; padding: 5px 9px; font-size: 10px; }
+.architecture-edge-label { z-index: 6; min-width: 0; min-height: 24px; padding: 5px 9px; font-size: 10px; }
+.architecture-edge-label .edge-label-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .architecture-edge-hitbox { cursor: pointer; }
 .flow-surface.tool-edit-connector .architecture-edge-hitbox { cursor: crosshair; }
 .connector-bend-handle { position: absolute; z-index: 7; width: 19px; height: 19px; border: 3px solid #fffdf8; border-radius: 50%; outline: 1px solid var(--wooble-primary); pointer-events: all; background: var(--wooble-primary); box-shadow: 0 2px 8px rgb(31 31 31 / 20%); cursor: grab; touch-action: none; }

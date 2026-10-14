@@ -1,7 +1,9 @@
 import type { CanvasNode, ConnectionBend } from "@wooble/domain";
 import type { CanvasGraph } from "../../lib/api";
+import { connectionTitle } from "../../lib/connection-title";
 import { type ConnectorPorts, connectorPorts } from "./connector-ports";
 import { type ConnectorBox, type ConnectorSide, absoluteBox, buildConnectorRoute } from "./connector-route";
+import { type EdgeLabelSize, edgeLabelBox, edgeLabelSize } from "./edge-label";
 
 export interface AutoNeatLayout {
   placements: Array<Omit<CanvasNode, "canvasId">>;
@@ -17,8 +19,6 @@ const SYSTEM_PADDING_BOTTOM = 48;
 const CARD_PADDING = 8;
 const CLEARANCE = 8;
 const CROSS_MARGIN = 4;
-const LABEL_WIDTH = 84;
-const LABEL_HEIGHT = 26;
 const LANE_SPACING = 18;
 const GAP_MARGIN = 12;
 const EXIT_OFFSETS = [24, 48, 72];
@@ -360,6 +360,8 @@ export function buildAutoNeatLayout(graph: CanvasGraph): AutoNeatLayout {
     swapped: boolean;
     sourceId: string;
     targetId: string;
+    /** Rendered size of this connection's label, measured from its name rather than assumed. */
+    size: EdgeLabelSize;
   }
   const jobs: Job[] = [];
   const bends = new Map<string, ConnectionBend | ConnectionBend[]>();
@@ -387,6 +389,7 @@ export function buildAutoNeatLayout(graph: CanvasGraph): AutoNeatLayout {
       swapped,
       sourceId: connection.sourceEntityId,
       targetId: connection.targetEntityId,
+      size: edgeLabelSize(connectionTitle(connection)),
     });
   }
   jobs.sort((a, b) => a.kind - b.kind || a.run - b.run || a.id.localeCompare(b.id));
@@ -412,12 +415,9 @@ export function buildAutoNeatLayout(graph: CanvasGraph): AutoNeatLayout {
       );
       const built = buildConnectorRoute(ports.source, ports.target, waypoints, horizontal, ports.targetSide);
       const segments = built.segments.map(toSegment);
-      const labelBox = {
-        left: built.label.x - LABEL_WIDTH / 2,
-        top: built.label.y - LABEL_HEIGHT / 2,
-        right: built.label.x + LABEL_WIDTH / 2,
-        bottom: built.label.y + LABEL_HEIGHT / 2,
-      };
+      // Scored at the route's midpoint, which is where the renderer puts the label unless the connector has to
+      // cross something; `placeEdgeLabels` then steps the label along the winning route.
+      const labelBox = edgeLabelBox(built.label, job.size);
       const bounds = segments.length ? union(segments) : labelBox;
       const length = segments.reduce((total, segment) => total + segmentLength(segment), 0);
       const base = Math.round(length / 10) * 0.1 + index * 0.001;

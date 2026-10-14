@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import type { ConnectionBend } from "@wooble/domain";
 import type { CanvasGraph } from "../src/lib/api";
+import { connectionTitle } from "../src/lib/connection-title";
 import { buildAutoNeatLayout } from "../src/features/canvas/auto-neat";
 import { connectorPorts } from "../src/features/canvas/connector-ports";
 import { buildConnectorRoute, routeWaypoints } from "../src/features/canvas/connector-route";
+import { type EdgeLabelSize, edgeLabelBox, edgeLabelSize, placeEdgeLabels } from "../src/features/canvas/edge-label";
 
 const id = (number: number) => `00000000-0000-4000-8000-${String(number).padStart(12, "0")}`;
 
@@ -21,8 +23,8 @@ function exampleGraph(): CanvasGraph {
     entities: [1, 2, 3, 4, 5, 6].map((number) => ({ id: id(number), type: number < 3 ? "system" : "service" })),
     placements: placements.map((placement) => ({ ...placement, canvasId: id(7) })),
     connections: [
-      { id: id(8), sourceEntityId: id(3), targetEntityId: id(5), bend: null },
-      { id: id(9), sourceEntityId: id(3), targetEntityId: id(6), bend: null },
+      { id: id(8), sourceEntityId: id(3), targetEntityId: id(5), bend: null, label: "", type: "rest" },
+      { id: id(9), sourceEntityId: id(3), targetEntityId: id(6), bend: null, label: "", type: "rest" },
     ],
   } as CanvasGraph;
 }
@@ -110,6 +112,8 @@ test("Auto Neat places architecture types in horizontal hierarchy rows", () => {
       sourceEntityId: id(source),
       targetEntityId: id(target),
       bend: null,
+      label: "",
+      type: "rest",
     })),
   } as CanvasGraph;
   const result = buildAutoNeatLayout(graph);
@@ -172,7 +176,7 @@ test("Auto Neat keeps the same hierarchy when nodes have no system box", () => {
       width: 220,
       height: 120,
     })),
-    connections: [{ id: id(9), sourceEntityId: id(4), targetEntityId: id(5), bend: null }],
+    connections: [{ id: id(9), sourceEntityId: id(4), targetEntityId: id(5), bend: null, label: "", type: "rest" }],
   } as CanvasGraph;
   const byId = new Map(buildAutoNeatLayout(graph).placements.map((placement) => [placement.entityId, placement]));
   const frontend = byId.get(id(1));
@@ -209,10 +213,10 @@ test("a single database sits below its service and a large system contracts arou
       height: number === 1 ? 1320 : 146,
     })),
     connections: [
-      { id: id(11), sourceEntityId: id(2), targetEntityId: id(3), bend: null },
-      { id: id(12), sourceEntityId: id(3), targetEntityId: id(4), bend: null },
-      { id: id(13), sourceEntityId: id(3), targetEntityId: id(5), bend: null },
-      { id: id(14), sourceEntityId: id(5), targetEntityId: id(6), bend: null },
+      { id: id(11), sourceEntityId: id(2), targetEntityId: id(3), bend: null, label: "", type: "rest" },
+      { id: id(12), sourceEntityId: id(3), targetEntityId: id(4), bend: null, label: "", type: "rest" },
+      { id: id(13), sourceEntityId: id(3), targetEntityId: id(5), bend: null, label: "", type: "rest" },
+      { id: id(14), sourceEntityId: id(5), targetEntityId: id(6), bend: null, label: "", type: "rest" },
     ],
   } as CanvasGraph;
   const result = buildAutoNeatLayout(graph);
@@ -304,6 +308,8 @@ test("layered systems keep service databases aligned and route long links around
       sourceEntityId: id(source),
       targetEntityId: id(target),
       bend: null,
+      label: "",
+      type: "rest",
     })),
   } as CanvasGraph;
   const result = buildAutoNeatLayout(graph);
@@ -351,6 +357,8 @@ function systemGraph(cards: Card[], links: Array<[number, number]>): CanvasGraph
       sourceEntityId: id(source),
       targetEntityId: id(target),
       bend: null,
+      label: "",
+      type: "rest",
     })),
   } as unknown as CanvasGraph;
 }
@@ -378,7 +386,7 @@ const segRect = ({ from, to }: Seg): Rect => ({
   top: Math.min(from.y, to.y),
   bottom: Math.max(from.y, to.y),
 });
-const labelRect = (p: Pt): Rect => ({ left: p.x - 42, right: p.x + 42, top: p.y - 13, bottom: p.y + 13 });
+const labelRect = (p: Pt, size: EdgeLabelSize): Rect => edgeLabelBox(p, size);
 
 // Parallel connector segments closer than this overlap visually.
 const MIN_PARALLEL_GAP = 8;
@@ -401,7 +409,7 @@ function segmentsClash(a: Seg, b: Seg) {
   return v.left >= h.left && v.left <= h.right && h.top >= v.top && h.top <= v.bottom;
 }
 
-// Routes every connection exactly as the renderer does (connectorPorts + buildConnectorRoute).
+// Routes every connection exactly as the renderer does (connectorPorts + buildConnectorRoute + label anchors).
 function renderRoutes(graph: CanvasGraph, layout = buildAutoNeatLayout(graph)) {
   const nodes = new Map(layout.placements.map((node) => [node.entityId, node]));
   const absolute = (entityId: string) => {
@@ -417,7 +425,7 @@ function renderRoutes(graph: CanvasGraph, layout = buildAutoNeatLayout(graph)) {
   const cards = layout.placements
     .filter((n) => !systemIds.has(n.entityId))
     .map((n) => ({ id: n.entityId, ...absolute(n.entityId) }));
-  const routes = graph.connections.map((connection) => {
+  const drawn = graph.connections.map((connection) => {
     const port = ports.get(connection.id);
     const bend = layout.connections.find((item) => item.connectionId === connection.id)?.bend;
     if (!port || !bend) throw new Error("Missing route inputs");
@@ -430,8 +438,16 @@ function renderRoutes(graph: CanvasGraph, layout = buildAutoNeatLayout(graph)) {
       port.targetSide,
     );
     const points = segments.flatMap(({ from, to }, index) => (index === 0 ? [from, to] : [to]));
-    return { connection, port, bend, segments, label, points };
+    return { connection, port, bend, segments, label, points, labelSize: edgeLabelSize(connectionTitle(connection)) };
   });
+  // buildFlowEdges resolves anchors the same way, so the assertions read the label the user sees.
+  const anchors = placeEdgeLabels(
+    drawn.map((route) => ({ id: route.connection.id, segments: route.segments, size: route.labelSize })),
+  );
+  const routes = drawn.map((route) => ({
+    ...route,
+    label: anchors.get(route.connection.id) ?? route.label,
+  }));
   return { routes, cards, absolute, nodes };
 }
 
@@ -452,7 +468,7 @@ function cardProblems(graph: CanvasGraph, { routes, cards }: Rendered) {
       const area = own ? rectOf(card) : grow(rectOf(card), 8);
       if (route.segments.some((segment) => rectsOverlap(segRect(segment), area)))
         problems.push(`${describe(graph, route)} hits card ${card.id}`);
-      if (rectsOverlap(labelRect(route.label), rectOf(card)))
+      if (rectsOverlap(labelRect(route.label, route.labelSize), rectOf(card)))
         problems.push(`${describe(graph, route)} label on card ${card.id}`);
     }
   return problems;
@@ -464,10 +480,11 @@ function pairProblems(graph: CanvasGraph, { routes }: Rendered) {
     for (const b of routes.slice(index + 1)) {
       const pair = `${describe(graph, a)} x ${describe(graph, b)}`;
       if (a.segments.some((s) => b.segments.some((t) => segmentsClash(s, t)))) problems.push(`${pair} touch`);
-      if (rectsOverlap(labelRect(a.label), labelRect(b.label))) problems.push(`${pair} labels overlap`);
-      if (b.segments.some((s) => rectsOverlap(segRect(s), labelRect(a.label))))
+      if (rectsOverlap(labelRect(a.label, a.labelSize), labelRect(b.label, b.labelSize)))
+        problems.push(`${pair} labels overlap`);
+      if (b.segments.some((s) => rectsOverlap(segRect(s), labelRect(a.label, a.labelSize))))
         problems.push(`${describe(graph, a)} label covered by ${describe(graph, b)}`);
-      if (a.segments.some((s) => rectsOverlap(segRect(s), labelRect(b.label))))
+      if (a.segments.some((s) => rectsOverlap(segRect(s), labelRect(b.label, b.labelSize))))
         problems.push(`${describe(graph, b)} label covered by ${describe(graph, a)}`);
     }
   });
@@ -596,12 +613,7 @@ test("Auto Neat leaves only the unavoidable crossing for a same-row link that sp
   const spanning = "Auth->Report";
   // Card hits and label problems stay forbidden for every connector, including the spanning one.
   expect(cardProblems(graph, rendered)).toEqual([]);
-  // KNOWN BUG (see the todo test below): the spanning label is currently covered by the IAM drop; that single problem is
-  // excluded here so the rest of the label rules stay enforced.
-  const knownLabelBug = `${spanning} label covered by IAM->Gateway`;
-  expect(
-    pairProblems(graph, rendered).filter((problem) => !problem.endsWith(" touch") && problem !== knownLabelBug),
-  ).toEqual([]);
+  expect(pairProblems(graph, rendered).filter((problem) => !problem.endsWith(" touch"))).toEqual([]);
   // Auth -> Report must cross the IAM drop to the gateway or the IAM database link; exactly one of them, and nothing else.
   const touching = pairProblems(graph, rendered).filter((problem) => problem.endsWith(" touch"));
   expect(touching).toHaveLength(1);
@@ -619,12 +631,19 @@ test("Auto Neat leaves only the unavoidable crossing for a same-row link that sp
   expect(cardProblems(graph, rendered).filter((problem) => problem.startsWith(spanning))).toEqual([]);
 });
 
-// BUG (production): when Auth -> Report is forced across the IAM -> Gateway drop, its label is placed under that drop.
-// The label must stay clearly visible, so this should hold once label placement avoids crossing connectors.
-test.todo("Auto Neat keeps the spanning link's label clear of the IAM drop it must cross", () => {
+// A route forced to cross another connector still has to keep its own label readable: the anchor steps along the
+// route until the chip clears the connector it must cross.
+test("Auto Neat keeps the spanning link's label clear of the IAM drop it must cross", () => {
   const graph = systemGraph(nineCards, [...nineLinks, [5, 7]]);
-  const problems = pairProblems(graph, renderRoutes(graph));
+  const rendered = renderRoutes(graph);
+  const problems = pairProblems(graph, rendered);
   expect(problems.filter((problem) => problem.includes("label"))).toEqual([]);
+  const spanning = routeBetween(graph, rendered.routes, "Auth", "Report");
+  const iam = routeBetween(graph, rendered.routes, "IAM", "Gateway");
+  const drop = iam.segments.find((segment) => segment.from.x === segment.to.x);
+  if (!drop) throw new Error("IAM -> Gateway has no vertical drop");
+  // The bare arc-length midpoint would sit exactly under the drop; the resolved anchor must not.
+  expect(rectsOverlap(labelRect(spanning.label, spanning.labelSize), segRect(drop))).toBe(false);
 });
 
 test("Auto Neat keeps services fanning out to both sides of the gateway clear", () => {

@@ -31,10 +31,10 @@ test("every connection is returned; self-links and unplaced links keep their sto
     entities: [1, 2, 3].map((number) => ({ id: id(number), type: "service", name: `S${number}` })),
     placements: [placement(1, null, 0, 0), placement(2, null, 400, 0)],
     connections: [
-      { id: id(10), sourceEntityId: id(1), targetEntityId: id(2), bend: null },
-      { id: id(11), sourceEntityId: id(1), targetEntityId: id(1), bend: { x: 40, y: 50 } },
-      { id: id(12), sourceEntityId: id(1), targetEntityId: id(3), bend: stored },
-      { id: id(13), sourceEntityId: id(3), targetEntityId: id(2), bend: null },
+      { id: id(10), sourceEntityId: id(1), targetEntityId: id(2), bend: null, label: "", type: "rest" },
+      { id: id(11), sourceEntityId: id(1), targetEntityId: id(1), bend: { x: 40, y: 50 }, label: "", type: "rest" },
+      { id: id(12), sourceEntityId: id(1), targetEntityId: id(3), bend: stored, label: "", type: "rest" },
+      { id: id(13), sourceEntityId: id(3), targetEntityId: id(2), bend: null, label: "", type: "rest" },
     ],
   } as unknown as CanvasGraph;
   const result = buildAutoNeatLayout(graph);
@@ -71,10 +71,15 @@ test("Auto Neat on ~100 nodes and ~150 connections is fast and routes every conn
     const target = nodeIds[(c * 13 + 5) % nodeIds.length] ?? 0;
     connections.push({
       id: id(5000 + c),
+      workspaceId: id(9000),
       sourceEntityId: id(source),
       targetEntityId: id(target === source ? (nodeIds[(c + 1) % nodeIds.length] ?? 0) : target),
+      type: "rest",
+      label: "",
+      description: null,
+      metadata: {},
       bend: null,
-    } as CanvasGraph["connections"][number]);
+    });
   }
   const graph = {
     canvas: { id: id(9000), updatedAt: "2026-09-24T00:00:00.000Z" },
