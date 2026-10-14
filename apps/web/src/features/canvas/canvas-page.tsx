@@ -57,6 +57,8 @@ import { nodeTypes } from "./node-types";
 import type { ArchitectureFlowNode } from "./architecture-nodes";
 import { buildAutoNeatLayout } from "./auto-neat";
 import { CanvasActivityLog } from "./canvas-activity-log";
+import { connectorPorts } from "./connector-ports";
+import { absoluteBox } from "./connector-route";
 import { canvasShortcutLabel, resolveCanvasKeyDown, type CanvasTool } from "./canvas-shortcuts";
 import { participantColor } from "./participant-color";
 import { SystemResizeContext } from "./system-resize-context";
@@ -1230,35 +1232,28 @@ function buildFlowNodes(
 function buildFlowEdges(graph: CanvasGraph): ArchitectureFlowEdge[] {
   const placements = new Map(graph.placements.map((placement) => [placement.entityId, placement]));
   const entityMap = new Map(graph.entities.map((entity) => [entity.id, entity]));
-  const lanes = new Map<string, number>();
-  return [...graph.connections]
-    .sort((a, b) => a.id.localeCompare(b.id))
+  const boxes = new Map(graph.placements.map((placement) => [placement.entityId, absoluteBox(placement, placements)]));
+  const connections = [...graph.connections].sort((a, b) => a.id.localeCompare(b.id));
+  const ports = connectorPorts(boxes, connections);
+  return connections
     .flatMap((connection) => {
-      const source = placements.get(connection.sourceEntityId);
-      const target = placements.get(connection.targetEntityId);
-      if (!source || !target) return [];
-      const sourceParent = source.parentEntityId ? placements.get(source.parentEntityId) : undefined;
-      const targetParent = target.parentEntityId ? placements.get(target.parentEntityId) : undefined;
-      const sourceX = source.x + (sourceParent?.x ?? 0) + source.width / 2;
-      const sourceY = source.y + (sourceParent?.y ?? 0) + source.height / 2;
-      const targetX = target.x + (targetParent?.x ?? 0) + target.width / 2;
-      const targetY = target.y + (targetParent?.y ?? 0) + target.height / 2;
-      const dx = targetX - sourceX;
-      const dy = targetY - sourceY;
-      const sourceSide = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : dy > 0 ? "bottom" : "top";
-      const targetSide = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "left" : "right") : dy > 0 ? "top" : "bottom";
-      const laneKey = `${connection.sourceEntityId}:${sourceSide}`;
-      const lane = lanes.get(laneKey) ?? 0;
-      lanes.set(laneKey, lane + 1);
+      const port = ports.get(connection.id);
+      if (!port) return [];
       return [
         {
           id: connection.id,
           source: connection.sourceEntityId,
           target: connection.targetEntityId,
-          sourceHandle: `source-${sourceSide}`,
-          targetHandle: `target-${targetSide}`,
+          sourceHandle: `source-${port.sourceSide}`,
+          targetHandle: `target-${port.targetSide}`,
           type: "architecture",
-          data: { connection, lane },
+          data: {
+            connection,
+            sourcePort: port.sourceOffset,
+            targetPort: port.targetOffset,
+            sourceBox: boxes.get(connection.sourceEntityId),
+            targetBox: boxes.get(connection.targetEntityId),
+          },
           label: connection.label,
           deletable: false,
         } as ArchitectureFlowEdge,

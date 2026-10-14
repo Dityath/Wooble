@@ -85,11 +85,13 @@ test("keyboard switches tools and is refused while Auto Neat is busy, like the m
   await page.keyboard.press(`${MOD}+n`);
   await expect(toolButton(page, "Add node")).toHaveAttribute("aria-pressed", "true");
 
-  let held: Route | undefined;
-  await page.route("**/api/canvases/*/auto-neat", async (route) => {
-    held = route;
-    await new Promise(() => {});
+  // Auto Neat shows its busy state before it reloads the graph and only then sends this request, so the assertions
+  // below can pass before it is sent. Wait for the held request itself instead of checking for it once.
+  let hold!: (route: Route) => void;
+  const held = new Promise<Route>((resolve) => {
+    hold = resolve;
   });
+  await page.route("**/api/canvases/*/auto-neat", (route) => hold(route));
   await toolButton(page, "Auto Neat").click();
   await expect(page.locator(".canvas-auto-neat-status")).toContainText("Tidying canvas…");
   for (const name of TOOL_NAMES) await expect(toolButton(page, name)).toBeDisabled();
@@ -101,8 +103,7 @@ test("keyboard switches tools and is refused while Auto Neat is busy, like the m
   // …and the disabled buttons ignore mouse clicks on the same state.
   await expect(toolButton(page, "Select")).toBeDisabled();
 
-  if (!held) throw new Error("auto-neat request was never intercepted");
-  await held.abort();
+  await (await held).abort();
   await expect(toolButton(page, "Auto Neat")).toBeEnabled();
   await expect(page.locator(".canvas-auto-neat-status")).not.toContainText("Tidying canvas…");
 

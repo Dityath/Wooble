@@ -71,6 +71,26 @@ describe("canvas contracts", () => {
     expect(autoNeatCanvasSchema.safeParse({ ...valid, placements: [{ ...placement, width: 0 }] }).success).toBe(false);
   });
 
+  it("accepts single-point and multi-waypoint auto-neat routes", () => {
+    const placement = { entityId: first, parentEntityId: null, x: 0, y: 0, width: 220, height: 120 };
+    const layout = { expectedUpdatedAt: "2026-09-30T08:00:00.000Z", placements: [placement] };
+    const waypoints = Array.from({ length: 12 }, (_, index) => ({ x: index, y: index }));
+    const route = (bend: unknown) =>
+      autoNeatCanvasSchema.safeParse({ ...layout, connections: [{ connectionId: second, bend }] });
+
+    expect(route({ x: 1, y: 1 }).success).toBe(true);
+    expect(
+      route([
+        { x: 1, y: 1 },
+        { x: 2, y: 1 },
+      ]).success,
+    ).toBe(true);
+    expect(route(waypoints).success).toBe(true);
+    expect(route([]).success).toBe(false);
+    expect(route([...waypoints, { x: 0, y: 0 }]).success).toBe(false);
+    expect(route(null).success).toBe(false);
+  });
+
   it("points a duplicate placement error at the repeated entity", () => {
     const placement = { entityId: first, parentEntityId: null, x: 0, y: 0, width: 220, height: 120 };
     const result = updatePlacementsSchema.safeParse({

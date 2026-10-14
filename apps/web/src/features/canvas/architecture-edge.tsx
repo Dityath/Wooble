@@ -4,11 +4,24 @@ import type { ArchitectureConnection, ConnectionBend, ConnectionPath } from "@wo
 import { useEditorStore } from "../../stores/editor-store";
 import { connectionTitle } from "../../lib/connection-title";
 import { ConnectorEditContext } from "./connector-edit-context";
-import { buildConnectorRoute, closestRouteInsertion, isHorizontalRoute, routeWaypoints } from "./connector-route";
+import {
+  applyPortOffset,
+  buildConnectorRoute,
+  closestRouteInsertion,
+  routeEntersEndpoints,
+  isHorizontalRoute,
+  routeWaypoints,
+  type ConnectorBox,
+  type ConnectorSide,
+} from "./connector-route";
 
 export type ArchitectureFlowEdge = Edge<{
   connection: ArchitectureConnection & { bend: ConnectionPath };
-  lane?: number;
+  sourcePort?: { x: number; y: number };
+  targetPort?: { x: number; y: number };
+  /** Absolute card boxes, used to reject stored bends that would run through the endpoint cards. */
+  sourceBox?: ConnectorBox;
+  targetBox?: ConnectorBox;
   remotePeers?: { name: string; color: string }[];
 }>;
 
@@ -20,32 +33,37 @@ export function ArchitectureEdge(props: EdgeProps<ArchitectureFlowEdge>) {
   const [draftWaypoints, setDraftWaypoints] = useState<ConnectionBend[] | null>(null);
   const draggingIndex = useRef<number | null>(null);
   const dragRevision = useRef(0);
+  // Ports spread several connectors along one side; the handle sits mid-side, so shift by the port offset.
+  const { x: sourceX, y: sourceY } = applyPortOffset({ x: props.sourceX, y: props.sourceY }, props.data?.sourcePort);
+  const { x: targetX, y: targetY } = applyPortOffset({ x: props.targetX, y: props.targetY }, props.data?.targetPort);
   const [edgePath, labelX, labelY] = getSmoothStepPath({
-    sourceX: props.sourceX,
-    sourceY: props.sourceY,
+    sourceX,
+    sourceY,
     sourcePosition: props.sourcePosition,
-    targetX: props.targetX,
-    targetY: props.targetY,
+    targetX,
+    targetY,
     targetPosition: props.targetPosition,
     borderRadius: 10,
-    offset: 22 + (props.data?.lane ?? 0) * 22,
+    offset: 22,
   });
   const type = props.data?.connection.type ?? "rest";
   const label = props.data?.connection ? connectionTitle(props.data.connection) : "Connection";
   const waypoints = draftWaypoints ?? routeWaypoints(props.data?.connection.bend ?? null);
-  const horizontal = isHorizontalRoute(
-    props.sourceHandleId,
-    { x: props.sourceX, y: props.sourceY },
-    { x: props.targetX, y: props.targetY },
-  );
+  const horizontal = isHorizontalRoute(props.sourceHandleId, { x: sourceX, y: sourceY }, { x: targetX, y: targetY });
   const route = buildConnectorRoute(
-    { x: props.sourceX, y: props.sourceY },
-    { x: props.targetX, y: props.targetY },
+    { x: sourceX, y: sourceY },
+    { x: targetX, y: targetY },
     waypoints,
     horizontal,
+    props.targetPosition as ConnectorSide,
   );
-  const path = waypoints.length ? route.path : edgePath;
-  const labelPosition = waypoints.length ? route.label : { x: labelX, y: labelY };
+  // Stored bends from before direction-agnostic sides can run through an endpoint card: draw a plain path instead (dragging shows what the user drags).
+  const { sourceBox, targetBox } = props.data ?? {};
+  const stale =
+    !draftWaypoints && !!sourceBox && !!targetBox && routeEntersEndpoints(route.segments, sourceBox, targetBox);
+  const routed = waypoints.length > 0 && !stale;
+  const path = routed ? route.path : edgePath;
+  const labelPosition = routed ? route.label : { x: labelX, y: labelY };
   const active = selectedConnectionId === props.id;
   const remotePeer = props.data?.remotePeers?.[0];
   const persistWaypoints = (next: ConnectionBend[]) => {

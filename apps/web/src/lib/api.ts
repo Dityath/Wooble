@@ -164,7 +164,7 @@ export const api = {
     input: {
       expectedUpdatedAt: string;
       placements: Array<Omit<CanvasNode, "canvasId">>;
-      connections: Array<{ connectionId: string; bend: ConnectionBend }>;
+      connections: Array<{ connectionId: string; bend: ConnectionBend | ConnectionBend[] }>;
     },
   ) =>
     request<{ kind: "saved"; updatedAt: string }>(`/api/canvases/${canvasId}/auto-neat`, {
