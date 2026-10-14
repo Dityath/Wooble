@@ -33,8 +33,10 @@ const documentationEditor = (page: Page) => detailsDialog(page).getByRole("textb
 const saveState = (page: Page) => detailsDialog(page).locator(".documentation-save-state");
 const liveRegion = (page: Page) => detailsDialog(page).locator(".documentation-live");
 const recoveryPrompt = (page: Page) =>
-  detailsDialog(page).getByRole("status").filter({ hasText: "Unsaved documentation from" });
-const failureNotice = (page: Page) => detailsDialog(page).getByRole("alert");
+  detailsDialog(page).getByRole("alert").filter({ hasText: "Unsaved documentation from" });
+// The recovery offer is an alert too, so the failure notice is the alert that is not the offer.
+const failureNotice = (page: Page) =>
+  detailsDialog(page).getByRole("alert").filter({ hasNotText: "kept on this device. Editing is paused" });
 const closeConfirmation = (page: Page) => page.getByRole("alertdialog", { name: "Close with unsaved documentation?" });
 const reloadButton = (page: Page) => detailsDialog(page).getByRole("button", { name: "Reload", exact: true });
 const retryButton = (page: Page) => detailsDialog(page).getByRole("button", { name: "Retry", exact: true });

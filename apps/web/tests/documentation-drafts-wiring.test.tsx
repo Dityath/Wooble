@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import type { QueryClient } from "@tanstack/react-query";
 import type userEvent from "@testing-library/user-event";
 import { InspectorPanel } from "../src/features/inspector/inspector-panel";
@@ -23,9 +23,15 @@ beforeEach(() => {
   localStorage.clear();
   installFakeSocket();
   server = new FakeApi().install();
+  // Default save target; routes a test registers later take precedence (FakeApi: later registrations win).
+  server.on("PATCH /api/entities/:entityId", {});
   useEditorStore.setState({ selectedEntityId: null, selectedConnectionId: null, positions: {} });
 });
-afterEach(() => {
+afterEach(async () => {
+  // Unmount and let queued documentation saves finish while the fake fetch is still installed, so none
+  // escapes to the real network after the test ends.
+  cleanup();
+  for (let round = 0; round < 3; round++) await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
   // Sign-out suspends drafts for the whole process; later tests (and files) start with them on.
   resumeDocumentationDrafts();
   server.restore();
@@ -79,11 +85,15 @@ async function openDetails(queryClient: QueryClient = testQueryClient()) {
   return view;
 }
 /** Types until the draft shows up, which it does once identity and access resolved. */
-const typeUntilDrafted = () =>
-  waitFor(async () => {
+async function typeUntilDrafted() {
+  // Not inside waitFor: Testing Library switches the act environment off while it polls, so every act() in the
+  // callback would warn. Each attempt is its own act(), with a short real wait between attempts.
+  for (let attempt = 0; attempt < 100 && !mine(ids.service); attempt++) {
     await typeText("!");
-    expect(mine(ids.service)).toBeTruthy();
-  });
+    if (!mine(ids.service)) await act(async () => new Promise((resolve) => setTimeout(resolve, 50)));
+  }
+  expect(mine(ids.service)).toBeTruthy();
+}
 
 describe("draft identity and access gate", () => {
   it("writes drafts under the signed-in user once identity and edit access resolved", async () => {
