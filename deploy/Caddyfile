@@ -1,17 +1,24 @@
-:80 {
-  encode gzip zstd
+{
+	servers {
+		trusted_proxies static {$CADDY_TRUSTED_PROXY_CIDRS}
+	}
+}
 
-  handle /api/* {
-    reverse_proxy api:3001
-  }
+{$WOOBLE_CADDY_SITE} {
+	{$WOOBLE_CADDY_TLS}
+	encode gzip zstd
 
-  handle /health {
-    reverse_proxy api:3001
-  }
+	handle /api/* {
+		reverse_proxy api:3001
+	}
 
-  handle {
-    root * /srv
-    try_files {path} /index.html
-    file_server
-  }
+	handle /health {
+		reverse_proxy api:3001
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
 }

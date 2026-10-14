@@ -1,3 +1,5 @@
+name: ${WOOBLE_COMPOSE_PROJECT_NAME:-wooble}
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -8,6 +10,8 @@ services:
       POSTGRES_DB: wooble
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    networks:
+      - database
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U wooble -d wooble"]
       interval: 5s
@@ -15,29 +19,31 @@ services:
       retries: 12
 
   migrate:
-    build:
-      context: .
-      dockerfile: deploy/Dockerfile
-      target: api
+    image: ghcr.io/dityath/wooble-api:${WOOBLE_VERSION:?Set WOOBLE_VERSION to a release tag}
     environment:
       DATABASE_URL: postgres://wooble:${WOOBLE_DB_PASSWORD}@postgres:5432/wooble
     command: ["bun", "run", "--cwd", "packages/db", "migrate"]
+    networks:
+      - database
     depends_on:
       postgres:
         condition: service_healthy
 
   api:
-    build:
-      context: .
-      dockerfile: deploy/Dockerfile
-      target: api
+    image: ghcr.io/dityath/wooble-api:${WOOBLE_VERSION:?Set WOOBLE_VERSION to a release tag}
     restart: unless-stopped
     environment:
       API_PORT: 3001
       DATABASE_URL: postgres://wooble:${WOOBLE_DB_PASSWORD}@postgres:5432/wooble
       NODE_ENV: production
+      WOOBLE_VERSION: ${WOOBLE_VERSION:?Set WOOBLE_VERSION to a release tag}
       TRUST_PROXY: "true"
-      WEB_ORIGIN: ${WOOBLE_ORIGIN:-http://localhost:8080}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-172.30.0.2/32}
+      WEB_ORIGIN: ${WOOBLE_ORIGIN:?Set WOOBLE_ORIGIN to the exact browser origin}
+    networks:
+      proxy:
+        ipv4_address: ${WOOBLE_API_IP:-172.30.0.3}
+      database: {}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -52,16 +58,32 @@ services:
       retries: 6
 
   web:
-    build:
-      context: .
-      dockerfile: deploy/Dockerfile
-      target: web
+    image: ghcr.io/dityath/wooble-web:${WOOBLE_VERSION:?Set WOOBLE_VERSION to a release tag}
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:${WOOBLE_HTTP_PORT:-8080}:80"
+    environment:
+      WOOBLE_MODE: ${WOOBLE_MODE:?Set WOOBLE_MODE to local, private, or domain}
+      WOOBLE_ORIGIN: ${WOOBLE_ORIGIN:?Set WOOBLE_ORIGIN to the exact browser origin}
+      WOOBLE_DOMAIN: ${WOOBLE_DOMAIN:-}
+      CADDY_TRUSTED_PROXY_CIDRS: ${CADDY_TRUSTED_PROXY_CIDRS:-127.0.0.1/32}
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      proxy:
+        ipv4_address: ${WOOBLE_CADDY_IP:-172.30.0.2}
     depends_on:
       api:
         condition: service_healthy
 
 volumes:
   postgres-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  proxy:
+    ipam:
+      config:
+        - subnet: ${WOOBLE_PROXY_SUBNET:-172.30.0.0/24}
+  database:
+    internal: true

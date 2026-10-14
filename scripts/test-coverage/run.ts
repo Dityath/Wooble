@@ -55,6 +55,12 @@ async function packageTestDirs(): Promise<string[]> {
   return [...dirs].sort();
 }
 
+async function testFiles(pattern: string): Promise<string[]> {
+  const files: string[] = [];
+  for await (const file of new Glob(pattern).scan({ cwd: root })) files.push(file);
+  return files.sort();
+}
+
 interface Suite {
   id: string;
   paths: string[];
@@ -165,7 +171,13 @@ function markdown(results: AreaResult[], suitesNote: string): string {
 
 async function plannedSuites(): Promise<Suite[]> {
   // The web suite preloads a DOM; the API suite must not get one (see apps/web/tests/support/dom.ts).
-  const suites: Suite[] = [{ id: "web", paths: ["--preload", "./apps/web/tests/support/dom.ts", "apps/web/tests"] }];
+  const webTests = [
+    ...new Set([
+      ...(await testFiles("apps/web/tests/**/*.test.ts")),
+      ...(await testFiles("apps/web/tests/**/*.test.tsx")),
+    ]),
+  ].sort();
+  const suites: Suite[] = [{ id: "web", paths: ["--preload", "./apps/web/tests/support/dom.ts", ...webTests] }];
   const sharedDirs = await packageTestDirs();
   if (sharedDirs.length) suites.push({ id: "shared", paths: sharedDirs });
   if (!withoutApi) suites.push({ id: "api", paths: ["./apps/api/tests/"] });

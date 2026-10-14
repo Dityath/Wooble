@@ -19,6 +19,28 @@ BROWSER_TEST_DATABASE_URL=<test-database-url> \
 
 Playwright starts both servers itself, so nothing in the run can be redirected by a developer's own settings. Neither server loads a `.env` file, the web server keeps `VITE_API_URL` empty so the journeys reach the API Playwright started, the command refuses any database whose name lacks a test, tests, browser, journey, journeys, or e2e word segment (such as `browser_journeys`) and refuses the development database `architecture_canvas` on any host, and it fails rather than reuse a server already holding a port. `apps/api/scripts/test-isolated.sh` shows how to create and migrate the throwaway database this needs.
 
+The self-host browser journey (`apps/web/e2e/selfhost-install.pw.ts`) also runs separately with Playwright; see [CONTRIBUTING.md](../CONTRIBUTING.md#local-checks). API smoke tests and browser login tests prove different things: only the browser journey verifies the real web assets, browser-managed Secure/HttpOnly cookies, and login through Caddy.
+
+## Self-host stack checks
+
+`scripts/selfhost-cli-check.ts` performs static safety checks on `deploy/wooble`. `scripts/selfhost-image-check.ts` requires Docker and creates a fictional backup sentinel to check that it is excluded from the build context and final API image while checked-in SQL migrations remain present. The script removes only its own sentinel and temporary image.
+
+The Self-hosted stack GitHub Actions workflow (`.github/workflows/docker.yml`) is configured to build a disposable source stack, verify its published ports and health, run API registration/canvas/WebSocket/Origin smoke, exercise browser login and static assets through local Caddy HTTPS, and rehearse backup/restore using fictional content. It then tests restart and persistence. Workflow configuration is not evidence of a completed GitHub Actions run; report the run URL/status and each phase result when it has actually run. Do not use these commands against a real installation or real account data.
+
+To run the browser-specific journey against a disposable local Compose stack, start a stack using a supported HTTPS origin (for example `https://localhost:18083`), install Playwright's Chromium once, then run:
+
+```sh
+bun run --cwd apps/web playwright install chromium
+SELFHOST_BROWSER_DISPOSABLE=1 \
+  SELFHOST_BROWSER_ORIGIN=https://localhost:18083 \
+  SELFHOST_BROWSER_IGNORE_HTTPS_ERRORS=1 \
+  bun run --cwd apps/web test:selfhost-browser
+```
+
+`SELFHOST_BROWSER_IGNORE_HTTPS_ERRORS=1` is permitted only for loopback origins and a disposable stack using Caddy's local certificate. It does not turn off HTTPS or alter cookie policy. For a trusted certificate or a controlled domain, omit that option. The browser test creates one fictional registration, signs out, logs in again, checks static assets, and inspects the browser-set cookie attributes; it never injects a cookie. A successful API smoke test does not replace this browser test.
+
+At this documentation checkpoint Docker/browser execution for the local self-host stack has not been available, and the new GitHub workflow has not been run. This section describes configured checks, not passed results.
+
 ## Writing web tests
 
 `bun run test:web` preloads `apps/web/tests/support/dom.ts`, which registers a happy-dom browser environment and cleans up the DOM after each test. The preload applies only to the web suite: API tests need Bun's own `fetch`, `Request`, and `Response`. Test files are typechecked by `bun run typecheck` through `apps/web/tests/tsconfig.json`.

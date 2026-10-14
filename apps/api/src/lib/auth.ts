@@ -17,6 +17,7 @@ import {
   workspaceMembers,
 } from "@wooble/db";
 import type { ReplyContext } from "./http-error";
+import { isLocalHttpOrigin, isTrustedProxyAddress, parseTrustedProxyCidrs } from "./config";
 import { allowedWebOrigins } from "./web-origins";
 
 const scrypt = promisify(scryptCallback);
@@ -58,15 +59,7 @@ export async function verifyPassword(password: string, stored: string) {
   return timingSafeEqual(actual, derived);
 }
 export function sessionCookie(token: string, maxAge = SESSION_AGE_SECONDS) {
-  const localHttp = process.env.WEB_ORIGIN?.split(",").every((origin) => {
-    try {
-      const url = new URL(origin.trim());
-      return url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
-    } catch {
-      return false;
-    }
-  });
-  const secure = process.env.NODE_ENV === "production" && !localHttp ? "; Secure" : "";
+  const secure = process.env.NODE_ENV === "production" && !allowedWebOrigins.every(isLocalHttpOrigin) ? "; Secure" : "";
   return `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
 }
 export async function createSession(userId: string, reply: ReplyContext) {
@@ -87,11 +80,27 @@ export function clientIp(context: {
   server: { requestIP(request: Request): { address: string } | null } | null;
   request: Request;
 }): string {
-  if (process.env.TRUST_PROXY === "true") {
-    const forwarded = context.request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-    if (forwarded && isIP(forwarded)) return forwarded;
+  const peer = context.server?.requestIP(context.request)?.address ?? "127.0.0.1";
+  if (process.env.TRUST_PROXY !== "true") return peer;
+  let trustedCidrs: string[];
+  try {
+    trustedCidrs = parseTrustedProxyCidrs(process.env.TRUSTED_PROXY_CIDRS ?? "");
+  } catch {
+    return peer;
   }
-  return context.server?.requestIP(context.request)?.address ?? "127.0.0.1";
+  if (!isTrustedProxyAddress(peer, trustedCidrs)) return peer;
+
+  const header = context.request.headers.get("x-forwarded-for");
+  if (!header) return peer;
+  const chain = header.split(",").map((address) => address.trim());
+  if (chain.some((address) => !address || !isIP(address))) return peer;
+
+  let client = peer;
+  for (const address of chain.reverse()) {
+    if (!isTrustedProxyAddress(client, trustedCidrs)) break;
+    client = address;
+  }
+  return client;
 }
 /** Anything that can run selects: the shared client or a transaction. */
 export type SelectExecutor = Pick<typeof db, "select">;
