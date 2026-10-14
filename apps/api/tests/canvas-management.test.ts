@@ -90,15 +90,16 @@ describe("canvas settings", () => {
     );
     expect(renamed.body).toMatchObject({ name: "Final", description: "Reviewed", shareMode: "link" });
     expect((await api.json<{ name: string }>("GET", url, owner.session)).body.name).toBe("Final");
-    const activity = await api.json<{ events: Array<{ action: string; metadata: { previous: unknown } }> }>(
+    const activity = await api.json<{ events: Array<{ action: string; metadata: Record<string, unknown> }> }>(
       "GET",
       `${url}/activity`,
       owner.session,
     );
     expect(activity.body.events[0]).toMatchObject({
       action: "canvas.updated",
-      metadata: { previous: { name: "Draft", description: "", shareMode: "restricted" } },
+      metadata: { fields: ["name", "description", "shareMode"] },
     });
+    expect(activity.body.events[0].metadata).not.toHaveProperty("previous");
 
     expect((await api.request("PATCH", url, owner.session, {})).status).toBe(400);
     expect((await api.request("PATCH", url, owner.session, { shareMode: "public" })).status).toBe(400);
@@ -261,6 +262,124 @@ describe("connector routes and layout", () => {
     expect(after.connections[0].bend).toEqual({ x: 250, y: 60 });
   });
 
+  it("only lets people who can already read an entity place it on another canvas", async () => {
+    const owner = await api.register("Placement Owner");
+    const editor = await api.register("Placement Editor");
+    const viewer = await api.register("Placement Viewer");
+    const restricted = await api.createCanvas(owner.session, owner.workspaceId, "Restricted");
+    const shared = await api.createCanvas(owner.session, owner.workspaceId, "Shared");
+    const board = await api.createCanvas(owner.session, owner.workspaceId, "Board");
+    const billing = await api.createNode(owner.session, restricted, { type: "database", name: "Billing DB" });
+    const publicApi = await api.createNode(owner.session, shared, { name: "Public API" });
+    expect(
+      (
+        await api.request("PATCH", `/api/entities/${billing}`, owner.session, {
+          metadata: { documentation: "Settlement records." },
+        })
+      ).status,
+    ).toBe(200);
+    expect((await api.request("PATCH", `/api/canvases/${shared}`, owner.session, { shareMode: "link" })).status).toBe(
+      200,
+    );
+    const addMember = async (canvasId: string, email: string, role: "editor" | "viewer") =>
+      expect(
+        (await api.request("POST", `/api/canvases/${canvasId}/members`, owner.session, { email, role })).status,
+      ).toBe(201);
+    await addMember(board, editor.user.email, "editor");
+    await addMember(board, viewer.user.email, "viewer");
+    const url = `/api/canvases/${board}/placements`;
+    const place = (entityId: string) => ({
+      placements: [{ entityId, parentEntityId: null, x: 40, y: 40, width: 220, height: 120 }],
+    });
+    const boardEntityIds = async () =>
+      (await api.json<Graph>("GET", `/api/canvases/${board}/graph`, owner.session)).body.placements.map(
+        (placement) => placement.entityId,
+      );
+
+    // An editor of the board cannot pull in an entity they cannot read. The response is the same as for a missing
+    // entity, so it does not confirm that the entity exists, and nothing is written.
+    const refused = await api.json<{ message: string }>("PUT", url, editor.session, place(billing));
+    const missing = await api.json<{ message: string }>("PUT", url, editor.session, place(crypto.randomUUID()));
+    expect(refused.status).toBe(400);
+    expect(refused.body).toEqual(missing.body);
+    expect(await boardEntityIds()).toEqual([]);
+    expect((await api.request("GET", `/api/entities/${billing}`, editor.session)).status).toBe(403);
+
+    // Viewers cannot write placements at all.
+    expect((await api.request("PUT", url, viewer.session, place(publicApi))).status).toBe(403);
+
+    // An entity on a link-shared canvas is readable by anyone, so an editor may place it.
+    expect((await api.json<{ saved: number }>("PUT", url, editor.session, place(publicApi))).body).toEqual({
+      saved: 1,
+    });
+
+    // Once the editor can read the restricted canvas, they may place its entity too.
+    await addMember(restricted, editor.user.email, "viewer");
+    expect((await api.json<{ saved: number }>("PUT", url, editor.session, place(billing))).body).toEqual({ saved: 1 });
+    expect((await boardEntityIds()).sort()).toEqual([billing, publicApi].sort());
+
+    // Workspace managers and system admins can place any entity in the workspace.
+    const third = await api.createCanvas(owner.session, owner.workspaceId, "Third");
+    const thirdUrl = `/api/canvases/${third}/placements`;
+    expect((await api.json<{ saved: number }>("PUT", thirdUrl, owner.session, place(billing))).body).toEqual({
+      saved: 1,
+    });
+    const admin = await api.register("Placement Admin");
+    await api.promoteToAdmin(admin.user.id);
+    const ledger = await api.createNode(owner.session, restricted, { type: "database", name: "Ledger DB" });
+    expect((await api.json<{ saved: number }>("PUT", thirdUrl, admin.session, place(ledger))).body).toEqual({
+      saved: 1,
+    });
+
+    // A batch is refused whole when any new entity, including a new parent, is unreadable.
+    const secret = await api.createNode(owner.session, restricted, { type: "system", name: "Secret System" });
+    await api.request("DELETE", `/api/canvases/${restricted}/members/${editor.user.id}`, owner.session);
+    const mixed = await api.json<{ message: string }>("PUT", url, editor.session, {
+      placements: [
+        { entityId: publicApi, parentEntityId: null, x: 80, y: 80, width: 220, height: 120 },
+        { entityId: secret, parentEntityId: null, x: 0, y: 0, width: 220, height: 120 },
+      ],
+    });
+    expect(mixed.status).toBe(400);
+    const asParent = await api.json<{ message: string }>("PUT", url, editor.session, {
+      placements: [
+        { entityId: secret, parentEntityId: null, x: 0, y: 0, width: 600, height: 400 },
+        { entityId: publicApi, parentEntityId: secret, x: 20, y: 20, width: 220, height: 120 },
+      ],
+    });
+    expect(asParent.status).toBe(400);
+    const graphAfter = (await api.json<Graph>("GET", `/api/canvases/${board}/graph`, owner.session)).body;
+    expect(graphAfter.placements.find((placement) => placement.entityId === publicApi)).toMatchObject({
+      x: 40,
+      y: 40,
+      parentEntityId: null,
+    });
+    expect(graphAfter.placements.some((placement) => placement.entityId === secret)).toBe(false);
+  });
+
+  it("places new entities concurrently without exhausting the database pool", async () => {
+    const owner = await api.register("Concurrent Placement Owner");
+    const source = await api.createCanvas(owner.session, owner.workspaceId, "Source");
+    const board = await api.createCanvas(owner.session, owner.workspaceId, "Board");
+    const entityIds = await Promise.all(
+      Array.from({ length: 12 }, (_, index) => api.createNode(owner.session, source, { name: `Node ${index}` })),
+    );
+    // Each request holds a pooled connection while it waits for the canvas row lock. The access check must not ask
+    // the pool for another connection, or the lock holder waits forever once the pool is exhausted.
+    const saves = Promise.all(
+      entityIds.map(
+        async (entityId) =>
+          (
+            await api.request("PUT", `/api/canvases/${board}/placements`, owner.session, {
+              placements: [{ entityId, parentEntityId: null, x: 0, y: 0, width: 220, height: 120 }],
+            })
+          ).status,
+      ),
+    );
+    const outcome = await Promise.race([saves, Bun.sleep(10_000).then(() => "timed out")]);
+    expect(outcome).toEqual(entityIds.map(() => 200));
+  }, 20_000);
+
   it("rejects placements that reference other workspaces or unplaced parents", async () => {
     const { owner, canvasId, a } = await canvasWithConnection();
     const other = await api.register("Other Workspace Owner");
@@ -273,7 +392,9 @@ describe("connector routes and layout", () => {
       placements: [{ ...placement, parentEntityId: foreign }],
     });
     expect(crossWorkspace.status).toBe(400);
-    expect(crossWorkspace.body.message).toBe("Placement entities and parents must belong to the canvas workspace");
+    expect(crossWorkspace.body.message).toBe(
+      "Placement entities and parents must belong to the canvas workspace and be visible to you",
+    );
 
     const secondCanvas = await api.createCanvas(owner.session, owner.workspaceId, "Second");
     const unplaced = await api.createNode(owner.session, secondCanvas, { type: "system", name: "Elsewhere" });

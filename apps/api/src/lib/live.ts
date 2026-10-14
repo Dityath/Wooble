@@ -1,5 +1,6 @@
 import type { ElysiaWS } from "elysia/ws";
 import { and, eq, gt } from "drizzle-orm";
+import { z } from "zod";
 import { canvasIdParamsSchema, connectionIdParamsSchema, entityIdParamsSchema } from "@wooble/contracts";
 import { canvasConnections, canvasNodes, canvases, db, sessions, users } from "@wooble/db";
 import { canvasRole, hashToken, sessionToken, type Actor, type Api } from "./auth";
@@ -19,19 +20,22 @@ type Peer = {
   selection: Selection;
   lastActiveAt: number;
   lastCursorAt: number;
+  /** False until open() has checked access; messages wait in `queued` until then. */
+  joined: boolean;
+  queued: unknown[];
   recheckTimer: ReturnType<typeof setInterval> | null;
   revokeTimer: ReturnType<typeof setTimeout> | null;
+  /** Set once a close was started by the server or the socket closed; nothing is closed or armed twice. */
+  closing: boolean;
   closed: Promise<void>;
   markClosed: () => void;
 };
 const peers = new WeakMap<object, Peer>();
 const shutdownClosers = new WeakMap<object, (gracePeriodMs: number) => Promise<void>>();
+const maxQueuedMessages = 16;
+const uuidParam = z.string().uuid();
 function send(peer: Peer, message: object) {
   if (peer.socket.readyState === 1) peer.socket.send(JSON.stringify(message));
-}
-function revoke(peer: Peer) {
-  peer.socket.close(1008, "Canvas access changed");
-  peer.revokeTimer = setTimeout(() => peer.socket.terminate(), 1000);
 }
 
 function ignoreOversizedMessages(socket: ElysiaWS) {
@@ -74,12 +78,15 @@ async function canReadCanvas(peer: Peer, canvasId: string) {
   return !!shared;
 }
 
-export function liveRoutes(app: Api, recheckMs = 30_000) {
+export function liveRoutes(app: Api, recheckMs = 30_000, { terminateAfterMs = 1000 } = {}) {
   const rooms = new Map<string, Set<Peer>>();
+  // Every open socket, including those still waiting for their access check.
+  const connected = new Set<Peer>();
   shutdownClosers.set(app, async (gracePeriodMs) => {
-    const activePeers = [...rooms.values()].flatMap((room) => [...room]);
+    const activePeers = [...connected];
     for (const peer of activePeers) {
       if (peer.recheckTimer) clearInterval(peer.recheckTimer);
+      peer.closing = true;
       if (peer.revokeTimer) clearTimeout(peer.revokeTimer);
       try {
         if (peer.socket.readyState === 1) peer.socket.close(1001, "Server shutting down");
@@ -103,10 +110,173 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
   function broadcast(canvasId: string, message: object, except?: Peer) {
     for (const peer of rooms.get(canvasId) ?? []) if (peer !== except) send(peer, message);
   }
-  async function closeRevokedPeers(canvasId: string) {
-    for (const peer of rooms.get(canvasId) ?? []) {
-      if (!(await canReadCanvas(peer, canvasId))) revoke(peer);
+  /**
+   * Takes a peer out of every live structure, so nothing reaches it and nothing it sends is relayed,
+   * whether or not its socket has finished closing. The socket's close handler repeats this work,
+   * and clearing `joined` here makes it idempotent.
+   */
+  function detach(peer: Peer) {
+    if (!connected.delete(peer)) return;
+    peer.queued = [];
+    if (peer.recheckTimer) {
+      clearInterval(peer.recheckTimer);
+      peer.recheckTimer = null;
     }
+    if (!peer.joined) return;
+    peer.joined = false;
+    const room = rooms.get(peer.canvasId);
+    room?.delete(peer);
+    broadcast(peer.canvasId, { type: "left", id: peer.id });
+    if (room && !room.size) rooms.delete(peer.canvasId);
+  }
+  /**
+   * Stops a peer first, then closes its socket: otherwise frames keep travelling during the close
+   * handshake. An unresponsive client must not keep a detached socket around, so the socket is
+   * terminated after a delay. Closing a peer that is already closing or closed does nothing.
+   */
+  function closePeer(peer: Peer, code: number, reason: string) {
+    detach(peer);
+    if (peer.closing) return;
+    peer.closing = true;
+    const state = peer.socket.readyState as number;
+    if (state === 3) return;
+    if (state === 1) peer.socket.close(code, reason);
+    // Bun runs the close handler inside close(); a socket that is already closed needs no fallback.
+    // A socket in CLOSING (2) may still never finish its handshake, so it keeps the fallback.
+    if ((peer.socket.readyState as number) === 3) return;
+    peer.revokeTimer = setTimeout(() => peer.socket.terminate(), terminateAfterMs);
+  }
+  const revoke = (peer: Peer, reason = "Canvas access changed") => closePeer(peer, 1008, reason);
+  /** Access that cannot be established is no access: close the peer, and stop it first. */
+  const unavailable = (peer: Peer) => closePeer(peer, 1011, "Access check unavailable");
+  async function revalidatePeers(affected: (peer: Peer) => boolean) {
+    // Checked in parallel, and one failed check does not stop the rest. A peer whose access cannot be
+    // read fails closed: it is detached and closed rather than left waiting for a later check.
+    await Promise.all(
+      [...connected].filter(affected).map(async (peer) => {
+        try {
+          if (!(await canReadCanvas(peer, peer.canvasId))) revoke(peer);
+        } catch (error) {
+          console.error("Could not recheck live canvas access", error);
+          unavailable(peer);
+        }
+      }),
+    );
+  }
+  const closeRevokedPeers = (canvasId: string) => revalidatePeers((peer) => peer.canvasId === canvasId);
+  /** Rechecks the user's sockets after a sign-out, a password change, or a system role change. */
+  const revalidateLivePeers = (userId: string) => revalidatePeers((peer) => peer.actor?.id === userId);
+  async function revalidateWorkspacePeers(workspaceId: string) {
+    if (!connected.size) return;
+    let rows: Array<{ id: string }>;
+    try {
+      rows = await db.select({ id: canvases.id }).from(canvases).where(eq(canvases.workspaceId, workspaceId));
+    } catch (error) {
+      // Which canvases are affected is unknown, so recheck every peer; each one fails closed on its own.
+      console.error("Could not look up the workspace's canvases", error);
+      await revalidatePeers(() => true);
+      return;
+    }
+    const canvasIds = new Set(rows.map((row) => row.id));
+    await revalidatePeers((peer) => canvasIds.has(peer.canvasId));
+  }
+
+  async function join(peer: Peer) {
+    let allowed: boolean;
+    try {
+      allowed = await canReadCanvas(peer, peer.canvasId);
+    } catch (error) {
+      console.error("Could not check live canvas access", error);
+      unavailable(peer);
+      return;
+    }
+    // The socket may have closed, or been revoked, while the check ran.
+    if (peer.closing || !connected.has(peer) || peer.socket.readyState !== 1) return;
+    if (!allowed) {
+      revoke(peer, "Canvas access denied");
+      return;
+    }
+    const room = rooms.get(peer.canvasId) ?? new Set<Peer>();
+    const usedColors = new Set([...room].map((member) => member.colorIndex));
+    peer.colorIndex = [0, 1, 2, 3, 4, 5].find((index) => !usedColors.has(index)) ?? room.size % 6;
+    rooms.set(peer.canvasId, room);
+    send(peer, {
+      type: "presence",
+      peers: [...room].map(({ id, name, colorIndex, cursor, selection, lastActiveAt }) => ({
+        id,
+        name,
+        colorIndex,
+        cursor,
+        selection,
+        lastActiveAt,
+      })),
+    });
+    room.add(peer);
+    peer.joined = true;
+    broadcast(
+      peer.canvasId,
+      { type: "joined", id: peer.id, name: peer.name, colorIndex: peer.colorIndex, lastActiveAt: peer.lastActiveAt },
+      peer,
+    );
+    peer.recheckTimer = setInterval(async () => {
+      try {
+        if (await canReadCanvas(peer, peer.canvasId)) return;
+        revoke(peer);
+      } catch (error) {
+        console.error("Could not recheck live canvas access", error);
+        unavailable(peer);
+      }
+    }, recheckMs);
+    for (const message of peer.queued.splice(0)) receive(peer, message);
+  }
+
+  function receive(peer: Peer, message: unknown) {
+    const raw =
+      typeof message === "string"
+        ? message
+        : message instanceof Uint8Array
+          ? new TextDecoder().decode(message)
+          : JSON.stringify(message);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (!parsed || typeof parsed !== "object" || !("type" in parsed)) return;
+    if (parsed.type === "selection") {
+      const { kind, id } = parsed as { kind?: unknown; id?: unknown };
+      if (
+        kind !== null &&
+        ((kind !== "node" && kind !== "connection") || typeof id !== "string" || !/^[0-9a-f-]{36}$/i.test(id))
+      )
+        return;
+      peer.selection = kind === null ? null : { kind, id: id as string };
+      peer.lastActiveAt = Date.now();
+      broadcast(
+        peer.canvasId,
+        { type: "selection", id: peer.id, selection: peer.selection, lastActiveAt: peer.lastActiveAt },
+        peer,
+      );
+      return;
+    }
+    if (parsed.type === "activity") {
+      peer.lastActiveAt = Date.now();
+      broadcast(peer.canvasId, { type: "activity", id: peer.id, lastActiveAt: peer.lastActiveAt }, peer);
+      return;
+    }
+    if (parsed.type !== "cursor") return;
+    const { x, y } = parsed as { x?: unknown; y?: unknown };
+    if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (Math.abs(x) > 1_000_000 || Math.abs(y) > 1_000_000 || Date.now() - peer.lastCursorAt < 40) return;
+    peer.lastCursorAt = Date.now();
+    peer.cursor = { x, y };
+    peer.lastActiveAt = Date.now();
+    broadcast(
+      peer.canvasId,
+      { type: "cursor", id: peer.id, name: peer.name, x, y, lastActiveAt: peer.lastActiveAt },
+      peer,
+    );
   }
 
   app.ws("/api/canvases/:canvasId/live", {
@@ -116,16 +286,15 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
         headers: Record<string, string | undefined>;
         actor: Actor | null;
       };
-      const canvasId = data.params.canvasId;
-      if (!/^[0-9a-f-]{36}$/i.test(canvasId) || !allowedWebOrigins.includes(data.headers.origin ?? "")) {
+      // accessGuard lets invalid params through, so validate the ID as the canvas routes do.
+      const params = canvasIdParamsSchema.safeParse(data.params);
+      if (!params.success || !allowedWebOrigins.includes(data.headers.origin ?? "")) {
         socket.close(1008, "Invalid canvas or origin");
         return;
       }
+      const canvasId = params.data.canvasId;
       ignoreOversizedMessages(socket);
       const id = crypto.randomUUID();
-      const room = rooms.get(canvasId) ?? new Set<Peer>();
-      const usedColors = new Set([...room].map((member) => member.colorIndex));
-      const colorIndex = [0, 1, 2, 3, 4, 5].find((index) => !usedColors.has(index)) ?? room.size % 6;
       const token = sessionToken(data.headers.cookie);
       let markClosed!: () => void;
       const closed = new Promise<void>((resolve) => {
@@ -134,7 +303,7 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
       const peer: Peer = {
         id,
         name: data.actor?.name.slice(0, 32) ?? `Guest ${id.slice(0, 4).toUpperCase()}`,
-        colorIndex,
+        colorIndex: 0,
         actor: data.actor,
         tokenHash: data.actor && token ? hashToken(token) : null,
         canvasId,
@@ -143,100 +312,33 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
         selection: null,
         lastActiveAt: Date.now(),
         lastCursorAt: 0,
+        joined: false,
+        queued: [],
         recheckTimer: null,
         revokeTimer: null,
+        closing: false,
         closed,
         markClosed,
       };
       peers.set(socket.raw, peer);
-      rooms.set(canvasId, room);
-      send(peer, {
-        type: "presence",
-        peers: [...room].map(({ id, name, colorIndex, cursor, selection, lastActiveAt }) => ({
-          id,
-          name,
-          colorIndex,
-          cursor,
-          selection,
-          lastActiveAt,
-        })),
-      });
-      room.add(peer);
-      broadcast(
-        canvasId,
-        { type: "joined", id: peer.id, name: peer.name, colorIndex, lastActiveAt: peer.lastActiveAt },
-        peer,
-      );
-      peer.recheckTimer = setInterval(async () => {
-        try {
-          if (await canReadCanvas(peer, canvasId)) return;
-          revoke(peer);
-        } catch (error) {
-          console.error("Could not recheck live canvas access", error);
-          socket.close(1011, "Access check unavailable");
-        }
-      }, recheckMs);
+      connected.add(peer);
+      // The upgrade already passed accessGuard; check again here so a socket whose access ended
+      // in between never joins the room or sees presence.
+      return join(peer);
     },
     message(ws, message) {
       const peer = peers.get(ws.raw);
-      if (!peer) return;
-      const raw =
-        typeof message === "string"
-          ? message
-          : message instanceof Uint8Array
-            ? new TextDecoder().decode(message)
-            : JSON.stringify(message);
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        return;
-      }
-      if (!parsed || typeof parsed !== "object" || !("type" in parsed)) return;
-      if (parsed.type === "selection") {
-        const { kind, id } = parsed as { kind?: unknown; id?: unknown };
-        if (
-          kind !== null &&
-          ((kind !== "node" && kind !== "connection") || typeof id !== "string" || !/^[0-9a-f-]{36}$/i.test(id))
-        )
-          return;
-        peer.selection = kind === null ? null : { kind, id: id as string };
-        peer.lastActiveAt = Date.now();
-        broadcast(
-          peer.canvasId,
-          { type: "selection", id: peer.id, selection: peer.selection, lastActiveAt: peer.lastActiveAt },
-          peer,
-        );
-        return;
-      }
-      if (parsed.type === "activity") {
-        peer.lastActiveAt = Date.now();
-        broadcast(peer.canvasId, { type: "activity", id: peer.id, lastActiveAt: peer.lastActiveAt }, peer);
-        return;
-      }
-      if (parsed.type !== "cursor") return;
-      const { x, y } = parsed as { x?: unknown; y?: unknown };
-      if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) return;
-      if (Math.abs(x) > 1_000_000 || Math.abs(y) > 1_000_000 || Date.now() - peer.lastCursorAt < 40) return;
-      peer.lastCursorAt = Date.now();
-      peer.cursor = { x, y };
-      peer.lastActiveAt = Date.now();
-      broadcast(
-        peer.canvasId,
-        { type: "cursor", id: peer.id, name: peer.name, x, y, lastActiveAt: peer.lastActiveAt },
-        peer,
-      );
+      if (!peer || peer.closing) return;
+      if (peer.joined) receive(peer, message);
+      else if (peer.queued.length < maxQueuedMessages) peer.queued.push(message);
     },
     close(ws) {
       const peer = peers.get(ws.raw);
       if (!peer) return;
       peers.delete(ws.raw);
-      if (peer.recheckTimer) clearInterval(peer.recheckTimer);
+      peer.closing = true;
+      detach(peer);
       if (peer.revokeTimer) clearTimeout(peer.revokeTimer);
-      const room = rooms.get(peer.canvasId);
-      room?.delete(peer);
-      broadcast(peer.canvasId, { type: "left", id: peer.id });
-      if (room && !room.size) rooms.delete(peer.canvasId);
       peer.markClosed();
     },
   });
@@ -246,6 +348,27 @@ export function liveRoutes(app: Api, recheckMs = 30_000) {
     const status = typeof context.set.status === "number" ? context.set.status : 200;
     if (["GET", "HEAD", "OPTIONS"].includes(method) || status >= 400) return;
     const route = context.route;
+    // Signing out, a password change (which ends every session), a system role change and a
+    // workspace member change can end access outside the canvas routes below. Recheck the affected
+    // sockets now rather than at the next interval.
+    const revokedUserId =
+      route === "/api/auth/logout" || route === "/api/auth/password"
+        ? context.actor?.id
+        : route === "/api/admin/users/:userId"
+          ? context.params.userId
+          : undefined;
+    const workspaceParams = route.startsWith("/api/workspaces/:workspaceId/members")
+      ? uuidParam.safeParse(context.params.workspaceId)
+      : null;
+    if (revokedUserId || workspaceParams?.success) {
+      try {
+        if (revokedUserId) await revalidateLivePeers(revokedUserId);
+        if (workspaceParams?.success) await revalidateWorkspacePeers(workspaceParams.data);
+      } catch (error) {
+        console.error("Could not recheck live canvas access", error);
+      }
+      return;
+    }
     const canvasParams = canvasIdParamsSchema.safeParse(context.params);
     if (route.startsWith("/api/canvases/:canvasId/") || route === "/api/canvases/:canvasId") {
       if (!canvasParams.success) return;

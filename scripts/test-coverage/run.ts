@@ -168,7 +168,7 @@ async function plannedSuites(): Promise<Suite[]> {
   const suites: Suite[] = [{ id: "web", paths: ["--preload", "./apps/web/tests/support/dom.ts", "apps/web/tests"] }];
   const sharedDirs = await packageTestDirs();
   if (sharedDirs.length) suites.push({ id: "shared", paths: sharedDirs });
-  if (!withoutApi) suites.push({ id: "api", paths: ["apps/api/tests"] });
+  if (!withoutApi) suites.push({ id: "api", paths: ["./apps/api/tests/"] });
   return suites;
 }
 

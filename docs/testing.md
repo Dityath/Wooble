@@ -6,7 +6,7 @@ Wooble has three test suites, and each one runs with Bun:
 | --- | --- | --- |
 | Web | `bun run test:web` (`apps/web/tests`) | Nothing extra; a happy-dom DOM is preloaded |
 | Shared runtime | `packages/*/tests` | Nothing extra |
-| API | `apps/api/tests` | An isolated, migrated PostgreSQL database in `DATABASE_URL` |
+| API | `apps/api/tests` | An isolated, migrated PostgreSQL database in `DATABASE_URL`, whose user can create databases (for the upgrade test) |
 
 Canvas browser journeys run separately with Playwright; see [CONTRIBUTING.md](../CONTRIBUTING.md#local-checks).
 
@@ -31,6 +31,32 @@ happy-dom does no layout, so the preload reports inline pixel sizes for elements
 ## Writing API tests
 
 API tests call the Elysia app in process against the isolated database. `apiClient()` in `apps/api/tests/support/client.ts` registers fictional accounts with unique emails, promotes admins, and creates canvases, nodes, connections, and invitations. Registration and login share a per-IP rate limit across the suite, so call `resetLoginAttempts()` before each test that signs people in. Cover the permission matrix for a route: managers, editors, viewers, link visitors, outsiders, signed-out requests, and system admins where they differ.
+
+A new route needs an access class in `routeAccess` (`apps/api/src/lib/auth.ts`) and an entry in the route list in `apps/api/tests/route-access.test.ts`; that test fails for any registered route missing from the list. To test a guard rule before a real route uses it, register a probe route with `apiClient({ configure })`.
+
+Live-socket tests that use the raw client (`apps/api/tests/support/raw-websocket.ts`) prove frame isolation for a peer that never answers a close frame, not detach-before-close ordering: on Bun 1.3.14 the server's close handler runs synchronously inside `ws.close()`, so the two cannot be told apart. The terminate fallback timer is not observed by any test and is unverified.
+
+## Database migrations and upgrades
+
+Each release must upgrade from the previous one without losing content. Two checks guard this:
+
+- `packages/db/tests/migrations.test.ts` runs without a database. It checks that the journal in `packages/db/drizzle/meta/_journal.json` is numbered contiguously, that its `when` timestamps strictly increase, that every entry has exactly one SQL file, and that migrations shipped in a release still match their recorded SHA-256. Drizzle applies a migration only when its timestamp is newer than the last one applied, so an out-of-order timestamp would be skipped silently on upgraded installations.
+- `apps/api/tests/migration-upgrade.test.ts` creates a scratch database beside the API test database (see below). It migrates only up to the last migration of `v0.1.0`, writes fictional content through that schema (documentation, schema SQL, contract bodies, a node shown on two canvases, canvas events), applies the remaining migrations, and checks that the content is unchanged and that every journal entry ran. `apps/api/tests/support/migrations.ts` builds a temporary copy of the migrations folder for the partial run; checked-in files are never edited.
+
+`scratchDatabase()` in `apps/api/tests/support/migrations.ts` creates one scratch database per run. The name is `wooble_p1_1_<test database>_<suffix>_<random token>`, cut to PostgreSQL's 63-byte identifier limit, because PostgreSQL would otherwise truncate a longer name with only a notice. It retries with a new name only when `CREATE DATABASE` reports a duplicate (SQLSTATE `42P04`); any other error fails the run. The handle it returns drops only the database that call created, never one it did not create, and it never terminates other sessions. Each statement runs on its own short-lived connection to the `postgres` database, and the test closes its own connections before it drops, so a drop does not meet the harness's own sessions. The drop has no `FORCE`, so it fails while another session is still connected to the scratch database, and it can be retried after that session closes. Parallel runs and agents can therefore share one PostgreSQL instance. If a run is killed, its database stays behind; the `wooble_p1_1_` prefix makes it recognisable in `pg_database`.
+
+The `DATABASE_URL` user needs the `CREATEDB` privilege on a disposable instance. Never use the production app user for tests.
+
+Run API tests with `bun run test` (which runs `bun test ./tests/`) or `bun test tests/*.test.ts` from `apps/api`. A bare `bun test`, or a substring filter such as `tests`, also picks up the ignored `apps/api/dist/tests` build output.
+
+`apps/api/scripts/test-isolated.sh` does not work this way. It uses a fixed default database name (`architecture_canvas_test`, overridable with `TEST_DB_NAME`) and recreates it with `DROP DATABASE IF EXISTS ... WITH (FORCE)`, which ends any session connected to it. Two runs against the same instance and name drop each other's database, so give each run its own `TEST_DB_NAME` or instance.
+
+When a branch adds a migration:
+
+1. Generate the schema migration with `drizzle-kit generate`. If `main` gains another migration first, regenerate yours after merging `main` so it gets the next number and a newer timestamp. Never edit a migration that has been released or merged.
+2. Keep hand-written data changes, such as copying existing values into a new table, in a separate custom migration (`drizzle-kit generate --custom`) that is never regenerated. Regenerating the schema migration would otherwise drop them.
+3. Extend the upgrade test's seed and snapshot when the migration converts existing content, and assert the converted values.
+4. When a release is tagged, add its migrations to the `released` hashes and, for the next release, add an upgrade case from that release.
 
 ## Running coverage locally
 
