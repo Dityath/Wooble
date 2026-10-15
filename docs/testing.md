@@ -27,6 +27,27 @@ The self-host browser journey (`apps/web/e2e/selfhost-install.pw.ts`) also runs 
 
 The Self-hosted stack GitHub Actions workflow (`.github/workflows/docker.yml`) is configured to build a disposable source stack, verify its published ports and health, run API registration/canvas/WebSocket/Origin smoke, exercise browser login and static assets through local Caddy HTTPS, and rehearse backup/restore using fictional content. It then tests restart and persistence. Workflow configuration is not evidence of a completed GitHub Actions run; report the run URL/status and each phase result when it has actually run. Do not use these commands against a real installation or real account data.
 
+A green smoke run only means something if the smoke script fails when the stack is wrong. `scripts/selfhost-smoke.test.ts` checks that, without Docker, and runs in the same workflow's regression suites. It feeds the `ports` phase fictional `docker compose ps` output and runs `setup` and `verify` against a fictional in-process API. Each case below must exit non-zero and name the failure:
+
+| Phase | Broken stack | Expected failure |
+| --- | --- | --- |
+| `ports` | `api` or `postgres` publishes a host port | `The <service> service publishes a host port` |
+| `ports` | `web` listens on `0.0.0.0` | `The web service listens on 0.0.0.0, expected 127.0.0.1` |
+| `ports` | `web` publishes nothing, or is not running | `The web service publishes no port` / `The web service is not running` |
+| `setup` | Registration fails | `Registration returned <status>` |
+| `setup` | The live socket closes before presence | `Live socket closed with <code> before presence` |
+| `setup` | A write from another origin is accepted | `A write from another origin returned <status>, expected 403` |
+| `verify` | The account is gone, as after a lost volume | `Login returned 401` |
+| `verify` | The node documentation is lost | `The node or its documentation was lost` |
+
+Each phase also has a passing case against a healthy fake, so a failure comes from the injected fault and not from the harness. Run them with `bun test scripts/selfhost-smoke.test.ts`. To check the port assertion by hand against a disposable stack, pipe edited `ps` output into it. For example, this must fail with `The postgres service publishes a host port`:
+
+```sh
+docker compose <same -f files as the workflow> ps --format json \
+  | jq -c 'if .Service == "postgres" then .Publishers = [{"URL":"127.0.0.1","PublishedPort":5432}] else . end' \
+  | bun scripts/selfhost-smoke.ts ports
+```
+
 To run the browser-specific journey against a disposable local Compose stack, start a stack using a supported HTTPS origin (for example `https://localhost:18083`), install Playwright's Chromium once, then run:
 
 ```sh
