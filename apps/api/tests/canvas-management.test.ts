@@ -262,6 +262,23 @@ describe("connector routes and layout", () => {
     expect(after.connections[0].bend).toEqual({ x: 250, y: 60 });
   });
 
+  it("saves Auto Neat multi-waypoint routes as arrays", async () => {
+    const { owner, canvasId, connectionId } = await canvasWithConnection();
+    const graph = (await api.json<Graph>("GET", `/api/canvases/${canvasId}/graph`, owner.session)).body;
+    const path = [
+      { x: 250, y: 60 },
+      { x: 250, y: 140 },
+    ];
+    const saved = await api.json<{ kind: string }>("PUT", `/api/canvases/${canvasId}/auto-neat`, owner.session, {
+      expectedUpdatedAt: graph.canvas.updatedAt,
+      placements: graph.placements.map((placement) => ({ ...placement, x: placement.x + 10 })),
+      connections: [{ connectionId, bend: path }],
+    });
+    expect(saved.body.kind).toBe("saved");
+    const after = (await api.json<Graph>("GET", `/api/canvases/${canvasId}/graph`, owner.session)).body;
+    expect(after.connections[0].bend).toEqual(path);
+  });
+
   it("only lets people who can already read an entity place it on another canvas", async () => {
     const owner = await api.register("Placement Owner");
     const editor = await api.register("Placement Editor");

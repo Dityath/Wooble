@@ -103,7 +103,7 @@ describe("shared component defaults", () => {
     const edit = renderHook(() => useContext(ConnectorEditContext)).result.current;
     const resize = renderHook(() => useContext(SystemResizeContext)).result.current;
     expect(edit.editing).toBe(false);
-    await expect(edit.saveBend("connection", null)).resolves.toBeUndefined();
+    await expect(edit.saveBend("connection", null)).resolves.toBe(true);
     expect(resize.enabled).toBe(false);
     expect(resize.canResize("system", { x: 0, y: 0, width: 400, height: 300 })).toBe(false);
     expect(() => {

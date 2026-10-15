@@ -59,6 +59,9 @@ import { nodeTypes } from "./node-types";
 import type { ArchitectureFlowNode } from "./architecture-nodes";
 import { buildAutoNeatLayout } from "./auto-neat";
 import { CanvasActivityLog } from "./canvas-activity-log";
+import { connectorPorts } from "./connector-ports";
+import { type EdgeLabelRoute, edgeLabelSize, placeEdgeLabels } from "./edge-label";
+import { absoluteBox, buildConnectorRoute, isHorizontalRoute, routeWaypoints } from "./connector-route";
 import { canvasShortcutLabel, resolveCanvasKeyDown, type CanvasTool } from "./canvas-shortcuts";
 import { participantColor } from "./participant-color";
 import { SystemResizeContext } from "./system-resize-context";
@@ -268,21 +271,33 @@ function CanvasViewer({
       void flow.fitView({ nodes: [{ id: focusRequest.id }], padding: 0.2, maxZoom: 1.1, duration: 260 });
   }, [flow, focusRequest]);
   const entityMap = new Map(graph.entities.map((entity) => [entity.id, entity]));
-  const nodes = buildFlowNodes(graph, entityMap, EMPTY_POSITIONS).map((node) => ({
-    ...node,
-    draggable: false,
-    selected: selected?.kind === "node" && selected.id === node.id,
-    data: {
-      ...node.data,
-      remotePeers: live.peers
-        .filter((peer) => peer.selection?.kind === "node" && peer.selection.id === node.id)
-        .map((peer) => ({ name: peer.name, color: peerColor(peer) })),
-    },
-  }));
-  const edges = buildFlowEdges(graph).map((edge) => ({
-    ...decorateEdge(edge, live.peers),
-    selected: selected?.kind === "connection" && selected.id === edge.id,
-  }));
+  // Memoised so the shared canvas only hands React Flow new element objects when something actually changed: fresh
+  // objects every render would drop the measured node boxes and remount every connector each time.
+  const renderedNodes = useRef<ArchitectureFlowNode[]>([]);
+  const nodes = useMemo(() => {
+    const entities = new Map(graph.entities.map((entity) => [entity.id, entity]));
+    const next = buildFlowNodes(graph, entities, EMPTY_POSITIONS).map((node) => ({
+      ...node,
+      draggable: false,
+      selected: selected?.kind === "node" && selected.id === node.id,
+      data: {
+        ...node.data,
+        remotePeers: live.peers
+          .filter((peer) => peer.selection?.kind === "node" && peer.selection.id === node.id)
+          .map((peer) => ({ name: peer.name, color: peerColor(peer) })),
+      },
+    }));
+    renderedNodes.current = keepMeasuredGeometry(renderedNodes.current, next);
+    return renderedNodes.current;
+  }, [graph, live.peers, selected]);
+  const edges = useMemo(
+    () =>
+      buildFlowEdges(graph).map((edge) => ({
+        ...decorateEdge(edge, live.peers),
+        selected: selected?.kind === "connection" && selected.id === edge.id,
+      })),
+    [graph, live.peers, selected],
+  );
   const selectedEntity = selected?.kind === "node" ? entityMap.get(selected.id) : undefined;
   const selectedConnection =
     selected?.kind === "connection" ? graph.connections.find((item) => item.id === selected.id) : undefined;
@@ -460,7 +475,7 @@ function CanvasEditor({
   }, [flow, focusRequest]);
   const lastFitCanvasId = useRef<string | null>(null);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
-  const bendSaveQueue = useRef<Promise<void>>(Promise.resolve());
+  const bendSaveQueue = useRef<Promise<boolean>>(Promise.resolve(true));
   const bendSequence = useRef(0);
   const latestBendRequest = useRef(new Map<string, number>());
   const saveSequence = useRef(0);
@@ -500,7 +515,7 @@ function CanvasEditor({
         }
       : graph;
     const entityMap = new Map(graph.entities.map((entity) => [entity.id, entity]));
-    setNodes(buildFlowNodes(visibleGraph, entityMap, positionsRef.current));
+    setNodes((current) => keepMeasuredGeometry(current, buildFlowNodes(visibleGraph, entityMap, positionsRef.current)));
     setEdges(buildFlowEdges(visibleGraph));
     if (lastFitCanvasId.current !== graph.canvas.id) {
       lastFitCanvasId.current = graph.canvas.id;
@@ -775,19 +790,40 @@ function CanvasEditor({
   }, [autoNeatBusy, clearSelection, creating, detailsOpen, runUndo, selectedConnectionId, selectedEntityId]);
 
   const saveBend = useCallback(
-    (connectionId: string, bend: ConnectionPath) => {
-      if (autoNeatBusy) return Promise.resolve();
+    (connectionId: string, bend: ConnectionPath): Promise<boolean> => {
+      if (autoNeatBusy) return Promise.resolve(true);
       const requestId = ++bendSequence.current;
       latestBendRequest.current.set(connectionId, requestId);
       setCreationError(null);
+      // The rendered route is read from the graph, so publish the bend to the cache before the request goes out.
+      // Editing then has a single source of truth: no local draft can disagree with what the next render draws.
+      const previous = queryClient
+        .getQueryData<CanvasGraph>(["canvas-graph", canvasId])
+        ?.connections.find((connection) => connection.id === connectionId)?.bend;
+      const publish = (value: ConnectionPath) =>
+        queryClient.setQueryData<CanvasGraph>(["canvas-graph", canvasId], (current) =>
+          current
+            ? {
+                ...current,
+                connections: current.connections.map((connection) =>
+                  connection.id === connectionId ? { ...connection, bend: value } : connection,
+                ),
+              }
+            : current,
+        );
+      publish(bend);
       const save = async () => {
         try {
-          await api.saveConnectionBend(canvasId, connectionId, bend);
-          if (latestBendRequest.current.get(connectionId) === requestId)
-            await queryClient.invalidateQueries({ queryKey: ["canvas-graph", canvasId] });
+          // The stored path comes back with the reply, so the graph is reconciled without a refetch. Refetching here
+          // would land between two quick edits and roll the route back to the previous one.
+          const stored = await api.saveConnectionBend(canvasId, connectionId, bend);
+          if (latestBendRequest.current.get(connectionId) === requestId) publish(stored.bend);
+          return true;
         } catch (error) {
-          if (latestBendRequest.current.get(connectionId) === requestId)
-            setCreationError(error instanceof Error ? error.message : "Could not save connector path");
+          if (latestBendRequest.current.get(connectionId) !== requestId) return true;
+          publish(previous ?? null);
+          setCreationError(error instanceof Error ? error.message : "Could not save connector path");
+          return false;
         }
       };
       bendSaveQueue.current = bendSaveQueue.current.then(save, save);
@@ -885,7 +921,9 @@ function CanvasEditor({
           }}
         >
           <SystemResizeContext.Provider value={resizeControls}>
-            <ConnectorEditContext.Provider value={{ editing: tool === "edit-connector", saveBend }}>
+            <ConnectorEditContext.Provider
+              value={{ editing: tool === "edit-connector", saving: autoNeatBusy || creating, saveBend }}
+            >
               <ReactFlow<ArchitectureFlowNode, ArchitectureFlowEdge>
                 nodes={nodes}
                 edges={edges}
@@ -1274,6 +1312,26 @@ function useStateFlowEdges(
   return [edges, setEdges, onEdgesChange];
 }
 
+/**
+ * A node rebuilt from the graph arrives without the box React Flow measured in the DOM. React Flow treats such a
+ * node as unmeasured, which makes every edge attached to it return `null` and remount for a frame. Refreshing the
+ * graph after a save therefore tore the connector being edited out of the document, losing its drag handle and
+ * keyboard focus. Carrying the measurement over keeps an edge mounted across any graph refresh.
+ */
+function keepMeasuredGeometry(current: ArchitectureFlowNode[], next: ArchitectureFlowNode[]): ArchitectureFlowNode[] {
+  const measured = new Map(current.filter((node) => node.measured).map((node) => [node.id, node]));
+  return next.map((node) => {
+    const previous = measured.get(node.id);
+    if (!previous?.measured) return node;
+    return {
+      ...node,
+      measured: previous.measured,
+      width: previous.width ?? node.width,
+      height: previous.height ?? node.height,
+    };
+  });
+}
+
 function buildFlowNodes(
   graph: CanvasGraph,
   entities: Map<string, ArchitectureEntity>,
@@ -1333,35 +1391,44 @@ function buildFlowNodes(
 function buildFlowEdges(graph: CanvasGraph): ArchitectureFlowEdge[] {
   const placements = new Map(graph.placements.map((placement) => [placement.entityId, placement]));
   const entityMap = new Map(graph.entities.map((entity) => [entity.id, entity]));
-  const lanes = new Map<string, number>();
-  return [...graph.connections]
-    .sort((a, b) => a.id.localeCompare(b.id))
+  const boxes = new Map(graph.placements.map((placement) => [placement.entityId, absoluteBox(placement, placements)]));
+  const connections = [...graph.connections].sort((a, b) => a.id.localeCompare(b.id));
+  const ports = connectorPorts(boxes, connections);
+  // Label anchors are resolved from the whole route set with the same function Auto Neat scored them with, so a
+  // stored bend always renders its label where the layout left it.
+  const labelRoutes: EdgeLabelRoute[] = [];
+  for (const connection of connections) {
+    const port = ports.get(connection.id);
+    const bend = routeWaypoints(connection.bend ?? null);
+    if (!port || !bend.length) continue;
+    const horizontal = isHorizontalRoute(`source-${port.sourceSide}`, port.source, port.target);
+    labelRoutes.push({
+      id: connection.id,
+      size: edgeLabelSize(connectionTitle(connection)),
+      segments: buildConnectorRoute(port.source, port.target, bend, horizontal, port.targetSide).segments,
+    });
+  }
+  const labelPositions = placeEdgeLabels(labelRoutes);
+  return connections
     .flatMap((connection) => {
-      const source = placements.get(connection.sourceEntityId);
-      const target = placements.get(connection.targetEntityId);
-      if (!source || !target) return [];
-      const sourceParent = source.parentEntityId ? placements.get(source.parentEntityId) : undefined;
-      const targetParent = target.parentEntityId ? placements.get(target.parentEntityId) : undefined;
-      const sourceX = source.x + (sourceParent?.x ?? 0) + source.width / 2;
-      const sourceY = source.y + (sourceParent?.y ?? 0) + source.height / 2;
-      const targetX = target.x + (targetParent?.x ?? 0) + target.width / 2;
-      const targetY = target.y + (targetParent?.y ?? 0) + target.height / 2;
-      const dx = targetX - sourceX;
-      const dy = targetY - sourceY;
-      const sourceSide = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : dy > 0 ? "bottom" : "top";
-      const targetSide = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "left" : "right") : dy > 0 ? "top" : "bottom";
-      const laneKey = `${connection.sourceEntityId}:${sourceSide}`;
-      const lane = lanes.get(laneKey) ?? 0;
-      lanes.set(laneKey, lane + 1);
+      const port = ports.get(connection.id);
+      if (!port) return [];
       return [
         {
           id: connection.id,
           source: connection.sourceEntityId,
           target: connection.targetEntityId,
-          sourceHandle: `source-${sourceSide}`,
-          targetHandle: `target-${targetSide}`,
+          sourceHandle: `source-${port.sourceSide}`,
+          targetHandle: `target-${port.targetSide}`,
           type: "architecture",
-          data: { connection, lane },
+          data: {
+            connection,
+            sourcePort: port.sourceOffset,
+            targetPort: port.targetOffset,
+            sourceBox: boxes.get(connection.sourceEntityId),
+            targetBox: boxes.get(connection.targetEntityId),
+            labelPosition: labelPositions.get(connection.id),
+          },
           label: connection.label,
           deletable: false,
         } as ArchitectureFlowEdge,

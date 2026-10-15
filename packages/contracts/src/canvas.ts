@@ -44,7 +44,7 @@ export const autoNeatCanvasSchema = z
     connections: z.array(
       z.object({
         connectionId: z.string().uuid(),
-        bend: connectionPointSchema,
+        bend: z.union([connectionPointSchema, z.array(connectionPointSchema).min(1).max(12)]),
       }),
     ),
   })

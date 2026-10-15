@@ -438,13 +438,17 @@ describe("connector routes", () => {
     expect(await screen.findByText(/Double-click a line to add a point/)).toBeTruthy();
 
     const bends = () => server.requests("PUT", `/api/canvases/${ids.canvas}/connections/${ids.connection}/bend`);
+    const pointAt = (index: number) => (bends()[index].body as { bend: Array<{ x: number; y: number }> }).bend;
     const hitbox = screen.getByRole("button", { name: "Add connector point" });
     fireEvent.doubleClick(hitbox, flowToClient({ x: 700, y: 150 }));
     await waitFor(() => expect(bends()).toHaveLength(1));
-    expect((bends()[0].body as { bend: unknown[] }).bend).toHaveLength(2);
+    expect(pointAt(0)).toHaveLength(2);
+    // Each add builds on the route the one before it produced, even before the previous save comes back.
     fireEvent.keyDown(hitbox, { key: "Enter" });
     fireEvent.keyDown(hitbox, { key: "x" });
     await waitFor(() => expect(bends()).toHaveLength(2));
+    expect(pointAt(1)).toHaveLength(3);
+    expect(screen.getAllByRole("button", { name: /Connector point/ })).toHaveLength(3);
 
     const handle = await screen.findByRole("button", { name: /Connector point 1;/ });
     handle.setPointerCapture = () => {};
@@ -452,22 +456,42 @@ describe("connector routes", () => {
     fireEvent.pointerMove(handle, { pointerId: 1, ...flowToClient({ x: 520, y: 180 }) });
     fireEvent.pointerUp(handle, { pointerId: 1, ...flowToClient({ x: 540, y: 200 }) });
     await waitFor(() => expect(bends()).toHaveLength(3));
-    expect((bends()[2].body as { bend: Array<{ x: number; y: number }> }).bend).toEqual([{ x: 540, y: 200 }]);
+    // Only the dragged point moved; the other two kept their places.
+    expect(pointAt(2)[0]).toEqual({ x: 540, y: 200 });
+    expect(pointAt(2)).toHaveLength(3);
 
+    // A cancelled drag is dropped, and a key that is neither Delete nor Backspace changes nothing.
     fireEvent.pointerDown(handle, { pointerId: 2 });
     fireEvent.pointerCancel(handle);
     fireEvent.pointerUp(handle);
     fireEvent.keyDown(handle, { key: "a" });
+    expect(bends()).toHaveLength(3);
+
     fireEvent.keyDown(handle, { key: "Delete" });
     await waitFor(() => expect(bends()).toHaveLength(4));
-    expect(bends()[3].body).toEqual({ bend: null });
-    // The refreshed graph still has the saved point, so its handle is rendered again.
-    fireEvent.doubleClick(await screen.findByRole("button", { name: /Connector point 1;/ }));
-    await waitFor(() => expect(bends()).toHaveLength(5));
+    expect(pointAt(3)).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: /Connector point/ })).toHaveLength(2);
 
-    fireEvent.click(screen.getByRole("button", { name: "Reset path" }));
+    // Removing every remaining point is the same as having no stored bend at all. Each press takes the last handle,
+    // so removing one never renames the handles still on screen.
+    for (let remaining = 1; remaining >= 0; remaining -= 1) {
+      await waitFor(() =>
+        expect(screen.getAllByRole("button", { name: /Connector point/ })).toHaveLength(remaining + 1),
+      );
+      const last = screen.getAllByRole("button", { name: /Connector point/ }).at(-1);
+      if (!last) throw new Error("Missing connector point");
+      fireEvent.keyDown(last, { key: "Delete" });
+    }
     await waitFor(() => expect(bends()).toHaveLength(6));
     expect(bends()[5].body).toEqual({ bend: null });
+    expect(screen.queryAllByRole("button", { name: /Connector point/ })).toHaveLength(0);
+
+    fireEvent.doubleClick(screen.getByRole("button", { name: "Add connector point" }));
+    await waitFor(() => expect(bends()).toHaveLength(7));
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset path" }));
+    await waitFor(() => expect(bends()).toHaveLength(8));
+    expect(bends()[7].body).toEqual({ bend: null });
   });
 
   it("reports connector path save errors and ignores edits outside the edit tool", async () => {
@@ -484,6 +508,57 @@ describe("connector routes", () => {
     fireEvent.doubleClick(hitbox, flowToClient({ x: 600, y: 100 }));
     expect((await screen.findByRole("alert")).textContent).toBe("Route changed");
   });
+
+  // Regression: a graph refresh used to rebuild the flow nodes without the box React Flow had measured, which makes
+  // each connector report "unmeasured" and remount. The bend handle under the pointer and under keyboard focus went
+  // with it, so the next Delete fell through to the canvas shortcut and asked to delete the whole connector.
+  it("keeps a connector point mounted and focused when an unrelated graph refresh lands", async () => {
+    let saved: ConnectionPath = null;
+    server.on("PUT /api/canvases/:id/connections/:connectionId/bend", ({ body }) => {
+      saved = (body as { bend: ConnectionPath }).bend;
+      return { bend: saved };
+    });
+    server.on("POST /api/canvases/:id/undo", { undone: true, skipped: [] });
+    await openCanvas();
+    // A real server keeps the saved path, so any later refresh reads it back unchanged.
+    server.on("GET /api/canvases/:id/graph", () => ({
+      ...graph(),
+      connections: graph().connections.map((item) => ({ ...item, bend: saved })),
+    }));
+    await screen.findByRole("button", { name: "Reads orders" });
+    fireEvent.click(screen.getByRole("button", { name: "Reads orders" }));
+    press("e");
+    await screen.findByText(/Drag points to reroute/);
+
+    const point = () => screen.queryByRole("button", { name: /Connector point 1;/ });
+    const graphReads = () => server.requests("GET", `/api/canvases/${ids.canvas}/graph`).length;
+    const hitbox = screen.getByRole("button", { name: "Add connector point" });
+    fireEvent.keyDown(hitbox, { key: "Enter" });
+    const first = await screen.findByRole("button", { name: /Connector point 1;/ });
+    first.focus();
+    expect(document.activeElement).toBe(first);
+    await waitFor(() => expect(server.requests("PUT", /connections/)).toHaveLength(1));
+
+    // An undo pulls a fresh graph that is identical here: the connector must not be torn down for it.
+    const before = graphReads();
+    press("z");
+    await waitFor(() => expect(server.requests("POST", /undo/)).toHaveLength(1));
+    await waitFor(() => expect(graphReads()).toBeGreaterThan(before));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    });
+    expect(screen.getByRole("button", { name: "Add connector point" })).toBe(hitbox);
+    expect(point()).toBe(first);
+    expect(document.activeElement).toBe(first);
+
+    // The keyboard still aims at a point, so this removes that point and nothing else.
+    fireEvent.keyDown(first, { key: "Delete" });
+    await waitFor(() => expect(point()).toBeNull());
+    expect(screen.getByRole("button", { name: "Reads orders" })).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // Loading the canvas, saving a path and undoing it is more waiting than a unit test should assume on a loaded
+    // machine, so this journey runs with room to breathe instead of racing the default timeout.
+  }, 20_000);
 });
 
 describe("undo and Auto Neat", () => {

@@ -4,63 +4,97 @@ import type { ArchitectureConnection, ConnectionBend, ConnectionPath } from "@wo
 import { useEditorStore } from "../../stores/editor-store";
 import { connectionTitle } from "../../lib/connection-title";
 import { ConnectorEditContext } from "./connector-edit-context";
-import { buildConnectorRoute, closestRouteInsertion, isHorizontalRoute, routeWaypoints } from "./connector-route";
+import {
+  applyPortOffset,
+  buildConnectorRoute,
+  closestRouteInsertion,
+  routeEntersEndpoints,
+  isHorizontalRoute,
+  routeWaypoints,
+  type ConnectorBox,
+  type ConnectorSide,
+} from "./connector-route";
 
 export type ArchitectureFlowEdge = Edge<{
   connection: ArchitectureConnection & { bend: ConnectionPath };
-  lane?: number;
+  sourcePort?: { x: number; y: number };
+  targetPort?: { x: number; y: number };
+  /** Absolute card boxes, used to reject stored bends that would run through the endpoint cards. */
+  sourceBox?: ConnectorBox;
+  targetBox?: ConnectorBox;
+  /** Label anchor for the whole graph, so every route keeps its label clear of the others. */
+  labelPosition?: ConnectionBend;
   remotePeers?: { name: string; color: string }[];
 }>;
 
 export function ArchitectureEdge(props: EdgeProps<ArchitectureFlowEdge>) {
-  const { editing, saveBend } = useContext(ConnectorEditContext);
+  const { editing, saving, saveBend } = useContext(ConnectorEditContext);
   const flow = useReactFlow();
   const setConnectionSelected = useEditorStore((state) => state.setConnectionSelected);
   const selectedConnectionId = useEditorStore((state) => state.selectedConnectionId);
-  const [draftWaypoints, setDraftWaypoints] = useState<ConnectionBend[] | null>(null);
+  // Adding, removing and dropping a point publish straight to the graph, which owns the rendered route. Only a drag
+  // needs a local draft, because it moves continuously and must not wait for the server.
+  const [dragWaypoints, setDragWaypoints] = useState<ConnectionBend[] | null>(null);
   const draggingIndex = useRef<number | null>(null);
-  const dragRevision = useRef(0);
+  const waypoints = dragWaypoints ?? routeWaypoints(props.data?.connection.bend ?? null);
+  // Mirrors the rendered waypoints so a burst of keyboard events cannot apply to a value React has not re-rendered.
+  const latest = useRef(waypoints);
+  latest.current = waypoints;
+  // Ports spread several connectors along one side; the handle sits mid-side, so shift by the port offset.
+  const { x: sourceX, y: sourceY } = applyPortOffset({ x: props.sourceX, y: props.sourceY }, props.data?.sourcePort);
+  const { x: targetX, y: targetY } = applyPortOffset({ x: props.targetX, y: props.targetY }, props.data?.targetPort);
   const [edgePath, labelX, labelY] = getSmoothStepPath({
-    sourceX: props.sourceX,
-    sourceY: props.sourceY,
+    sourceX,
+    sourceY,
     sourcePosition: props.sourcePosition,
-    targetX: props.targetX,
-    targetY: props.targetY,
+    targetX,
+    targetY,
     targetPosition: props.targetPosition,
     borderRadius: 10,
-    offset: 22 + (props.data?.lane ?? 0) * 22,
+    offset: 22,
   });
   const type = props.data?.connection.type ?? "rest";
   const label = props.data?.connection ? connectionTitle(props.data.connection) : "Connection";
-  const waypoints = draftWaypoints ?? routeWaypoints(props.data?.connection.bend ?? null);
-  const horizontal = isHorizontalRoute(
-    props.sourceHandleId,
-    { x: props.sourceX, y: props.sourceY },
-    { x: props.targetX, y: props.targetY },
-  );
+  const horizontal = isHorizontalRoute(props.sourceHandleId, { x: sourceX, y: sourceY }, { x: targetX, y: targetY });
   const route = buildConnectorRoute(
-    { x: props.sourceX, y: props.sourceY },
-    { x: props.targetX, y: props.targetY },
+    { x: sourceX, y: sourceY },
+    { x: targetX, y: targetY },
     waypoints,
     horizontal,
+    props.targetPosition as ConnectorSide,
   );
-  const path = waypoints.length ? route.path : edgePath;
-  const labelPosition = waypoints.length ? route.label : { x: labelX, y: labelY };
+  // Stored bends from before direction-agnostic sides can run through an endpoint card: draw a plain path instead (dragging shows what the user drags).
+  const { sourceBox, targetBox } = props.data ?? {};
+  const stale =
+    !dragWaypoints && !!sourceBox && !!targetBox && routeEntersEndpoints(route.segments, sourceBox, targetBox);
+  const routed = waypoints.length > 0 && !stale;
+  const path = routed ? route.path : edgePath;
+  // Under the pointer the label follows the route being dragged; settled routes show the anchor the layout chose.
+  const dragging = draggingIndex.current !== null;
+  const labelPosition = routed
+    ? dragging
+      ? route.label
+      : (props.data?.labelPosition ?? route.label)
+    : { x: labelX, y: labelY };
   const active = selectedConnectionId === props.id;
   const remotePeer = props.data?.remotePeers?.[0];
+  const editable = editing && !saving && active;
   const persistWaypoints = (next: ConnectionBend[]) => {
-    const revision = ++dragRevision.current;
-    setDraftWaypoints(next);
-    void saveBend(props.id, next.length ? next : null).finally(() => {
-      if (dragRevision.current === revision) setDraftWaypoints(null);
-    });
+    // Applied to the mirror as well, so two edits in the same React batch build on each other instead of both
+    // reading the route from before the first one.
+    latest.current = next;
+    void saveBend(props.id, next.length ? next : null);
   };
   const addWaypoint = (point: ConnectionBend) => {
-    if (!editing || !active || waypoints.length >= 12) return;
+    if (!editable || latest.current.length >= 12) return;
     const index = closestRouteInsertion(route.segments, point);
-    const next = [...waypoints];
+    const next = [...latest.current];
     next.splice(index, 0, point);
     persistWaypoints(next);
+  };
+  const removeWaypoint = (index: number) => {
+    if (!editable) return;
+    persistWaypoints(latest.current.filter((_, itemIndex) => itemIndex !== index));
   };
   return (
     <>
@@ -85,16 +119,16 @@ export function ArchitectureEdge(props: EdgeProps<ArchitectureFlowEdge>) {
         className="architecture-edge-hitbox"
         role="button"
         aria-label="Add connector point"
-        tabIndex={editing && active ? 0 : -1}
+        tabIndex={editable ? 0 : -1}
         onDoubleClick={(event) => {
-          if (!editing || !active || waypoints.length >= 12) return;
+          if (!editable || waypoints.length >= 12) return;
           event.preventDefault();
           event.stopPropagation();
           const flowPoint = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
           addWaypoint({ x: Math.round(flowPoint.x), y: Math.round(flowPoint.y) });
         }}
         onKeyDown={(event) => {
-          if (!editing || !active || (event.key !== "Enter" && event.key !== " ")) return;
+          if (!editable || (event.key !== "Enter" && event.key !== " ")) return;
           event.preventDefault();
           event.stopPropagation();
           addWaypoint({ x: Math.round(route.label.x), y: Math.round(route.label.y) });
@@ -114,8 +148,7 @@ export function ArchitectureEdge(props: EdgeProps<ArchitectureFlowEdge>) {
             {remotePeer.name} selected
           </div>
         )}
-        {editing &&
-          active &&
+        {editable &&
           waypoints.map((point, index) => (
             <button
               // Index identifies the ordered route slot; coordinates change throughout a drag.
@@ -131,12 +164,12 @@ export function ArchitectureEdge(props: EdgeProps<ArchitectureFlowEdge>) {
                 event.stopPropagation();
                 draggingIndex.current = index;
                 event.currentTarget.setPointerCapture(event.pointerId);
-                setDraftWaypoints([...waypoints]);
+                setDragWaypoints([...waypoints]);
               }}
               onPointerMove={(event) => {
                 if (draggingIndex.current !== index) return;
                 const position = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
-                setDraftWaypoints((current) => {
+                setDragWaypoints((current) => {
                   const next = [...(current ?? waypoints)];
                   next[index] = { x: Math.round(position.x), y: Math.round(position.y) };
                   return next;
@@ -146,30 +179,34 @@ export function ArchitectureEdge(props: EdgeProps<ArchitectureFlowEdge>) {
                 if (draggingIndex.current !== index) return;
                 draggingIndex.current = null;
                 const position = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
-                const next = [...(draftWaypoints ?? waypoints)];
+                const next = [...(dragWaypoints ?? waypoints)];
                 next[index] = { x: Math.round(position.x), y: Math.round(position.y) };
                 persistWaypoints(next);
+                setDragWaypoints(null);
               }}
               onPointerCancel={() => {
                 draggingIndex.current = null;
-                setDraftWaypoints(null);
+                // A cancelled drag was never asked for, so fall back to the stored route.
+                setDragWaypoints(null);
               }}
               onDoubleClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                persistWaypoints(waypoints.filter((_, itemIndex) => itemIndex !== index));
+                removeWaypoint(index);
               }}
               onKeyDown={(event) => {
                 if (event.key !== "Delete" && event.key !== "Backspace") return;
                 event.preventDefault();
                 event.stopPropagation();
-                persistWaypoints(waypoints.filter((_, itemIndex) => itemIndex !== index));
+                removeWaypoint(index);
               }}
             />
           ))}
         <button
           type="button"
           className={`architecture-edge-label edge-${type} nodrag nopan ${props.selected ? "is-selected" : ""}`}
+          // The chip ellipsises at the width Auto Neat reserved, so keep the full name reachable.
+          title={label}
           onClick={(event) => {
             event.stopPropagation();
             setConnectionSelected(props.id);
@@ -179,7 +216,7 @@ export function ArchitectureEdge(props: EdgeProps<ArchitectureFlowEdge>) {
           }}
         >
           <span className="edge-label-dot" />
-          {label}
+          <span className="edge-label-text">{label}</span>
         </button>
       </EdgeLabelRenderer>
     </>
