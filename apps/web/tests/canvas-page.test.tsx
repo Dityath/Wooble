@@ -559,6 +559,58 @@ describe("connector routes", () => {
     // Loading the canvas, saving a path and undoing it is more waiting than a unit test should assume on a loaded
     // machine, so this journey runs with room to breathe instead of racing the default timeout.
   }, 20_000);
+
+  // Regression: each bend save makes the server announce a graph change, and the refresh that follows could read the
+  // route before the next queued save landed. Arriving late, it put back a point already removed, so the next Delete
+  // edited that stale route and saved it.
+  it("keeps the newest route when a refresh from an earlier save lands while a later one is saving", async () => {
+    const bent = graph();
+    bent.connections[0] = {
+      ...bent.connections[0],
+      bend: [
+        { x: 500, y: 150 },
+        { x: 600, y: 150 },
+      ],
+    };
+    let releaseSecondSave: () => void = () => {};
+    server.on("PUT /api/canvases/:id/connections/:connectionId/bend", ({ body }) => {
+      const { bend } = body as { bend: ConnectionPath };
+      if (server.requests("PUT", /bend/).length === 1) return { bend };
+      return new Promise((resolve) => {
+        releaseSecondSave = () => resolve({ bend });
+      });
+    });
+    await openCanvas("editor", bent);
+    const socket = FakeSocket.latest();
+    socket.open();
+    fireEvent.click(screen.getByRole("button", { name: "Reads orders" }));
+    press("e");
+    const points = () => screen.queryAllByRole("button", { name: /Connector point/ });
+    await waitFor(() => expect(points()).toHaveLength(2));
+
+    // The first removal saves; the server now holds one point, and any refresh reads that.
+    fireEvent.keyDown(points()[1], { key: "Delete" });
+    await waitFor(() => expect(server.requests("PUT", /bend/)).toHaveLength(1));
+    server.on("GET /api/canvases/:id/graph", {
+      ...bent,
+      connections: bent.connections.map((item) => ({ ...item, bend: [{ x: 500, y: 150 }] })),
+    });
+    // The second removal is still saving when the refresh announced for the first one lands.
+    await waitFor(() => expect(points()).toHaveLength(1));
+    fireEvent.keyDown(points()[0], { key: "Delete" });
+    await waitFor(() => expect(server.requests("PUT", /bend/)).toHaveLength(2));
+    const reads = server.requests("GET", `/api/canvases/${ids.canvas}/graph`).length;
+    socket.receive({ type: "graph:changed" });
+    await waitFor(() => expect(server.requests("GET", `/api/canvases/${ids.canvas}/graph`).length).toBe(reads + 1));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    });
+    expect(points()).toHaveLength(0);
+
+    releaseSecondSave();
+    await waitFor(() => expect(server.requests("PUT", /bend/)[1].body).toEqual({ bend: null }));
+    expect(points()).toHaveLength(0);
+  }, 20_000);
 });
 
 describe("undo and Auto Neat", () => {

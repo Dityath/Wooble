@@ -354,6 +354,81 @@ test("adding and removing connector points faster than the saves keeps the route
   await expect(handles()).toHaveCount(0);
 });
 
+// Every bend save makes the server announce a graph change, and the refresh that follows can read the route before the
+// next save lands. Arriving late, it must not bring back a point removed since, or the next keystroke would edit that
+// stale route and save it.
+test("a graph refresh from an earlier save never brings back a point removed since", async ({ page }) => {
+  await signIn(await page.context(), owner.cookieValue);
+  await openCanvasAsEditor(page);
+  await switchToolByKeyboard(page, "e", "connector");
+  await edgeLabel(page).click();
+
+  const point = (name: string | RegExp) => page.getByRole("button", { name });
+  const handles = () => point(/Connector point/);
+  const hitbox = point("Add connector point");
+  await expect(hitbox).toHaveAttribute("tabindex", "0");
+  for (let added = 1; added <= 3; added += 1) {
+    await hitbox.focus();
+    await page.keyboard.press("Enter");
+    await expect(point(`Connector point ${added}`)).toBeVisible();
+  }
+  await expect(handles()).toHaveCount(3);
+
+  // From here, hold the first graph refresh after it has read the route, and the bend save that follows it.
+  let releaseRefresh: () => void = () => {};
+  const refreshHeld = new Promise<void>((resolve) => {
+    releaseRefresh = resolve;
+  });
+  let releaseSave: () => void = () => {};
+  const saveHeld = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  let refreshRead: () => void = () => {};
+  const refreshHasRead = new Promise<void>((resolve) => {
+    refreshRead = resolve;
+  });
+  let holdingRefresh = false;
+  let holdingSave = false;
+  await page.route("**/api/canvases/*/graph", async (route) => {
+    if (holdingRefresh) return route.continue();
+    holdingRefresh = true;
+    const response = await route.fetch();
+    refreshRead();
+    await refreshHeld;
+    await route.fulfill({ response });
+  });
+  await page.route("**/connections/*/bend", async (route) => {
+    if (holdingRefresh && !holdingSave) {
+      holdingSave = true;
+      await saveHeld;
+    }
+    await route.continue();
+  });
+
+  // Removing point 3 saves, and the refresh it triggers reads a route that still has points 1 and 2.
+  await point("Connector point 3").focus();
+  await page.keyboard.press("Delete");
+  await refreshHasRead;
+  // Point 2 is removed while that refresh is still on its way, and its own save is held.
+  await expect(handles()).toHaveCount(2);
+  await point("Connector point 2").focus();
+  await page.keyboard.press("Delete");
+  await expect(handles()).toHaveCount(1);
+
+  releaseRefresh();
+  await page.waitForResponse((response) => response.url().endsWith("/graph"));
+  await expect(handles()).toHaveCount(1);
+
+  releaseSave();
+  await page.waitForResponse((response) => response.url().endsWith("/bend"));
+  await expect(handles()).toHaveCount(1);
+  await page.reload();
+  await awaitEditorReady(page);
+  await switchToolByKeyboard(page, "e", "connector");
+  await edgeLabel(page).click();
+  await expect(handles()).toHaveCount(1);
+});
+
 // The same edit on a slow machine: everything between a keystroke and the next render takes longer, which is where a
 // connector that is rebuilt instead of updated loses the point the keyboard is aimed at.
 test("editing connector points on a slow machine never falls back to deleting the connector", async ({ page }) => {

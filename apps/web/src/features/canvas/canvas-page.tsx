@@ -478,6 +478,10 @@ function CanvasEditor({
   const bendSaveQueue = useRef<Promise<boolean>>(Promise.resolve(true));
   const bendSequence = useRef(0);
   const latestBendRequest = useRef(new Map<string, number>());
+  // The newest route asked for on each connector until its save settles. Every save makes the server announce a graph
+  // change, and the refresh that follows can read the route before the next queued save lands; this keeps that late
+  // refresh from rolling the route back under the next keystroke.
+  const pendingBends = useRef(new Map<string, ConnectionPath>());
   const saveSequence = useRef(0);
   const positionRevisions = useRef(new Map<string, number>());
   const pendingPlacements = useRef(new Map<string, PendingPlacementSave>());
@@ -506,7 +510,7 @@ function CanvasEditor({
   const savePlacements = saveMutation.mutateAsync;
 
   useEffect(() => {
-    const visibleGraph = pendingPlacements.current.size
+    const withPlacements = pendingPlacements.current.size
       ? {
           ...graph,
           placements: graph.placements.map(
@@ -514,6 +518,16 @@ function CanvasEditor({
           ),
         }
       : graph;
+    const visibleGraph = pendingBends.current.size
+      ? {
+          ...withPlacements,
+          connections: withPlacements.connections.map((connection) =>
+            pendingBends.current.has(connection.id)
+              ? { ...connection, bend: pendingBends.current.get(connection.id) ?? null }
+              : connection,
+          ),
+        }
+      : withPlacements;
     const entityMap = new Map(graph.entities.map((entity) => [entity.id, entity]));
     setNodes((current) => keepMeasuredGeometry(current, buildFlowNodes(visibleGraph, entityMap, positionsRef.current)));
     setEdges(buildFlowEdges(visibleGraph));
@@ -811,16 +825,21 @@ function CanvasEditor({
               }
             : current,
         );
+      pendingBends.current.set(connectionId, bend);
       publish(bend);
       const save = async () => {
         try {
           // The stored path comes back with the reply, so the graph is reconciled without a refetch. Refetching here
           // would land between two quick edits and roll the route back to the previous one.
           const stored = await api.saveConnectionBend(canvasId, connectionId, bend);
-          if (latestBendRequest.current.get(connectionId) === requestId) publish(stored.bend);
+          if (latestBendRequest.current.get(connectionId) === requestId) {
+            pendingBends.current.delete(connectionId);
+            publish(stored.bend);
+          }
           return true;
         } catch (error) {
           if (latestBendRequest.current.get(connectionId) !== requestId) return true;
+          pendingBends.current.delete(connectionId);
           publish(previous ?? null);
           setCreationError(error instanceof Error ? error.message : "Could not save connector path");
           return false;
