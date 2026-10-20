@@ -32,6 +32,7 @@ import {
   newToken,
   materializeLinkViewer,
   countedMembership,
+  objectAccess,
   type Actor,
   type Api,
 } from "../../lib/auth";
@@ -784,12 +785,13 @@ export function canvasRoutes(app: Api) {
       const entitiesById = new Map(referencedEntities.map((entity) => [entity.id, entity]));
       const existingByEntityId = new Map(existingRows.map((placement) => [placement.entityId, placement]));
       // Placing an entity on this canvas exposes it to everyone who can read the canvas, and the object write rule then
-      // requires editor access here too. Only someone who can already read the entity may add it. An unreadable entity
-      // gets the same response as a missing one, so the response does not confirm that it exists.
+      // requires editor access here too, so the placement narrows who may edit it. Only someone who can already edit the
+      // entity may add it (#32); reading it is not enough. Any other entity gets the same response as a missing one, so
+      // the response does not confirm that it exists.
       const newEntityIds = [...placementEntityIds].filter((entityId) => !existingByEntityId.has(entityId));
       if (
         [...referencedEntityIds].some((entityId) => entitiesById.get(entityId)?.workspaceId !== canvas.workspaceId) ||
-        !(await canReadEntities(tx, context.actor, canvas.workspaceId, newEntityIds))
+        !(await canEditEntities(tx, context.actor, newEntityIds))
       ) {
         return {
           kind: "invalid" as const,
@@ -921,43 +923,19 @@ export function canvasRoutes(app: Api) {
 type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /**
- * Whether the actor can read every entity, using the read rule of the entity routes: a workspace manager or system admin,
- * or a role on (or a link share of) a canvas in the workspace that already shows the entity.
+ * Whether the actor may edit every entity, by the object write rule of the entity routes (`objectAccess`): a workspace
+ * manager or system admin, or the editor role on every canvas in the workspace that already shows the entity.
  */
-async function canReadEntities(
-  tx: Transaction,
-  actor: Actor | null,
-  workspaceId: string,
-  entityIds: string[],
-): Promise<boolean> {
+async function canEditEntities(tx: Transaction, actor: Actor | null, entityIds: string[]): Promise<boolean> {
   if (!entityIds.length) return true;
   if (!actor) return false;
-  if (actor.systemRole === "admin") return true;
   // Read through the transaction, not the shared pool: the caller holds a connection and a canvas row lock, so waiting
-  // for a second pooled connection could deadlock once concurrent requests have taken the rest of the pool.
-  const [membership] = await tx
-    .select({ role: workspaceMembers.role })
-    .from(workspaceMembers)
-    .where(and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, actor.id)))
-    .limit(1);
-  if (membership?.role === "manager") return true;
-  const rows = await tx
-    .select({
-      entityId: canvasNodes.entityId,
-      shareMode: canvases.shareMode,
-      role: canvasMembers.role,
-      origin: canvasMembers.origin,
-    })
-    .from(canvasNodes)
-    .innerJoin(canvases, eq(canvases.id, canvasNodes.canvasId))
-    .leftJoin(canvasMembers, and(eq(canvasMembers.canvasId, canvases.id), eq(canvasMembers.userId, actor.id)))
-    .where(and(inArray(canvasNodes.entityId, entityIds), eq(canvases.workspaceId, workspaceId)));
-  // A membership gained through the link reads only while the canvas is still shared by link, which the second test
-  // already covers (#62).
-  const readable = new Set(
-    rows.filter((row) => (row.role && row.origin === "invited") || row.shareMode === "link").map((row) => row.entityId),
-  );
-  return entityIds.every((entityId) => readable.has(entityId));
+  // for a second pooled connection could deadlock once concurrent requests have taken the rest of the pool. The checks
+  // run one at a time because a transaction has a single connection.
+  for (const entityId of entityIds) {
+    if ((await objectAccess(actor, "entity", entityId, "write", tx)) !== "allowed") return false;
+  }
+  return true;
 }
 
 function connectionTitle(
