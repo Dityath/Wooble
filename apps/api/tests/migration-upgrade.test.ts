@@ -295,6 +295,20 @@ describe("canvas member origin backfill", () => {
           { canvas_id: ids.board, user_id: user(2), role: "editor", origin: "invited" },
           { canvas_id: ids.home, user_id: user(3), role: "viewer", origin: "invited" },
         ]);
+        // An API instance from before the column, still running while an update migrates, cannot add a row that would
+        // silently count as invited: without a default the insert fails.
+        const legacyInsert = await database
+          .execute(
+            sql.raw(
+              `INSERT INTO canvas_members (canvas_id, user_id, role) VALUES ('${ids.home}', '${user(1)}', 'viewer')`,
+            ),
+          )
+          .then(
+            () => "inserted",
+            (error: unknown) => String((error as { cause?: { code?: string } }).cause?.code ?? error),
+          );
+        // 23502 is not_null_violation.
+        expect(legacyInsert).toBe("23502");
       } finally {
         await database.$client.end();
       }

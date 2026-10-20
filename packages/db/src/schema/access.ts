@@ -57,8 +57,9 @@ export const canvasMembers = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     role: text("role").$type<"editor" | "viewer">().notNull(),
     // "link" rows come from opening a link-shared canvas and count only while the canvas is still shared by link;
-    // "invited" rows come from an invitation or a manager's role assignment and count until removed.
-    origin: text("origin").$type<"invited" | "link">().notNull().default("invited"),
+    // "invited" rows come from an invitation or a manager's role assignment and count until removed. There is no default:
+    // every writer states the origin, so a writer that predates the column fails instead of granting lasting access.
+    origin: text("origin").$type<"invited" | "link">().notNull(),
   },
   (table) => [
     primaryKey({ columns: [table.canvasId, table.userId] }),
