@@ -49,6 +49,7 @@ type Faults = {
   crossOriginWrite?: number;
   closeLiveSocket?: boolean;
   loseDocumentation?: boolean;
+  ignoreDocumentationWrites?: boolean;
 };
 
 const documentation = "Smoke test documentation that must survive restarts.";
@@ -89,7 +90,7 @@ function fakeApi(faults: Faults = {}) {
         case "POST /api/canvases/canvas-1/entities":
           return Response.json({ id: "entity-1" }, { status: 201 });
         case "PATCH /api/entities/entity-1":
-          storedDocumentation = body.metadata.documentation;
+          if (!faults.ignoreDocumentationWrites) storedDocumentation = body.metadata.documentation;
           return Response.json({ id: "entity-1" });
         case "GET /api/canvases/canvas-1/graph":
           return Response.json({
@@ -222,5 +223,29 @@ describe("selfhost-smoke.ts verify", () => {
     const result = await smoke("verify", { baseUrl: fakeApi({ loseDocumentation: true }), state: savedState() });
     expect(result.status).not.toBe(0);
     expect(result.output).toContain("The node or its documentation was lost");
+  });
+
+  it("fails when the live socket closes after sign-in", async () => {
+    const result = await smoke("verify", { baseUrl: fakeApi({ closeLiveSocket: true }), state: savedState() });
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain("Live socket closed with 4403 before presence");
+  });
+});
+
+describe("selfhost-smoke.ts mutate", () => {
+  it("passes when the smoke content changes", async () => {
+    const result = await smoke("mutate", { baseUrl: fakeApi(), state: savedState() });
+    expect(result.output).toContain("Mutation passed");
+    expect(result.status).toBe(0);
+  });
+
+  // Without a real change, the restore rehearsal that follows would prove nothing.
+  it("fails when the change is not kept", async () => {
+    const result = await smoke("mutate", {
+      baseUrl: fakeApi({ ignoreDocumentationWrites: true }),
+      state: savedState(),
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain("The fictional smoke content did not change before restore");
   });
 });

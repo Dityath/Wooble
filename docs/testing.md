@@ -27,7 +27,7 @@ The self-host browser journey (`apps/web/e2e/selfhost-install.pw.ts`) also runs 
 
 The Self-hosted stack GitHub Actions workflow (`.github/workflows/docker.yml`) is configured to build a disposable source stack, verify its published ports and health, run API registration/canvas/WebSocket/Origin smoke, exercise browser login and static assets through local Caddy HTTPS, and rehearse backup/restore using fictional content. It then tests restart and persistence. Workflow configuration is not evidence of a completed GitHub Actions run; report the run URL/status and each phase result when it has actually run. Do not use these commands against a real installation or real account data.
 
-A green smoke run only means something if the smoke script fails when the stack is wrong. `scripts/selfhost-smoke.test.ts` checks that, without Docker, and runs in the same workflow's regression suites. It feeds the `ports` phase fictional `docker compose ps` output and runs `setup` and `verify` against a fictional in-process API. Each case below must exit non-zero and name the failure:
+A green smoke run only means something if the smoke script fails when the stack is wrong. `scripts/selfhost-smoke.test.ts` checks that, without Docker, and runs in the same workflow's regression suites. It feeds the `ports` phase fictional `docker compose ps` output and runs `setup`, `verify` and `mutate` against a fictional in-process API. Each case below must exit non-zero and name the failure:
 
 | Phase | Broken stack | Expected failure |
 | --- | --- | --- |
@@ -39,6 +39,8 @@ A green smoke run only means something if the smoke script fails when the stack 
 | `setup` | A write from another origin is accepted | `A write from another origin returned <status>, expected 403` |
 | `verify` | The account is gone, as after a lost volume | `Login returned 401` |
 | `verify` | The node documentation is lost | `The node or its documentation was lost` |
+| `verify` | The live socket closes after sign-in | `Live socket closed with <code> before presence` |
+| `mutate` | The change to the smoke content is not kept, so a restore rehearsal would prove nothing | `The fictional smoke content did not change before restore` |
 
 Each phase also has a passing case against a healthy fake, so a failure comes from the injected fault and not from the harness. Run them with `bun test scripts/selfhost-smoke.test.ts`. To check the port assertion by hand against a disposable stack, pipe edited `ps` output into it. For example, this must fail with `The postgres service publishes a host port`:
 
