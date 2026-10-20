@@ -41,7 +41,7 @@ As of 2026-10-20 (`main` at `aca66e9`):
 | Release | Status | Notes |
 | --- | --- | --- |
 | `v0.1.0` | Released (preview) | Still the only publicly released version. |
-| `v0.2.0` | Active | Merged on 2026-10-14: the block editor with the `/` menu and its save-safety and recovery work (#9, via #55), and reader access to connection documentation (#13). The collaboration ADR (#16) is on `main` but still **Proposed**. Durable collaborative documents, live sync, document presence, and Markdown import/export (#33 to #37) have not started. The original 10 October 2026 target has passed and is revisable; it is kept above as the original target. |
+| `v0.2.0` | Active | Merged on 2026-10-14: the block editor with the `/` menu and its save-safety and recovery work (#9, via #55), and reader access to connection documentation (#13). The collaboration ADR (#16) was accepted on 2026-10-20, after a spike proved the server-side parser. Its work is split into #67 to #74 plus #35 and #37. #67, #70 and #73 (Markdown export) are ready; the rest wait on them. None has started. The original 10 October 2026 target has passed and is revisable; it is kept above as the original target. |
 | `v0.3.0` | Planned | No implementation has started. #38 is ready; #39 to #43 await triage. With no implementation started four days before the 24 October 2026 target, that target needs review at the next checkpoint. |
 | `v0.4.0` | Planned | No implementation has started. #44 to #48 await triage. |
 | `v0.5.0` | Planned | No implementation has started. #49 is ready; #50 to #53 await triage. |
@@ -53,7 +53,7 @@ Merged prerequisites do not complete a release. The contract and schema inspecto
 
 Releases build on shared work, so the order matters more than the dates:
 
-1. **Collaboration backend.** The decision (#16) and its prerequisites, #10 to #15 (access guard, canvas placement checks, activity/undo integrity (#12), reader access, browser journeys in CI, upgrade harness), come first. These are shared prerequisites for `v0.2.0` through `v0.5.0`. #10 to #15 were merged on 2026-10-14. #16 waits for maintainer acceptance of the ADR. The multi-canvas write rule (#32) was decided on 2026-10-20: placing an entity on another canvas needs write access to it.
+1. **Collaboration backend.** The decision (#16) and its prerequisites, #10 to #15 (access guard, canvas placement checks, activity/undo integrity (#12), reader access, browser journeys in CI, upgrade harness), come first. These are shared prerequisites for `v0.2.0` through `v0.5.0`. #10 to #15 were merged on 2026-10-14. On 2026-10-20 the ADR (#16) was accepted, the multi-canvas write rule (#32) was decided and implemented (placing an entity on another canvas needs write access to it, #63), and link access was made to end when link sharing is turned off (#62, #65).
 2. **Contracts with stable sections.** Contract editing for `v0.3.0` needs identifiable sections so that collaboration and comments can refer to them.
 3. **Schema with stable IDs.** Database diagrams for `v0.4.0` need stable table and column identifiers, kept separate from diagram layout.
 4. **Comment anchors.** `v0.5.0` anchors build on the items above. Text anchors in documentation (Yjs relative positions) and orphan handling for moved or deleted anchors are separate work items from stable IDs.

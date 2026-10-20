@@ -55,6 +55,14 @@ show as merged because their commits landed through the stack. #30 was closed un
 commit landed through #56 and closed #18. On 2026-10-15, #58 (Auto Neat canvas routing, not a
 release criterion) was merged. On 2026-10-20, #59 merged the failure checks for the self-host
 smoke script and closed #19.
+Later on 2026-10-20:
+- #60 refreshed this backlog.
+- #61 fixed a connector-route race found as a flaky browser journey.
+- #63 decided #32.
+- #65 closed the new link-access issue #62.
+- #64 amended the ADR, and the maintainer then accepted it, closing #16.
+
+The v0.2 issues were split and triaged as shown below. The counts in the read table above are from before these later changes.
 
 | Issue | Closed / state on 2026-10-20 | Landed through |
 | --- | --- | --- |
@@ -65,9 +73,15 @@ smoke script and closed #19.
 | #20 | open | release workflow and image labels landed in #56; a release-workflow dry run without publishing has not been run |
 | #23 | open | rewritten guide landed in #56; the maintainer fresh-host validation checklist is not completed |
 | #6 | open | parent of the self-hosting chain; open until its runtime acceptance checks are demonstrated |
-| #16 | open, status:claimed | ADR on `main` through #57, status Proposed, awaiting maintainer acceptance |
-| #32, #38, #49 | open, status:ready (relabelled from needs-triage on 2026-10-15) | no implementation |
-| #33–#37, #39–#48, #50–#53 | open, status:needs-triage | no implementation |
+| #16 | closed 2026-10-20 | ADR amended (#64) and accepted by the maintainer, with the [headless parser spike](spikes/2026-10-20-headless-parser.md) |
+| #32 | closed 2026-10-20 | decided: placing an entity on another canvas needs write access to it; implemented in #63 |
+| #62 | opened and closed 2026-10-20 | link access ends when link sharing is turned off; implemented in #65 |
+| #33, #34, #36 | open, tracking only | split on 2026-10-20 into #67–#72, #73 and #74; each original acceptance item is mapped in the issue body |
+| #67, #70, #73 | open, status:ready | collaborative document table and single writer; single-instance gate; Markdown export and copy |
+| #68, #69, #71, #72, #74, #35, #37 | open, status:needs-triage | scope agreed; waiting on #67 (and #69 on a retention decision) |
+| #66 | open, status:ready | bug: the visual OpenAPI editor drops source it does not show (found in the v0.3 triage) |
+| #38, #49 | open, status:ready (relabelled from needs-triage on 2026-10-15) | no implementation |
+| #39–#48, #50–#53 | open, status:needs-triage | no implementation; the v0.3 triage of 2026-10-20 recommends revisions before any is ready |
 
 A merged prerequisite is not a met release criterion. No v0.2–v0.5 criterion is released, and
 none has integrated release evidence yet; see the acceptance matrix below.
@@ -331,9 +345,9 @@ Dependencies are prerequisites, not proof that a downstream release is active or
 | Shared owner | State on 2026-10-20 | Used by | Gate still required |
 | --- | --- | --- | --- |
 | #10 / #26 | merged through #54 | v0.2–v0.5 new object routes/live channels | each new route and live channel must be classified and fail closed on current access; the recheck regression requirement must be shown for live document sessions |
-| #11 / #27; separate `shared/multi-canvas-write-rule` (#32) | #11 merged through #54; #32 open, ready, undecided | v0.2–v0.4 shared objects | separately reviewed cross-canvas write rule |
+| #11 / #27; separate `shared/multi-canvas-write-rule` (#32) | #11 merged through #54; #32 decided and merged through #63 | v0.2–v0.4 shared objects | none beyond the per-feature access matrix |
 | #12 | merged through #54 | v0.2–v0.5 writes/history/undo | feature-owned metadata/delete integration for each new feature |
-| #16 | open; ADR on `main`, status Proposed | v0.2 documents; reusable transport for v0.3, text anchors for v0.5 | ADR accepted by maintainer, then persistence/recovery and license evidence in implementation |
+| #16 | ADR accepted 2026-10-20; work in #67–#74, #35 | v0.2 documents; reusable transport for v0.3, text anchors for v0.5 | persistence, recovery and license evidence during implementation, and the three parser changes from the 2026-10-20 spike (#68) |
 | #14 / #29 | merged through #55 | all v0.2–v0.5 release evidence issues | run combined feature journeys, not just PR-isolated CI |
 | #15 / #28 | merged through #54 | all v0.2–v0.5 data conversions | extend preserved-content seeds, previous-release cases and deterministic harness |
 | #6; #17–#23 | #17, #18, #21, #22 merged through #56; #19 merged through #59; #6, #20, #23 open | shared fresh-install/upgrade gate | release dry run, fresh host, browser/second device, versioned update and restore rehearsal, maintainer review |
