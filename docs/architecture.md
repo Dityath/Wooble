@@ -28,7 +28,7 @@ Application code depends on shared packages. Domain entities and connections rem
 
 ## Data and access
 
-Registration creates a personal workspace. Workspace managers manage members and canvases; canvas editors can change a shared canvas; viewers can inspect it. A canvas shared by link can be read without an account. The API checks access at the registered route and scopes reads to the relevant workspace or canvas.
+Registration creates a personal workspace. Workspace managers manage members and canvases; canvas editors can change a shared canvas; viewers can inspect it. A canvas shared by link can be read without an account. A signed-in person who opens it is recorded as a viewer with `origin = 'link'`; that membership counts only while the canvas is still shared by link, so restricting sharing (directly or by undo) ends their access and closes their live sessions (#62). An invitation, a member added by email, or a role a manager assigns is `origin = 'invited'` and lasts until it is removed. The API checks access at the registered route and scopes reads to the relevant workspace or canvas.
 
 `accessGuard` in `apps/api/src/lib/auth.ts` gives every registered route an access class and denies requests to an API route without one. A route nested under a workspace, canvas, entity, or connection follows the rule of that resource. Workspace managers and system admins can read and write an entity or connection. Otherwise, reading it needs a role on a canvas of its workspace that shows it, or such a canvas shared by link; writing it needs the editor role on every such canvas. Without an account, only a link-shared canvas (its details, graph, access role, and live socket) and an entity it shows, requested with `?canvasId=`, can be read.
 

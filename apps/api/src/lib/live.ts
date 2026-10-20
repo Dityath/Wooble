@@ -373,7 +373,8 @@ export function liveRoutes(app: Api, recheckMs = 30_000, { terminateAfterMs = 10
     if (route.startsWith("/api/canvases/:canvasId/") || route === "/api/canvases/:canvasId") {
       if (!canvasParams.success) return;
       const canvasId = canvasParams.data.canvasId;
-      if (method === "DELETE" || method === "PATCH" || route.includes("/members")) {
+      // Undo can restore a previous share mode, which ends access gained through the link (#62).
+      if (method === "DELETE" || method === "PATCH" || route.includes("/members") || route.endsWith("/undo")) {
         try {
           await closeRevokedPeers(canvasId);
         } catch (error) {

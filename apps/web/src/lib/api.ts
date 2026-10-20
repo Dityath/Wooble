@@ -54,6 +54,8 @@ export interface Member {
   name: string;
   email: string;
   role: string;
+  /** Canvas members only: "link" when they joined by opening the shared link, so the link closing ends their access. */
+  origin?: "invited" | "link";
 }
 export interface CanvasSummary extends ArchitectureCanvas {
   systemCount: number;

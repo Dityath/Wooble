@@ -57,6 +57,20 @@
       "when": 1791872333369,
       "tag": "0007_backfill_canvas_event_seq",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792495535496,
+      "tag": "0008_canvas_member_origin",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792495535806,
+      "tag": "0009_backfill_canvas_member_origin",
+      "breakpoints": true
     }
   ]
 }

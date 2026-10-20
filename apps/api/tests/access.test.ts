@@ -275,7 +275,10 @@ test("sessions, personal workspaces, separate canvas roles, links, and admin", a
   const membersAfterVisit = (await (
     await request("GET", `/api/canvases/${canvasId}/members`, owner.session)
   ).json()) as Array<{ id: string; role: string }>;
-  expect(membersAfterVisit.find((member) => member.id === guest.user.id)).toMatchObject({ role: "viewer" });
+  expect(membersAfterVisit.find((member) => member.id === guest.user.id)).toMatchObject({
+    role: "viewer",
+    origin: "link",
+  });
   expect(
     ((await (await request("GET", `/api/canvases/${canvasId}/access`, editor.session)).json()) as { role: string })
       .role,
@@ -289,7 +292,8 @@ test("sessions, personal workspaces, separate canvas roles, links, and admin", a
   expect((await request("PATCH", `/api/canvases/${canvasId}`, owner.session, { shareMode: "restricted" })).status).toBe(
     200,
   );
-  expect((await request("GET", `/api/canvases/${canvasId}/graph`, guest.session)).status).toBe(200);
+  // The guest joined through the link, so restricting sharing ends their access (#62).
+  expect((await request("GET", `/api/canvases/${canvasId}/graph`, guest.session)).status).toBe(403);
   expect((await request("GET", `/api/canvases/${canvasId}/graph`)).status).toBe(401);
   expect((await request("GET", `/api/entities/${nodeId}?canvasId=${canvasId}`)).status).toBe(401);
   expect(

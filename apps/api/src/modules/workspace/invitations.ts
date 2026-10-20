@@ -51,7 +51,10 @@ export function invitationRoutes(app: Api) {
           .values({ canvasId: invite.canvasId, userId: requireActor(context.actor).id, role: invite.role })
           .onConflictDoUpdate({
             target: [canvasMembers.canvasId, canvasMembers.userId],
-            set: { role: sql`case when ${canvasMembers.role} = 'editor' then 'editor' else ${invite.role} end` },
+            set: {
+              role: sql`case when ${canvasMembers.role} = 'editor' then 'editor' else ${invite.role} end`,
+              origin: "invited",
+            },
           });
       await tx
         .update(invitations)
