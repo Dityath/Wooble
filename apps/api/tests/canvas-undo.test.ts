@@ -1872,7 +1872,7 @@ describe("Canvas undo re-checks the current write rules", () => {
       .update(workspaceMembers)
       .set({ role: "member" })
       .where(and(eq(workspaceMembers.workspaceId, owner.workspaceId), eq(workspaceMembers.userId, member.user.id)));
-    await db.insert(canvasMembers).values({ canvasId, userId: member.user.id, role: "editor" });
+    await db.insert(canvasMembers).values({ canvasId, userId: member.user.id, role: "editor", origin: "invited" });
 
     const result = await undoAs(member.session, canvasId);
     expect(result.status).toBe(409);

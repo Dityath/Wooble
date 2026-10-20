@@ -2,7 +2,7 @@ import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } fr
 import { isIP } from "node:net";
 import { promisify } from "node:util";
 import { Elysia } from "elysia";
-import { and, eq, gt, inArray } from "drizzle-orm";
+import { and, eq, gt, inArray, or } from "drizzle-orm";
 import { z } from "zod";
 import { canvasIdParamsSchema, connectionIdParamsSchema, entityIdParamsSchema } from "@wooble/contracts";
 import {
@@ -132,11 +132,20 @@ export async function canvasRole(
   const workspace = await workspaceRole(actor, canvas.workspaceId, executor);
   if (workspace === "manager") return "manager";
   const [row] = await executor
-    .select({ role: canvasMembers.role })
+    .select({ role: canvasMembers.role, origin: canvasMembers.origin })
     .from(canvasMembers)
     .where(and(eq(canvasMembers.canvasId, canvasId), eq(canvasMembers.userId, actor.id)))
     .limit(1);
-  return row?.role ?? (canvas.shareMode === "link" ? "viewer" : null);
+  if (row && (row.origin === "invited" || canvas.shareMode === "link")) return row.role;
+  return canvas.shareMode === "link" ? "viewer" : null;
+}
+
+/**
+ * Whether a `canvas_members` row joined with its canvas grants anything: an invited membership always does, and one
+ * gained by opening the link only while the canvas is still shared by link (#62).
+ */
+export function countedMembership() {
+  return or(eq(canvasMembers.origin, "invited"), eq(canvases.shareMode, "link"));
 }
 
 export async function materializeLinkViewer(actor: Actor, canvasId: string): Promise<void> {
@@ -152,7 +161,10 @@ export async function materializeLinkViewer(actor: Actor, canvasId: string): Pro
     .where(and(eq(canvasMembers.canvasId, canvasId), eq(canvasMembers.userId, actor.id)))
     .limit(1);
   if (existing) return;
-  await db.insert(canvasMembers).values({ canvasId, userId: actor.id, role: "viewer" }).onConflictDoNothing();
+  await db
+    .insert(canvasMembers)
+    .values({ canvasId, userId: actor.id, role: "viewer", origin: "link" })
+    .onConflictDoNothing();
 }
 
 export type ObjectKind = "entity" | "connection";
@@ -227,7 +239,8 @@ export async function objectAccess(
   const memberships = await executor
     .select({ canvasId: canvasMembers.canvasId, role: canvasMembers.role })
     .from(canvasMembers)
-    .where(and(eq(canvasMembers.userId, actor.id), inArray(canvasMembers.canvasId, canvasIds)));
+    .innerJoin(canvases, eq(canvases.id, canvasMembers.canvasId))
+    .where(and(eq(canvasMembers.userId, actor.id), inArray(canvasMembers.canvasId, canvasIds), countedMembership()));
   const roles = new Map(memberships.map((row) => [row.canvasId, row.role]));
   if (mode === "write") return canvasIds.every((id) => roles.get(id) === "editor") ? "allowed" : "denied";
   if (canvasIds.some((id) => roles.has(id))) return "allowed";

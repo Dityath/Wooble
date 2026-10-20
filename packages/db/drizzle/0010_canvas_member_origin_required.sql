@@ -1,0 +1,1 @@
+ALTER TABLE "canvas_members" ALTER COLUMN "origin" DROP DEFAULT;

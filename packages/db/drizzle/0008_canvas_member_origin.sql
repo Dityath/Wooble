@@ -1,0 +1,1 @@
+ALTER TABLE "canvas_members" ADD COLUMN "origin" text DEFAULT 'invited' NOT NULL;

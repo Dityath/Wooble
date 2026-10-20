@@ -31,6 +31,8 @@ import {
   hashToken,
   newToken,
   materializeLinkViewer,
+  countedMembership,
+  objectAccess,
   type Actor,
   type Api,
 } from "../../lib/auth";
@@ -60,7 +62,11 @@ export function canvasRoutes(app: Api) {
     const shared =
       actor.systemRole === "admin"
         ? []
-        : await db.select({ id: canvasMembers.canvasId }).from(canvasMembers).where(eq(canvasMembers.userId, actor.id));
+        : await db
+            .select({ id: canvasMembers.canvasId })
+            .from(canvasMembers)
+            .innerJoin(canvases, eq(canvases.id, canvasMembers.canvasId))
+            .where(and(eq(canvasMembers.userId, actor.id), countedMembership()));
     if (actor.systemRole !== "admin" && !managed.length && !shared.length) return [];
     return db
       .select({
@@ -196,12 +202,22 @@ export function canvasRoutes(app: Api) {
   app.get("/api/canvases/:canvasId/members", async (context) => {
     const params = canvasIdParamsSchema.safeParse(context.params);
     if (!params.success) return badRequest(context, "Canvas ID must be a UUID");
-    return db
-      .select({ id: users.id, name: users.name, email: users.email, role: canvasMembers.role })
-      .from(canvasMembers)
-      .innerJoin(users, eq(users.id, canvasMembers.userId))
-      .where(eq(canvasMembers.canvasId, params.data.canvasId))
-      .orderBy(users.name);
+    return (
+      db
+        .select({
+          id: users.id,
+          name: users.name,
+          email: users.email,
+          role: canvasMembers.role,
+          origin: canvasMembers.origin,
+        })
+        .from(canvasMembers)
+        .innerJoin(users, eq(users.id, canvasMembers.userId))
+        .innerJoin(canvases, eq(canvases.id, canvasMembers.canvasId))
+        // People who joined through the link drop out of the list with their access once sharing is restricted.
+        .where(and(eq(canvasMembers.canvasId, params.data.canvasId), countedMembership()))
+        .orderBy(users.name)
+    );
   });
   app.post("/api/canvases/:canvasId/members", async (context) => {
     const params = canvasIdParamsSchema.safeParse(context.params);
@@ -230,8 +246,12 @@ export function canvasRoutes(app: Api) {
         .onConflictDoNothing();
       await tx
         .insert(canvasMembers)
-        .values({ canvasId: params.data.canvasId, userId: user.id, role: body.data.role })
-        .onConflictDoUpdate({ target: [canvasMembers.canvasId, canvasMembers.userId], set: { role: body.data.role } });
+        .values({ canvasId: params.data.canvasId, userId: user.id, role: body.data.role, origin: "invited" })
+        // Adding someone who joined through the link makes them an invited member, so they keep access if the link closes.
+        .onConflictDoUpdate({
+          target: [canvasMembers.canvasId, canvasMembers.userId],
+          set: { role: body.data.role, origin: "invited" },
+        });
     });
     context.set.status = 201;
     return { id: user.id, role: body.data.role };
@@ -242,7 +262,8 @@ export function canvasRoutes(app: Api) {
     if (!params.success || !body.success) return badRequest(context, "Invalid canvas member");
     const [row] = await db
       .update(canvasMembers)
-      .set({ role: body.data.role })
+      // A manager assigning a role invites the person, whether or not they first joined through the link.
+      .set({ role: body.data.role, origin: "invited" })
       .where(and(eq(canvasMembers.canvasId, params.data.canvasId), eq(canvasMembers.userId, params.data.userId)))
       .returning();
     if (!row) return notFound(context, "Canvas member not found");
@@ -764,12 +785,13 @@ export function canvasRoutes(app: Api) {
       const entitiesById = new Map(referencedEntities.map((entity) => [entity.id, entity]));
       const existingByEntityId = new Map(existingRows.map((placement) => [placement.entityId, placement]));
       // Placing an entity on this canvas exposes it to everyone who can read the canvas, and the object write rule then
-      // requires editor access here too. Only someone who can already read the entity may add it. An unreadable entity
-      // gets the same response as a missing one, so the response does not confirm that it exists.
+      // requires editor access here too, so the placement narrows who may edit it. Only someone who can already edit the
+      // entity may add it (#32); reading it is not enough. Any other entity gets the same response as a missing one, so
+      // the response does not confirm that it exists.
       const newEntityIds = [...placementEntityIds].filter((entityId) => !existingByEntityId.has(entityId));
       if (
         [...referencedEntityIds].some((entityId) => entitiesById.get(entityId)?.workspaceId !== canvas.workspaceId) ||
-        !(await canReadEntities(tx, context.actor, canvas.workspaceId, newEntityIds))
+        !(await canEditEntities(tx, context.actor, newEntityIds))
       ) {
         return {
           kind: "invalid" as const,
@@ -901,34 +923,19 @@ export function canvasRoutes(app: Api) {
 type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /**
- * Whether the actor can read every entity, using the read rule of the entity routes: a workspace manager or system admin,
- * or a role on (or a link share of) a canvas in the workspace that already shows the entity.
+ * Whether the actor may edit every entity, by the object write rule of the entity routes (`objectAccess`): a workspace
+ * manager or system admin, or the editor role on every canvas in the workspace that already shows the entity.
  */
-async function canReadEntities(
-  tx: Transaction,
-  actor: Actor | null,
-  workspaceId: string,
-  entityIds: string[],
-): Promise<boolean> {
+async function canEditEntities(tx: Transaction, actor: Actor | null, entityIds: string[]): Promise<boolean> {
   if (!entityIds.length) return true;
   if (!actor) return false;
-  if (actor.systemRole === "admin") return true;
   // Read through the transaction, not the shared pool: the caller holds a connection and a canvas row lock, so waiting
-  // for a second pooled connection could deadlock once concurrent requests have taken the rest of the pool.
-  const [membership] = await tx
-    .select({ role: workspaceMembers.role })
-    .from(workspaceMembers)
-    .where(and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, actor.id)))
-    .limit(1);
-  if (membership?.role === "manager") return true;
-  const rows = await tx
-    .select({ entityId: canvasNodes.entityId, shareMode: canvases.shareMode, role: canvasMembers.role })
-    .from(canvasNodes)
-    .innerJoin(canvases, eq(canvases.id, canvasNodes.canvasId))
-    .leftJoin(canvasMembers, and(eq(canvasMembers.canvasId, canvases.id), eq(canvasMembers.userId, actor.id)))
-    .where(and(inArray(canvasNodes.entityId, entityIds), eq(canvases.workspaceId, workspaceId)));
-  const readable = new Set(rows.filter((row) => row.role || row.shareMode === "link").map((row) => row.entityId));
-  return entityIds.every((entityId) => readable.has(entityId));
+  // for a second pooled connection could deadlock once concurrent requests have taken the rest of the pool. The checks
+  // run one at a time because a transaction has a single connection.
+  for (const entityId of entityIds) {
+    if ((await objectAccess(actor, "entity", entityId, "write", tx)) !== "allowed") return false;
+  }
+  return true;
 }
 
 function connectionTitle(
