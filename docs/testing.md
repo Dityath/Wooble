@@ -42,11 +42,12 @@ A green smoke run only means something if the smoke script fails when the stack 
 | `verify` | The live socket closes after sign-in | `Live socket closed with <code> before presence` |
 | `mutate` | The change to the smoke content is not kept, so a restore rehearsal would prove nothing | `The fictional smoke content did not change before restore` |
 
-Each phase also has a passing case against a healthy fake, so a failure comes from the injected fault and not from the harness. Run them with `bun test scripts/selfhost-smoke.test.ts`. To check the port assertion by hand against a disposable stack, pipe edited `ps` output into it. For example, this must fail with `The postgres service publishes a host port`:
+Each phase also has a passing case against a healthy fake, so a failure comes from the injected fault and not from the harness. Run them with `bun test scripts/selfhost-smoke.test.ts`. To check the port assertion by hand against a disposable stack, pipe edited `ps` output into it. The filter handles both output shapes the script accepts: one object per line (current Compose) and a single array (older Compose). For example, this must fail with `The postgres service publishes a host port`:
 
 ```sh
 docker compose <same -f files as the workflow> ps --format json \
-  | jq -c 'if .Service == "postgres" then .Publishers = [{"URL":"127.0.0.1","PublishedPort":5432}] else . end' \
+  | jq -c 'def publish: if .Service == "postgres" then .Publishers = [{"URL":"127.0.0.1","PublishedPort":5432}] else . end;
+           if type == "array" then map(publish) else publish end' \
   | bun scripts/selfhost-smoke.ts ports
 ```
 

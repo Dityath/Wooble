@@ -23,7 +23,7 @@ function temporaryDirectory() {
 
 // The script runs asynchronously because the fake API lives in this process and must keep serving.
 async function smoke(phase: string, options: { baseUrl?: string; state?: string; stdin?: string } = {}) {
-  const child = Bun.spawn(["bun", script, phase], {
+  const child = Bun.spawn([process.execPath, script, phase], {
     cwd: root,
     env: {
       ...process.env,
@@ -54,18 +54,25 @@ type Faults = {
 
 const documentation = "Smoke test documentation that must survive restarts.";
 
-/** A fictional API that behaves like a healthy stack unless a fault is set. */
+/**
+ * A fictional API that behaves like a healthy stack unless a fault is set. Like the real API, it rejects requests
+ * without the session cookie and closes the live socket with 1008 for a wrong origin, so a passing case also shows
+ * that the script sends both.
+ */
 function fakeApi(faults: Faults = {}) {
   let email = "";
   let storedDocumentation: string | undefined;
   const session = "wooble_session=fictional";
-  const server = Bun.serve<undefined, never>({
+  const server = Bun.serve<{ rejected: boolean }, never>({
     port: 0,
     hostname: "127.0.0.1",
     async fetch(request, bunServer) {
       const url = new URL(request.url);
       const route = `${request.method} ${url.pathname}`;
       const body = request.body ? await request.json() : undefined;
+      const signedIn = request.headers.get("cookie")?.includes(session) ?? false;
+      const signInRoute = route === "POST /api/auth/register" || route === "POST /api/auth/login";
+      if (!signInRoute && !signedIn) return Response.json({ message: "Unauthorized" }, { status: 401 });
       switch (route) {
         case "POST /api/auth/register":
           email = body.email;
@@ -101,16 +108,20 @@ function fakeApi(faults: Faults = {}) {
               },
             ],
           });
-        case "GET /api/canvases/canvas-1/live":
-          return bunServer.upgrade(request) ? undefined : new Response("Upgrade failed", { status: 400 });
+        case "GET /api/canvases/canvas-1/live": {
+          const rejected = faults.closeLiveSocket || request.headers.get("origin") !== url.origin;
+          return bunServer.upgrade(request, { data: { rejected } })
+            ? undefined
+            : new Response("Upgrade failed", { status: 400 });
+        }
         default:
           return Response.json({ message: "Not found" }, { status: 404 });
       }
     },
     websocket: {
       open(socket) {
-        if (faults.closeLiveSocket) socket.close(4403, "Forbidden");
-        else socket.send(JSON.stringify({ type: "presence", users: [] }));
+        if (socket.data.rejected) socket.close(1008, "Invalid canvas or origin");
+        else socket.send(JSON.stringify({ type: "presence", peers: [] }));
       },
       message() {},
     },
@@ -190,7 +201,7 @@ describe("selfhost-smoke.ts setup", () => {
   it("fails when the live socket closes before presence", async () => {
     const result = await smoke("setup", { baseUrl: fakeApi({ closeLiveSocket: true }) });
     expect(result.status).not.toBe(0);
-    expect(result.output).toContain("Live socket closed with 4403 before presence");
+    expect(result.output).toContain("Live socket closed with 1008 before presence");
   });
 
   it("fails when a write from another origin is accepted", async () => {
@@ -228,7 +239,7 @@ describe("selfhost-smoke.ts verify", () => {
   it("fails when the live socket closes after sign-in", async () => {
     const result = await smoke("verify", { baseUrl: fakeApi({ closeLiveSocket: true }), state: savedState() });
     expect(result.status).not.toBe(0);
-    expect(result.output).toContain("Live socket closed with 4403 before presence");
+    expect(result.output).toContain("Live socket closed with 1008 before presence");
   });
 });
 
