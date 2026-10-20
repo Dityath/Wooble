@@ -48,10 +48,18 @@ export function invitationRoutes(app: Api) {
       if (invite.canvasId && invite.role !== "member")
         await tx
           .insert(canvasMembers)
-          .values({ canvasId: invite.canvasId, userId: requireActor(context.actor).id, role: invite.role })
+          .values({
+            canvasId: invite.canvasId,
+            userId: requireActor(context.actor).id,
+            role: invite.role,
+            origin: "invited",
+          })
           .onConflictDoUpdate({
             target: [canvasMembers.canvasId, canvasMembers.userId],
-            set: { role: sql`case when ${canvasMembers.role} = 'editor' then 'editor' else ${invite.role} end` },
+            set: {
+              role: sql`case when ${canvasMembers.role} = 'editor' then 'editor' else ${invite.role} end`,
+              origin: "invited",
+            },
           });
       await tx
         .update(invitations)

@@ -31,6 +31,7 @@ import {
   hashToken,
   newToken,
   materializeLinkViewer,
+  countedMembership,
   objectAccess,
   type Actor,
   type Api,
@@ -61,7 +62,11 @@ export function canvasRoutes(app: Api) {
     const shared =
       actor.systemRole === "admin"
         ? []
-        : await db.select({ id: canvasMembers.canvasId }).from(canvasMembers).where(eq(canvasMembers.userId, actor.id));
+        : await db
+            .select({ id: canvasMembers.canvasId })
+            .from(canvasMembers)
+            .innerJoin(canvases, eq(canvases.id, canvasMembers.canvasId))
+            .where(and(eq(canvasMembers.userId, actor.id), countedMembership()));
     if (actor.systemRole !== "admin" && !managed.length && !shared.length) return [];
     return db
       .select({
@@ -197,12 +202,22 @@ export function canvasRoutes(app: Api) {
   app.get("/api/canvases/:canvasId/members", async (context) => {
     const params = canvasIdParamsSchema.safeParse(context.params);
     if (!params.success) return badRequest(context, "Canvas ID must be a UUID");
-    return db
-      .select({ id: users.id, name: users.name, email: users.email, role: canvasMembers.role })
-      .from(canvasMembers)
-      .innerJoin(users, eq(users.id, canvasMembers.userId))
-      .where(eq(canvasMembers.canvasId, params.data.canvasId))
-      .orderBy(users.name);
+    return (
+      db
+        .select({
+          id: users.id,
+          name: users.name,
+          email: users.email,
+          role: canvasMembers.role,
+          origin: canvasMembers.origin,
+        })
+        .from(canvasMembers)
+        .innerJoin(users, eq(users.id, canvasMembers.userId))
+        .innerJoin(canvases, eq(canvases.id, canvasMembers.canvasId))
+        // People who joined through the link drop out of the list with their access once sharing is restricted.
+        .where(and(eq(canvasMembers.canvasId, params.data.canvasId), countedMembership()))
+        .orderBy(users.name)
+    );
   });
   app.post("/api/canvases/:canvasId/members", async (context) => {
     const params = canvasIdParamsSchema.safeParse(context.params);
@@ -231,8 +246,12 @@ export function canvasRoutes(app: Api) {
         .onConflictDoNothing();
       await tx
         .insert(canvasMembers)
-        .values({ canvasId: params.data.canvasId, userId: user.id, role: body.data.role })
-        .onConflictDoUpdate({ target: [canvasMembers.canvasId, canvasMembers.userId], set: { role: body.data.role } });
+        .values({ canvasId: params.data.canvasId, userId: user.id, role: body.data.role, origin: "invited" })
+        // Adding someone who joined through the link makes them an invited member, so they keep access if the link closes.
+        .onConflictDoUpdate({
+          target: [canvasMembers.canvasId, canvasMembers.userId],
+          set: { role: body.data.role, origin: "invited" },
+        });
     });
     context.set.status = 201;
     return { id: user.id, role: body.data.role };
@@ -243,7 +262,8 @@ export function canvasRoutes(app: Api) {
     if (!params.success || !body.success) return badRequest(context, "Invalid canvas member");
     const [row] = await db
       .update(canvasMembers)
-      .set({ role: body.data.role })
+      // A manager assigning a role invites the person, whether or not they first joined through the link.
+      .set({ role: body.data.role, origin: "invited" })
       .where(and(eq(canvasMembers.canvasId, params.data.canvasId), eq(canvasMembers.userId, params.data.userId)))
       .returning();
     if (!row) return notFound(context, "Canvas member not found");

@@ -204,6 +204,17 @@ describe("canvas settings", () => {
     );
   });
 
+  it("marks members who joined through the link, whose access ends when link sharing is turned off", async () => {
+    server.on("GET /api/canvases/:id/members", [
+      member({ id: "u-link", name: "Link Visitor", role: "viewer", origin: "link" }),
+      member({ id: "u-invited", name: "Invited Viewer", role: "viewer", origin: "invited" }),
+    ]);
+    await renderRoute(`/canvases/${ids.canvas}/manage`);
+    const notice = await screen.findByText(/Joined through the link/);
+    expect(notice.closest(".member-row")?.textContent).toContain("Link Visitor");
+    expect(screen.getAllByText(/Joined through the link/)).toHaveLength(1);
+  });
+
   it("manages canvas members and link invitations", async () => {
     server
       .on("POST /api/canvases/:id/members", member({ role: "editor" }))

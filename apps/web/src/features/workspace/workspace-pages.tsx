@@ -87,6 +87,11 @@ function Members({
               {member.name} {member.id === me?.id && <span className="member-you">You</span>}
             </strong>
             <small>{member.email}</small>
+            {member.origin === "link" && (
+              <small className="member-origin">
+                Joined through the link · loses access if link sharing is turned off
+              </small>
+            )}
           </div>
           {editable && member.id !== me?.id ? (
             <>

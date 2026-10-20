@@ -259,6 +259,65 @@ async function withParallelHarnesses(
   }
 }
 
+describe("canvas member origin backfill", () => {
+  it("treats existing viewers of link-shared canvases as link members and everyone else as invited", async () => {
+    const scratch = await scratchDatabase("memberorigin");
+    try {
+      await migrateDatabase(scratch.url, v010);
+      const database = drizzle(scratch.url);
+      try {
+        const user = (n: number) => `00000000-0000-4000-8000-0000000002${String(n).padStart(2, "0")}`;
+        await database.execute(
+          sql.raw(`
+          INSERT INTO users (id, email, name, password_hash) VALUES
+            ('${user(1)}', 'origin-viewer@example.test', 'Origin Viewer', 'scrypt$fictional'),
+            ('${user(2)}', 'origin-editor@example.test', 'Origin Editor', 'scrypt$fictional'),
+            ('${user(3)}', 'origin-invited@example.test', 'Origin Invited', 'scrypt$fictional');
+          INSERT INTO workspaces (id, name) VALUES ('${ids.workspace}', 'Origin workspace');
+          INSERT INTO canvases (id, workspace_id, name, share_mode) VALUES
+            ('${ids.home}', '${ids.workspace}', 'Home', 'restricted'),
+            ('${ids.board}', '${ids.workspace}', 'Board', 'link');
+          INSERT INTO canvas_members (canvas_id, user_id, role) VALUES
+            ('${ids.board}', '${user(1)}', 'viewer'),
+            ('${ids.board}', '${user(2)}', 'editor'),
+            ('${ids.home}', '${user(3)}', 'viewer');
+        `),
+        );
+
+        await migrateDatabase(scratch.url);
+
+        const rows = await database.execute(
+          sql.raw("SELECT canvas_id, user_id, role, origin FROM canvas_members ORDER BY user_id"),
+        );
+        // Only a viewer of a canvas that is shared by link now could have joined through the link (#62).
+        expect(rows.rows).toEqual([
+          { canvas_id: ids.board, user_id: user(1), role: "viewer", origin: "link" },
+          { canvas_id: ids.board, user_id: user(2), role: "editor", origin: "invited" },
+          { canvas_id: ids.home, user_id: user(3), role: "viewer", origin: "invited" },
+        ]);
+        // An API instance from before the column, still running while an update migrates, cannot add a row that would
+        // silently count as invited: without a default the insert fails.
+        const legacyInsert = await database
+          .execute(
+            sql.raw(
+              `INSERT INTO canvas_members (canvas_id, user_id, role) VALUES ('${ids.home}', '${user(1)}', 'viewer')`,
+            ),
+          )
+          .then(
+            () => "inserted",
+            (error: unknown) => String((error as { cause?: { code?: string } }).cause?.code ?? error),
+          );
+        // 23502 is not_null_violation.
+        expect(legacyInsert).toBe("23502");
+      } finally {
+        await database.$client.end();
+      }
+    } finally {
+      await scratch.drop();
+    }
+  });
+});
+
 describe("scratch database safety", () => {
   it("keeps two harnesses running at the same time independent", async () => {
     await withParallelHarnesses(async (first, second) => {
