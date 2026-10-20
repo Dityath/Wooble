@@ -14,7 +14,7 @@ This is Wooble's initial, revisable plan for usable releases. The [public GitHub
 
 ## How to use this roadmap
 
-The release entries are product outcomes, not claims that all implementation work is already scoped or assigned. The public GitHub Project has one draft item per release so anyone can see the timeline without creating an issue for every idea. When a contributor-ready piece of work is agreed, create a focused issue with an observable outcome, acceptance criteria, and relevant access rules. Link it to the release item. Follow [reporting and choosing issues](reporting-issues.md) for triage and claiming. A release item can remain visible even when no issue or contributor is assigned.
+The release entries are product outcomes, not claims that all implementation work is already scoped or assigned. The public GitHub Project has one draft item per release so anyone can see the timeline without creating an issue for every idea; it also holds the issues and pull requests that are currently being tracked. When a contributor-ready piece of work is agreed, create a focused issue with an observable outcome, acceptance criteria, and relevant access rules. Link it to the release item. Follow [reporting and choosing issues](reporting-issues.md) for triage and claiming. A release item can remain visible even when no issue or contributor is assigned.
 
 At each two-week checkpoint, record what was demonstrated, what remains, the currently available contributors, and any revised target date. Do not treat an empty assignee or a target date as a commitment from a volunteer. Fix release-blocking defects before tagging. After a release, urgent defects may ship as patch versions without waiting for the next planned minor release.
 
@@ -36,29 +36,29 @@ The detailed, dated tracking lives in [release backlog and acceptance evidence](
 
 Status words are used strictly and match the backlog: **planned** (accepted outcome, no active work), **active** (work is in progress, possibly only as a local branch or an unmerged draft pull request), **draft/unmerged PR** (open for review, not on `main`), **merged** (on `main`, not necessarily released), and **released** (tagged and published). A branch, a draft pull request, or a merged prerequisite does not mean a release criterion is done.
 
-As of 2026-10-13:
+As of 2026-10-20 (`main` at `aca66e9`):
 
 | Release | Status | Notes |
 | --- | --- | --- |
-| `v0.1.0` | Released (preview) | The only publicly released version. |
-| `v0.2.0` | Active | Work exists on the block editor (#9), the reader fix (#13), and the collaboration decision (#16). Nothing here is merged as a finished release. The original 10 October 2026 target has passed and is revisable; it is kept above as the original target. |
-| `v0.3.0` | Planned | Not started as a release. |
-| `v0.4.0` | Planned | Not started as a release. |
-| `v0.5.0` | Planned | Not started as a release. |
-| `v0.6.0` | Not part of this tracking batch | Unchanged. |
+| `v0.1.0` | Released (preview) | Still the only publicly released version. |
+| `v0.2.0` | Active | Merged on 2026-10-14: the block editor with the `/` menu and its save-safety and recovery work (#9, via #55), and reader access to connection documentation (#13). The collaboration ADR (#16) is on `main` but still **Proposed**. Durable collaborative documents, live sync, document presence, and Markdown import/export (#33 to #37) have not started. The original 10 October 2026 target has passed and is revisable; it is kept above as the original target. |
+| `v0.3.0` | Planned | No implementation has started. #38 is ready; #39 to #43 await triage. With no implementation started four days before the 24 October 2026 target, that target needs review at the next checkpoint. |
+| `v0.4.0` | Planned | No implementation has started. #44 to #48 await triage. |
+| `v0.5.0` | Planned | No implementation has started. #49 is ready; #50 to #53 await triage. |
+| `v0.6.0` | Planned | No dedicated issues yet. |
 
-The contract and schema inspectors already in Wooble are foundations for `v0.3.0` and `v0.4.0`, not completed releases of those outcomes.
+Merged prerequisites do not complete a release. The contract and schema inspectors already in Wooble are foundations for `v0.3.0` and `v0.4.0`, not completed releases of those outcomes.
 
 ### Dependency order
 
 Releases build on shared work, so the order matters more than the dates:
 
-1. **Collaboration backend.** The decision (#16) and its prerequisites, #10 to #15 (access guard, canvas placement checks, activity/undo integrity (#12), reader access, browser journeys in CI, upgrade harness), come first. These are shared prerequisites for `v0.2.0` through `v0.5.0`.
+1. **Collaboration backend.** The decision (#16) and its prerequisites, #10 to #15 (access guard, canvas placement checks, activity/undo integrity (#12), reader access, browser journeys in CI, upgrade harness), come first. These are shared prerequisites for `v0.2.0` through `v0.5.0`. #10 to #15 were merged on 2026-10-14. #16 waits for maintainer acceptance of the ADR, and the multi-canvas write rule (#32) is still undecided.
 2. **Contracts with stable sections.** Contract editing for `v0.3.0` needs identifiable sections so that collaboration and comments can refer to them.
 3. **Schema with stable IDs.** Database diagrams for `v0.4.0` need stable table and column identifiers, kept separate from diagram layout.
 4. **Comment anchors.** `v0.5.0` anchors build on the items above. Text anchors in documentation (Yjs relative positions) and orphan handling for moved or deleted anchors are separate work items from stable IDs.
 
-Self-hosting fresh-install and upgrade validation (#6, with child work #17 to #23) also remains before any release can claim the shared release gate.
+Self-hosting fresh-install and upgrade validation (#6, with child work #17 to #23) also remains before any release can claim the shared release gate. #17, #18, #21, and #22 were merged on 2026-10-14, and #19 on 2026-10-20 (through #59). Still open: a release-workflow dry run (#20) and the maintainer's fresh-host validation checklist (#23).
 
 Event contracts (Kafka, NATS) get a format-aware source view, not a rich AsyncAPI editor or registry synchronization. Service contracts are not generated automatically from tables.
 

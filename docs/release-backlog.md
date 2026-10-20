@@ -7,8 +7,9 @@ The roadmap and the five draft release cards remain the acceptance authority. Th
 supersedes the earlier six-issue write plan; it does not retroactively change the earlier
 snapshot. On 2026-10-13 the user authorized, and an executor ran and verified by read-back, the
 full GitHub sync (E existing issues, P draft-PR bodies, C release-card bodies plus one status
-change, N 22 new issues); see the write log below. No runtime edit was made. This file is
-committed only on the unmerged branch `prompt-1/4-collaboration-roadmap`, not on `main`.
+change, N 22 new issues); see the write log below. No runtime edit was made. This file reached
+`main` through #57 on 2026-10-14. The [current snapshot](#current-snapshot--2026-10-20) below is
+the live state; the 2026-10-13 sections after it are kept as historical evidence.
 
 **Planned ≠ active ≠ PR draft ≠ merged ≠ released.** An accepted issue is not automatically
 active; a branch alone does not establish release completion. A Proposed ADR on an unmerged
@@ -16,12 +17,13 @@ branch may support a claimed task without being accepted or on `main`. An open d
 `status:claimed` tracks that verified activity; it does **not** assign a human. No assignee,
 milestone or date will be invented. New design/dependency-blocked work is `status:needs-triage`.
 
-The interim storage ADR for #16 was read from another branch. It is not on `main` and is not the
-full collaboration ADR. The collaboration ADR is committed at
-[docs/decisions/collaboration-sync.md](decisions/collaboration-sync.md) with status **Proposed**
-(unmerged branch, not accepted until maintainer review and merge); spike evidence is committed at
-[docs/spikes/2026-10-13-collaboration-sync.md](spikes/2026-10-13-collaboration-sync.md). This
-file makes no collaboration-model decision; it only tracks that ADR.
+The interim storage ADR [docs/decisions/documentation-storage.md](decisions/documentation-storage.md)
+is on `main` (through #55); it is not the full collaboration ADR. The collaboration ADR
+[docs/decisions/collaboration-sync.md](decisions/collaboration-sync.md) and its spike evidence
+[docs/spikes/2026-10-13-collaboration-sync.md](spikes/2026-10-13-collaboration-sync.md) are on
+`main` (through #57). The ADR's status is still **Proposed**: merging the document did not accept
+it, and #16 stays open until a maintainer accepts or revises it. This file makes no
+collaboration-model decision; it only tracks that ADR.
 
 The executed sync covered v0.2–v0.5 only. **Keep exactly five draft release cards; add no Project
 implementation items.** Use issue/PR links in the existing card bodies. **v0.6 is not edited**:
@@ -29,6 +31,52 @@ no body, status, dates, title or new v0.6 issues. Shared self-hosting work remai
 not an automatic completion claim.
 
 ## Dated snapshots and completeness
+
+### Current snapshot — 2026-10-20
+
+GitHub and git reads on 2026-10-20, after #59 was merged. The counts include this backlog's own
+PR, #60, as the open PR.
+
+| Read | Result |
+| --- | --- |
+| `gh api repos/Dityath/Wooble/commits/main --jq .sha` | `aca66e9d37e629871e41a844685925c32cef168f` (merge of #59) |
+| `gh release list --repo Dityath/Wooble` | 1: `Wooble v0.1.0 — Preview`, unchanged. No later release or tag. |
+| `gh pr list --repo Dityath/Wooble --state all --limit 100` | 20 PRs: 1 open (#60), 18 merged, 1 closed unmerged (#30) |
+| `gh issue list --repo Dityath/Wooble --state all --limit 200` | 40 issues: 26 open, 14 closed |
+| `gh project item-list 1 --owner Dityath --limit 100 --format json` | 31 items: the 5 release cards, 22 issues and 4 PRs (#54–#57). Release-card status and dates unchanged: v0.2.0 In Progress; v0.3.0–v0.6.0 Todo. |
+| `gh api repos/Dityath/Wooble/branches/main/protection/required_status_checks` | unchanged: `strict: true`; Code quality and Tests |
+
+**What changed since 2026-10-13.** On 2026-10-14 the maintainer merged a four-part delivery
+stack into `main`, in order: #54 (access and transactional canvas undo; consolidates #26, #27
+and #28), #55 (documentation editing safety and recovery; consolidates #25 and #29 plus the
+editor branch), #56 (self-hosting operations and release pipeline; consolidates #24, #30 and
+#31), and #57 (collaboration ADR and this backlog). The predecessor draft PRs #24–#29 and #31
+show as merged because their commits landed through the stack. #30 was closed unmerged; its
+commit landed through #56 and closed #18. On 2026-10-15, #58 (Auto Neat canvas routing, not a
+release criterion) was merged. On 2026-10-20, #59 merged the failure checks for the self-host
+smoke script and closed #19.
+
+| Issue | Closed / state on 2026-10-20 | Landed through |
+| --- | --- | --- |
+| #10, #11, #12, #15 | closed 2026-10-14 | #54 |
+| #9, #13, #14 | closed 2026-10-14 | #55 |
+| #17, #18, #21, #22 | closed 2026-10-14 | #56 |
+| #19 | reopened 2026-10-14 for one criterion; closed 2026-10-20 | workflow through #56; the documented failure checks for the smoke script and port assertion through #59 (merge commit `aca66e9`) |
+| #20 | open | release workflow and image labels landed in #56; a release-workflow dry run without publishing has not been run |
+| #23 | open | rewritten guide landed in #56; the maintainer fresh-host validation checklist is not completed |
+| #6 | open | parent of the self-hosting chain; open until its runtime acceptance checks are demonstrated |
+| #16 | open, status:claimed | ADR on `main` through #57, status Proposed, awaiting maintainer acceptance |
+| #32, #38, #49 | open, status:ready (relabelled from needs-triage on 2026-10-15) | no implementation |
+| #33–#37, #39–#48, #50–#53 | open, status:needs-triage | no implementation |
+
+A merged prerequisite is not a met release criterion. No v0.2–v0.5 criterion is released, and
+none has integrated release evidence yet; see the acceptance matrix below.
+
+**GitHub tracking blocks refreshed.** The owned tracking blocks written on 2026-10-13 had gone
+stale after the merges; several still read `State: active; PR draft (unmerged)`. On 2026-10-20,
+with the user's authorization, only the text between the markers was replaced in issues #9–#19,
+PRs #24–#31 and the v0.2.0–v0.5.0 cards, and each write was read back. #19's block was refreshed
+again after #59 merged. Labels, Project statuses and dates, and the v0.6.0 card were not changed.
 
 ### Historical snapshot — 2026-10-13T02:35:11Z
 
@@ -84,16 +132,24 @@ v0.2's October 10 target was already overdue at both reads; it is revisable and 
 Only v0.2's planned status is In Progress, based on #9's active editor branch and #13/#25.
 v0.3–v0.5 stay Todo despite shared foundation PRs. v0.6 is **NOT EDITED**.
 The table above is the pre-sync state. After the 2026-10-13 sync (live read-back), the v0.2.0
-card Status is **In Progress**; v0.3.0–v0.6.0 are Todo; dates and titles are unchanged.
+card Status is **In Progress**; v0.3.0–v0.6.0 are Todo; dates and titles are unchanged. That was
+still true on 2026-10-20. By then the Project also held issue and PR items, which were added
+after the sync; see the current snapshot.
 
 `strict: true` requires PR branches to be up to date for required checks; it is not a rule that
 allows direct pushes. Branch protection requires **Code quality** and **Tests** only.
 Browser journeys and Docker smoke test are advisory; their green results do not satisfy a
 release's integrated journey, and advisory does not mean their failures should be ignored.
 
-## PR ↔ issue mapping and SHA-specific remote evidence
+## PR ↔ issue mapping and SHA-specific remote evidence (historical, 2026-10-13)
 
-All eight remain draft, unmerged, with **zero submitted GitHub reviews**. A review described in
+**Superseded on 2026-10-14.** #24–#29 and #31 were merged through the delivery stack #54–#56, and
+#30 was closed unmerged with its commit landing through #56; see the
+[current snapshot](#current-snapshot--2026-10-20). The table and notes below record the state
+before that merge. Whether each regression requirement below is covered on `main` was not
+re-verified by this revision.
+
+At the time, all eight were draft, unmerged, with **zero submitted GitHub reviews**. A review described in
 a PR body is contributor-reported evidence, not a submitted approval. The historical query
 reported MERGEABLE/CLEAN; that does not establish acceptance. Below, CQ = Code quality and
 T = Tests; both are completed/success on **the full head SHA in that row**. No older SHA's green
@@ -142,7 +198,10 @@ acceptance. Maintainer re-review and per-SHA regression evidence are needed.
 No exploit mechanics, payload shapes, reproduction details, raw configuration or private
 endpoints are published in these notes.
 
-## Every issue's current state and justified planned delta
+## Every issue's state and justified planned delta (historical, 2026-10-13)
+
+For the state on 2026-10-20, see the [current snapshot](#current-snapshot--2026-10-20). This
+table is the 2026-10-13 state that the sync below acted on.
 
 Labels here are the observed set, **not an exact-set mutation instruction**. All open issues
 are unassigned, without a milestone and without projectItems. Closed #3/#4 alone have assignee
@@ -181,36 +240,38 @@ remains blocked.
 
 Each row quotes one original release-card criterion in full, in the original order; this is
 one-to-one criterion coverage, even where several scoped issues implement one criterion.
-New slugs below have **no issue numbers yet** and are proposed, not created. Existing issues
-cover part of the criterion only where stated. None of these full criteria is established as
-merged or released by this audit. Basic fields on main are not proof of the complete journey.
+The proposed slugs were created as issues #32–#53 on 2026-10-13; their numbers are shown next to
+each slug. The "Existing issue / PR" and "Current evidence / gap" columns reflect 2026-10-20.
+Existing issues cover part of the criterion only where stated. None of these full criteria is
+established as released, and none has integrated release evidence. Basic fields on main are not
+proof of the complete journey.
 
 ### v0.2.0
 
 | Criterion verbatim | Existing issue / PR | Proposed slugs | Current evidence / gap |
 | --- | --- | --- | --- |
-| The editor supports paragraph, heading, bullet and numbered list, task list, quote, code block, divider, and table blocks. Typing `/` opens a searchable, keyboard-operable menu and inserts the selected block at the current position. | #9 / no PR | `v0.2/release-evidence` (#37) | active unmerged editor branch; slash/safety acceptance still needs integrated review; not merely planned and not a draft PR |
-| Importing `.md` or pasting Markdown maps supported constructs to blocks. The import flow previews replacement or insertion, does not silently discard unsupported content, and existing Markdown documentation remains readable and editable after migration. | #9 paste/safety only; #16 representation decision / no PR | `v0.2/markdown-fidelity` (#36), `v0.2/durable-documents` (#33) | no issue exists for remaining import/migration journey; decision pending |
-| Two permitted editors can type in the same document concurrently without one save replacing the other's work. Reconnect and refresh restore persisted content; an interrupted save or sync has a visible state and recovery path. | #16 decision, #12 event/undo prerequisite / no PR | `v0.2/durable-documents` (#33), `v0.2/sync-access` (#34), `v0.2/coedit-presence` (#35), `v0.2/release-evidence` (#37) | decision pending; implementations planned only, no issues yet |
-| The document shows the people currently viewing it. Other editors' live carets and selections appear in the document with identifiable names or colors and disappear when they leave. Canvas cursor presence alone does not satisfy this criterion. | #16 / no PR | `v0.2/sync-access` (#34), `v0.2/coedit-presence` (#35) | no issue exists for implementation; canvas presence is insufficient |
-| Viewers and link-shared guests with access can read but cannot write. Editing, document presence, and updates remain scoped to the entity's workspace and authorized canvas context. | #13/#25 partial reader UI; #10/#26 and #11/#27 prerequisites | `v0.2/sync-access` (#34), `v0.2/coedit-presence` (#35), `shared/multi-canvas-write-rule` (#32), `v0.2/release-evidence` (#37) | partial implemented in draft PR (unmerged); new live document matrix not implemented |
-| Markdown export or copy produces a useful representation of supported blocks. Round-trip checks cover the documented supported constructs; any unsupported format has a visible, documented limit. | #9 source behavior partial / no PR | `v0.2/markdown-fidelity` (#36), `v0.2/release-evidence` (#37) | no issue exists for complete export/round-trip criterion |
+| The editor supports paragraph, heading, bullet and numbered list, task list, quote, code block, divider, and table blocks. Typing `/` opens a searchable, keyboard-operable menu and inserts the selected block at the current position. | #9 / merged through #55 | `v0.2/release-evidence` (#37) | block types, `/` menu and save safety merged on `main` 2026-10-14; not released; integrated release evidence (#37) not started |
+| Importing `.md` or pasting Markdown maps supported constructs to blocks. The import flow previews replacement or insertion, does not silently discard unsupported content, and existing Markdown documentation remains readable and editable after migration. | #9 paste/safety merged through #55; #16 representation decision (ADR Proposed on `main`) | `v0.2/markdown-fidelity` (#36), `v0.2/durable-documents` (#33) | Markdown paste merged; `.md` file import preview and migration not implemented; #33/#36 await triage |
+| Two permitted editors can type in the same document concurrently without one save replacing the other's work. Reconnect and refresh restore persisted content; an interrupted save or sync has a visible state and recovery path. | #16 decision (ADR Proposed on `main`); #12 event/undo prerequisite merged through #54 | `v0.2/durable-documents` (#33), `v0.2/sync-access` (#34), `v0.2/coedit-presence` (#35), `v0.2/release-evidence` (#37) | decision awaits maintainer acceptance; #33–#35 not started; saves remain last-write-wins |
+| The document shows the people currently viewing it. Other editors' live carets and selections appear in the document with identifiable names or colors and disappear when they leave. Canvas cursor presence alone does not satisfy this criterion. | #16 (ADR Proposed on `main`) | `v0.2/sync-access` (#34), `v0.2/coedit-presence` (#35) | not started; canvas presence is insufficient |
+| Viewers and link-shared guests with access can read but cannot write. Editing, document presence, and updates remain scoped to the entity's workspace and authorized canvas context. | #13 reader access merged through #55; #10 and #11 prerequisites merged through #54 | `v0.2/sync-access` (#34), `v0.2/coedit-presence` (#35), `shared/multi-canvas-write-rule` (#32), `v0.2/release-evidence` (#37) | read-only reader merged; live document access matrix (#34) not implemented; #32 write rule undecided |
+| Markdown export or copy produces a useful representation of supported blocks. Round-trip checks cover the documented supported constructs; any unsupported format has a visible, documented limit. | #9 source behavior partial, merged through #55 | `v0.2/markdown-fidelity` (#36), `v0.2/release-evidence` (#37) | export and round-trip criterion not complete; #36 awaits triage |
 
 **Dependency verbatim:** Choose and test a collaborative document representation and
 persistence/recovery model before replacing the current Markdown field. Keep document presence
-separate from durable content. Owner #16 (ADR Proposed on an unmerged branch, pending maintainer review);
+separate from durable content. Owner #16 (ADR on `main`, status Proposed, pending maintainer acceptance);
 implementation slugs do not replace it or pre-approve its proposals.
 
 ### v0.3.0
 
 | Criterion verbatim | Existing issue / PR | Proposed slugs | Current evidence / gap |
 | --- | --- | --- | --- |
-| Contracts have an explicit format and are attached to the semantic connection. All connector types can hold and display a contract; the interface does not mislabel a generic or event contract as HTTP. | no feature issue; #10/#26 prerequisite | `v0.3/contract-identity` (#38), `v0.3/contract-authoring` (#41) | no issue exists; planned only |
-| REST connectors can import OpenAPI JSON, show operations, paths, parameters, request and response shapes, and edit them with clear validation. Editing the visual form does not silently erase source fields it does not expose. The supported OpenAPI version and limits are documented. | no feature issue | `v0.3/openapi-editing` (#39) | no issue exists; supported version decision pending |
-| Protobuf connectors can import `.proto`, identify package, services, methods, messages, and fields, and offer a useful source and structured reading/editing experience. Local imports/dependencies are resolved or reported clearly; a single unresolved file is not presented as a valid compiled contract. | no feature issue | `v0.3/protobuf-editing` (#40) | no issue exists; parser/dependency limits pending |
-| A member can create a contract without importing a file, save it, reopen it from another canvas showing the connection, and export its source. Invalid source produces actionable errors and does not replace the last valid saved contract without an explicit choice. | no feature issue | `v0.3/contract-authoring` (#41), `v0.3/contract-identity` (#38) | no issue exists; basic contractBody field is not full acceptance |
-| Two permitted editors can see who has the contract open and what section or operation the other is viewing or editing. Concurrent changes have a defined merge or conflict flow that avoids silent lost updates; reconnect is recoverable. | #16 reusable transport decision only | `v0.3/contract-sessions` (#42) | no issue exists; conflict protocol decision pending, not automatic structured CRDT merge |
-| Viewers and link-shared guests see only contracts they may read and cannot edit. Access checks cover the connection's actual registered route and workspace/canvas scope. | #10/#26 prerequisite | `v0.3/contract-access-evidence` (#43) | no feature issue; prerequisite draft is not route integration |
+| Contracts have an explicit format and are attached to the semantic connection. All connector types can hold and display a contract; the interface does not mislabel a generic or event contract as HTTP. | #10 prerequisite merged through #54 | `v0.3/contract-identity` (#38), `v0.3/contract-authoring` (#41) | #38 ready, not started; #41 awaits triage |
+| REST connectors can import OpenAPI JSON, show operations, paths, parameters, request and response shapes, and edit them with clear validation. Editing the visual form does not silently erase source fields it does not expose. The supported OpenAPI version and limits are documented. | no pre-existing issue | `v0.3/openapi-editing` (#39) | #39 awaits triage; supported version decision pending; not started |
+| Protobuf connectors can import `.proto`, identify package, services, methods, messages, and fields, and offer a useful source and structured reading/editing experience. Local imports/dependencies are resolved or reported clearly; a single unresolved file is not presented as a valid compiled contract. | no pre-existing issue | `v0.3/protobuf-editing` (#40) | #40 awaits triage; parser/dependency limits pending; not started |
+| A member can create a contract without importing a file, save it, reopen it from another canvas showing the connection, and export its source. Invalid source produces actionable errors and does not replace the last valid saved contract without an explicit choice. | no pre-existing issue | `v0.3/contract-authoring` (#41), `v0.3/contract-identity` (#38) | #38 ready, #41 awaits triage; not started; basic contractBody field is not full acceptance |
+| Two permitted editors can see who has the contract open and what section or operation the other is viewing or editing. Concurrent changes have a defined merge or conflict flow that avoids silent lost updates; reconnect is recoverable. | #16 reusable transport decision only (ADR Proposed) | `v0.3/contract-sessions` (#42) | #42 awaits triage; conflict protocol decision pending, not automatic structured CRDT merge |
+| Viewers and link-shared guests see only contracts they may read and cannot edit. Access checks cover the connection's actual registered route and workspace/canvas scope. | #10 prerequisite merged through #54 | `v0.3/contract-access-evidence` (#43) | #43 awaits triage; merged prerequisite is not contract route integration |
 
 **Boundary verbatim:** Kafka, NATS, and other connector types need a usable format-aware source
 view and clear type labels in this release. Rich visual editors for event contracts, such as
@@ -222,32 +283,32 @@ Owners `v0.3/contract-identity` (#38), `v0.3/contract-authoring` (#41); no rich 
 
 | Criterion verbatim | Existing issue / PR | Proposed slugs | Current evidence / gap |
 | --- | --- | --- | --- |
-| Users can add, rename, and remove tables and columns; set common data types, nullability, defaults, primary keys, and foreign keys; and create or change valid relationships through the visual editor. Changes are persisted and survive refresh. | no feature issue | `v0.4/schema-identity-layout` (#44), `v0.4/schema-visual-editing` (#46) | no issue exists; current schemaSql is not full criterion |
-| Importing the documented PostgreSQL DDL subset produces the same tables and relationships in the diagram. Unsupported statements and unresolved references are reported without silently discarding the source or damaging an existing diagram. | no feature issue | `v0.4/postgresql-import` (#45) | no issue exists; supported subset decision pending |
-| The saved schema is the source of truth; diagram positions and viewport are stored separately. Moving a table never changes its database definition. Relationship lines identify their source and target columns and remain legible as the diagram grows. | no feature issue | `v0.4/schema-identity-layout` (#44), `v0.4/schema-visual-editing` (#46) | no issue exists; separate stable IDs/layout planned |
-| The diagram has a name and purpose, can be read without entering edit mode, and shows a usable state for empty, invalid, and larger schemas. At least one export path preserves the supported schema information. | no feature issue | `v0.4/schema-reading-export` (#47) | no issue exists; planned only |
-| Edits to tables, keys, and relationships validate references and surface conflicts. Viewers and link-shared guests can inspect authorized diagrams but cannot change them. The database entity remains workspace-scoped even when shown on multiple canvases. | #10/#26, #11/#27 prerequisites | `v0.4/schema-visual-editing` (#46), `v0.4/schema-access-evidence` (#48), `shared/multi-canvas-write-rule` (#32) | prerequisite draft PRs only; feature integration not implemented |
-| If database elements are associated with Protobuf messages or fields, that association is explicit. Generating a service contract from tables is not automatic or required for this release. | no feature issue | `v0.4/schema-identity-layout` (#44), `v0.4/schema-reading-export` (#47) | no association promised; explicit stable identity only if associations are implemented; no automatic generation |
+| Users can add, rename, and remove tables and columns; set common data types, nullability, defaults, primary keys, and foreign keys; and create or change valid relationships through the visual editor. Changes are persisted and survive refresh. | no pre-existing issue | `v0.4/schema-identity-layout` (#44), `v0.4/schema-visual-editing` (#46) | #44 and #46 await triage; not started; current schemaSql is not full criterion |
+| Importing the documented PostgreSQL DDL subset produces the same tables and relationships in the diagram. Unsupported statements and unresolved references are reported without silently discarding the source or damaging an existing diagram. | no pre-existing issue | `v0.4/postgresql-import` (#45) | #45 awaits triage; supported subset decision pending; not started |
+| The saved schema is the source of truth; diagram positions and viewport are stored separately. Moving a table never changes its database definition. Relationship lines identify their source and target columns and remain legible as the diagram grows. | no pre-existing issue | `v0.4/schema-identity-layout` (#44), `v0.4/schema-visual-editing` (#46) | #44 and #46 await triage; separate stable IDs/layout not started |
+| The diagram has a name and purpose, can be read without entering edit mode, and shows a usable state for empty, invalid, and larger schemas. At least one export path preserves the supported schema information. | no pre-existing issue | `v0.4/schema-reading-export` (#47) | #47 awaits triage; not started |
+| Edits to tables, keys, and relationships validate references and surface conflicts. Viewers and link-shared guests can inspect authorized diagrams but cannot change them. The database entity remains workspace-scoped even when shown on multiple canvases. | #10 and #11 prerequisites merged through #54 | `v0.4/schema-visual-editing` (#46), `v0.4/schema-access-evidence` (#48), `shared/multi-canvas-write-rule` (#32) | #46/#48 await triage, #32 undecided; feature integration not implemented |
+| If database elements are associated with Protobuf messages or fields, that association is explicit. Generating a service contract from tables is not automatic or required for this release. | no pre-existing issue | `v0.4/schema-identity-layout` (#44), `v0.4/schema-reading-export` (#47) | no association promised; explicit stable identity only if associations are implemented; no automatic generation; #44/#47 await triage |
 
 ### v0.5.0
 
 | Criterion verbatim | Existing issue / PR | Proposed slugs | Current evidence / gap |
 | --- | --- | --- | --- |
-| Members can create, reply to, resolve, and reopen threads on entities, connections, documentation text, contract operations or sections, and database tables or columns. A comment indicator leads to the exact object or the closest remaining context when its anchor changes. | no feature issue | `v0.5/thread-lifecycle` (#49), `v0.5/object-anchors` (#50), `v0.5/text-anchors` (#51) | no issue exists; stable identities and anchor decisions pending |
-| Canvas comments use an unobtrusive pin or contextual marker similar to a design review. Text comments stay attached to the selected passage as concurrent edits change nearby content; orphaned anchors are visible and recoverable rather than silently lost. | #16 text model dependency only | `v0.5/object-anchors` (#50), `v0.5/text-anchors` (#51) | no implementation issue; depends on v0.2–v0.4 identities |
-| Mention search covers only people eligible for the context. Mentioned people receive a discoverable in-app notification or inbox entry and can open the thread if they still have access. No mention leaks private content to an unauthorized account. | no feature issue | `v0.5/mentions-inbox` (#52) | no issue exists; eligibility and inbox planned only |
-| Thread authorship, creation and edit time, resolve state, and replies persist. The UI distinguishes open from resolved discussions and lets readers find both without overwhelming the canvas or reading surface. | no feature issue | `v0.5/thread-lifecycle` (#49), `v0.5/object-anchors` (#50) | no issue exists; persistence and UI planned only |
-| Comment and mention routes enforce the current workspace/canvas/object access rules. Editors and higher roles can comment; viewers and link-shared guests can read authorized threads but cannot write. A guest is never granted write access simply by opening a shared link. | #10/#26 prerequisite only | `v0.5/thread-lifecycle` (#49), `v0.5/mentions-inbox` (#52), `v0.5/comments-access-evidence` (#53) | no feature issue; prerequisite draft does not establish new routes |
-| Existing documentation, contracts, and schema diagrams remain editable with comments present. Moving or deleting an anchor has a defined outcome tested in the affected editor. | #12 undo prerequisite | `v0.5/object-anchors` (#50), `v0.5/text-anchors` (#51), `v0.5/comments-access-evidence` (#53) | no implementation issue; orphan/delete/restore behavior pending |
+| Members can create, reply to, resolve, and reopen threads on entities, connections, documentation text, contract operations or sections, and database tables or columns. A comment indicator leads to the exact object or the closest remaining context when its anchor changes. | no pre-existing issue | `v0.5/thread-lifecycle` (#49), `v0.5/object-anchors` (#50), `v0.5/text-anchors` (#51) | #49 ready, #50/#51 await triage; not started; stable identities and anchor decisions pending |
+| Canvas comments use an unobtrusive pin or contextual marker similar to a design review. Text comments stay attached to the selected passage as concurrent edits change nearby content; orphaned anchors are visible and recoverable rather than silently lost. | #16 text model dependency only | `v0.5/object-anchors` (#50), `v0.5/text-anchors` (#51) | #50/#51 await triage; not started; depends on v0.2–v0.4 identities |
+| Mention search covers only people eligible for the context. Mentioned people receive a discoverable in-app notification or inbox entry and can open the thread if they still have access. No mention leaks private content to an unauthorized account. | no pre-existing issue | `v0.5/mentions-inbox` (#52) | #52 awaits triage; not started |
+| Thread authorship, creation and edit time, resolve state, and replies persist. The UI distinguishes open from resolved discussions and lets readers find both without overwhelming the canvas or reading surface. | no pre-existing issue | `v0.5/thread-lifecycle` (#49), `v0.5/object-anchors` (#50) | #49 ready, #50 awaits triage; persistence and UI not started |
+| Comment and mention routes enforce the current workspace/canvas/object access rules. Editors and higher roles can comment; viewers and link-shared guests can read authorized threads but cannot write. A guest is never granted write access simply by opening a shared link. | #10 prerequisite merged through #54 | `v0.5/thread-lifecycle` (#49), `v0.5/mentions-inbox` (#52), `v0.5/comments-access-evidence` (#53) | #49 ready, #52/#53 await triage; merged prerequisite does not establish new routes |
+| Existing documentation, contracts, and schema diagrams remain editable with comments present. Moving or deleting an anchor has a defined outcome tested in the affected editor. | #12 undo prerequisite merged through #54 | `v0.5/object-anchors` (#50), `v0.5/text-anchors` (#51), `v0.5/comments-access-evidence` (#53) | #50/#51/#53 await triage; orphan/delete/restore behavior pending |
 
 ## Gaps without merged implementation
 
-Every row above is an explicit gap in **full acceptance evidence**: all six criteria per
-release v0.2–v0.5 still lack a demonstrated merged, release-ready journey. This does not claim
-there is no code at all: main has basic Markdown, contract and schema fields, #9 has an active
-block editor branch, and #25 partially implements a reader fix. None is a released co-editor.
-All 22 issue bodies below remain proposals until creation; a created issue remains planned
-unless implementation starts. Zero issue numbers for these proposals have been invented.
+As of 2026-10-20, every row above is an explicit gap in **full acceptance evidence**: all six
+criteria per release v0.2–v0.5 still lack a demonstrated, release-ready journey. This does not
+claim there is no code at all. `main` has basic Markdown, contract and schema fields, the block
+editor with its `/` menu and save-safety work (#9 through #55), and read-only connection
+documentation for viewers and link guests (#13 through #55). None is a released co-editor.
+Issues #32–#53 exist, but none of them has started implementation.
 
 Still missing: v0.2 durable bootstrap/recovery/retention, live sync and revocation, co-editing
 carets and undo, Markdown file import/export fidelity, and integrated migration/browser evidence;
@@ -255,25 +316,27 @@ v0.3 semantic format/sections, OpenAPI, Protobuf, authoring/export, sessions/con
 integration; v0.4 schema IDs/layout, safe DDL import, visual editing, reading/export and conflicts;
 v0.5 threads, stable object/text anchors, mentions/inbox and changing-anchor access evidence.
 
-The #16 representation gate awaits reviewed ADR/spike evidence. #12 still owns transaction,
-activity and field-aware undo integrity. #14/#15 are the shared browser/upgrade harness owners,
-not duplicates of release-specific journeys. #6 and #17–#23 remain the self-hosting chain; even
-green #24/#30/#31 checks do not establish #6's complete fresh-host/second-device/update path.
+The #16 representation gate awaits maintainer acceptance of the ADR, which is on `main` but still
+Proposed. #12's transaction, activity and field-aware undo work is merged through #54; later
+features still have to integrate their own metadata and delete paths with it. #14/#15 are
+merged shared browser/upgrade harnesses, not release-specific journeys. #6, #20 and #23
+remain open in the self-hosting chain; merged #17, #18, #21 and #22 do not establish #6's
+complete fresh-host/second-device/update path.
 
 ## Release order and shared gates
 
 Order remains v0.2.0 → v0.3.0 → v0.4.0 → v0.5.0 → v0.6.0, with v0.1.0 as baseline.
 Dependencies are prerequisites, not proof that a downstream release is active or done.
 
-| Shared owner | Used by | Gate still required |
-| --- | --- | --- |
-| #10 / #26 | v0.2–v0.5 new object routes/live channels | route classification and fail-closed current access, including the recheck regression requirement |
-| #11 / #27; separate `shared/multi-canvas-write-rule` (#32) | v0.2–v0.4 shared objects | original read-before-placement fix plus separately reviewed cross-canvas write rule |
-| #12 | v0.2–v0.5 writes/history/undo | transactional history and feature-owned metadata/delete integration |
-| #16 | v0.2 documents; reusable transport for v0.3, text anchors for v0.5 | ADR accepted by maintainer (currently Proposed), spike, persistence/recovery and license evidence |
-| #14 / #29 | all v0.2–v0.5 release evidence issues | run combined feature journeys, not just PR-isolated CI |
-| #15 / #28 | all v0.2–v0.5 data conversions | extend preserved-content seeds, previous-release cases and deterministic harness |
-| #6; #17–#23 (#24/#30/#31 partial) | shared fresh-install/upgrade gate | fresh host, browser/second device, versioned update and restore rehearsal, maintainer review |
+| Shared owner | State on 2026-10-20 | Used by | Gate still required |
+| --- | --- | --- | --- |
+| #10 / #26 | merged through #54 | v0.2–v0.5 new object routes/live channels | each new route and live channel must be classified and fail closed on current access; the recheck regression requirement must be shown for live document sessions |
+| #11 / #27; separate `shared/multi-canvas-write-rule` (#32) | #11 merged through #54; #32 open, ready, undecided | v0.2–v0.4 shared objects | separately reviewed cross-canvas write rule |
+| #12 | merged through #54 | v0.2–v0.5 writes/history/undo | feature-owned metadata/delete integration for each new feature |
+| #16 | open; ADR on `main`, status Proposed | v0.2 documents; reusable transport for v0.3, text anchors for v0.5 | ADR accepted by maintainer, then persistence/recovery and license evidence in implementation |
+| #14 / #29 | merged through #55 | all v0.2–v0.5 release evidence issues | run combined feature journeys, not just PR-isolated CI |
+| #15 / #28 | merged through #54 | all v0.2–v0.5 data conversions | extend preserved-content seeds, previous-release cases and deterministic harness |
+| #6; #17–#23 | #17, #18, #21, #22 merged through #56; #19 merged through #59; #6, #20, #23 open | shared fresh-install/upgrade gate | release dry run, fresh host, browser/second device, versioned update and restore rehearsal, maintainer review |
 
 ### Shared release gate (single reusable verbatim definition)
 
@@ -290,7 +353,8 @@ every card; do not replace it with a weaker checklist or mark it complete becaus
 
 ## Multi-canvas access decision still open
 
-Origin #11 / PR #27; its accepted read-before-placement scope is unchanged. At requirement level,
+Origin #11 / PR #27, merged through #54; its accepted read-before-placement scope is unchanged.
+The decision is tracked in #32 (open, status:ready, undecided on 2026-10-20). At requirement level,
 read access is sufficient for the placement proposed by that PR, whereas current entity writes
 require editor rights across every canvas containing the entity. Placement on another canvas
 can therefore change who may edit the object, so a written rule is needed. Neither a shared
@@ -341,7 +405,8 @@ issues; minimal `#N` cross-references accepted) was executed on 2026-10-13 and v
 read-back; results are in the write log below. The text of this section is retained as the
 idempotent procedure for future re-runs: first re-read current issues/PRs/card bodies and
 labels. If a head, scope, state or duplicate changes, stop/reconcile; do not blindly replay
-this dated snapshot.
+this dated snapshot. By 2026-10-20 the heads, states and SHAs this procedure names had changed
+(see the [current snapshot](#current-snapshot--2026-10-20)), so a re-run must start from fresh reads.
 
 **Known side effect (accepted by the user):** the `#N` references inside owned tracking blocks
 created GitHub timeline cross-reference events on the referenced issues and PRs. No comments,
@@ -1191,11 +1256,13 @@ implementation items or replacement of the five cards. No edit of v0.6. No chang
 #11 scope, original unchecked acceptance or unrelated body text/labels. No automatic contract
 generation, external registry sync, or collaboration model decision by this document.
 
-## Interim editor ADR — read off main
+## Interim editor ADR
 
-Read using `git show 997c8224783dbe32009a0f982624cdd310f677f1:docs/decisions/documentation-storage.md`.
-This file is from the editor branch, **not main**; `git ls-tree -r
-4b5fa0a73baba300004da5caf661080c8750e4ab -- docs/decisions` returned no paths. No merge or copy.
+On 2026-10-13 this was read off `main` with
+`git show 997c8224783dbe32009a0f982624cdd310f677f1:docs/decisions/documentation-storage.md`; at that
+time `git ls-tree -r 4b5fa0a73baba300004da5caf661080c8750e4ab -- docs/decisions` returned no paths.
+Since 2026-10-14 the file is on `main` at
+[docs/decisions/documentation-storage.md](decisions/documentation-storage.md), merged through #55.
 
 Actual interim decision: retain Markdown storage/API; TipTap/ProseMirror JSON is temporary
 browser state, saves remain last-write-wins, not collaborative. Opening/focusing/moving the
@@ -1207,10 +1274,10 @@ Yjs recovery tests; if adopting collaboration, use Yjs-aware undo instead of com
 undoRedo and reconcile document history with canvas activity/undo before replacing storage.
 
 #16 asks for the larger collaboration-sync ADR/spike, including reviewed transport, persistence,
-limits, retention, legacy base-hash compatibility and reusable positions. The ADR is committed at
-`docs/decisions/collaboration-sync.md` with status **Proposed** on the unmerged branch
-`prompt-1/4-collaboration-roadmap`; it is not accepted until the maintainer reviews and merges
-it. Its limit values live in that ADR's limits table and are not duplicated in issue bodies.
+limits, retention, legacy base-hash compatibility and reusable positions. The ADR was written on
+the branch `prompt-1/4-collaboration-roadmap` and reached `main` through #57 on 2026-10-14 at
+`docs/decisions/collaboration-sync.md`. Its status line still reads **Proposed**, and #16 stays
+open until a maintainer accepts or revises it; the merge alone is not acceptance. Its limit values live in that ADR's limits table and are not duplicated in issue bodies.
 The spike evidence is committed at `docs/spikes/2026-10-13-collaboration-sync.md`. Together they
 establish observable task activity without inventing a human assignee.
 
@@ -1238,18 +1305,24 @@ card, dates and status are left completely untouched; its roadmap criteria remai
   independently re-run here; author-reported checks/reviews are not approvals or remote fixes.
 - If a head/base moves, re-fetch check `head_sha` and PR mapping; missing required runs become
   UNKNOWN. SHA-specific success still does not establish integrated release coverage.
-- #30's non-default base explains its empty closing array now, not after a future retarget.
-- The 2026-10-13 sync wrote only tracking text, delta labels and the v0.2.0 card Status; nothing
-  is merged or released, and all acceptance checkboxes remain unchecked.
+- #30 was closed unmerged on 2026-10-14; its commit closed #18 when it landed through #56.
+- The 2026-10-13 sync wrote only tracking text, delta labels and the v0.2.0 card Status. The
+  merges of 2026-10-14 came afterwards; nothing is released, and the release cards' criteria
+  remain unchecked.
+- The 2026-10-20 refresh changed `docs/release-backlog.md` and `docs/roadmap.md` from GitHub and
+  git reads, and replaced only the owned tracking blocks on GitHub as described in the current
+  snapshot. It did not re-run tests or CI to produce the snapshot, and it changed no label,
+  Project status or date.
 - No future feature suite, disposable database, browser, Docker, spike or deployment journey
   was run by this docs task. Verify profiles specify future work only. Docs lint/format checks
   are reported in the task handoff, not turned into feature evidence.
-- #16's ADR remains **Proposed** on the unmerged branch (nothing merged or released); the ADR and spike results need maintainer review. This document scopes
+- #16's ADR is on `main` but remains **Proposed**; the ADR and spike results need maintainer acceptance. This document scopes
   dependent proposals but does not accept a representation or change persisted code.
 - Card links are body prose links. They do not create Project implementation items or native
   issue/card relations; maintain them with marker-aware sync rather than claim linkage is impossible.
 - Slugs are idempotency identifiers; the created GitHub numbers are #32–#53 (N table). The
-  sync rows are executed and verified as of 2026-10-13; later GitHub changes are not reflected.
+  sync rows are executed and verified as of 2026-10-13; later GitHub changes appear only in the
+  current snapshot.
 - Dates remain targets, not promises or invented volunteer commitments. Claimed activity does
   not assign anyone. Self-hosting/GHCR publishing and release acceptance need a maintainer.
 - This document changes only this file; unrelated docs and spikes on the branch must be
