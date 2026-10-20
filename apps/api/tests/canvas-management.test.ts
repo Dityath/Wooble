@@ -279,7 +279,7 @@ describe("connector routes and layout", () => {
     expect(after.connections[0].bend).toEqual(path);
   });
 
-  it("only lets people who can already read an entity place it on another canvas", async () => {
+  it("only lets people who can already edit an entity place it on another canvas", async () => {
     const owner = await api.register("Placement Owner");
     const editor = await api.register("Placement Editor");
     const viewer = await api.register("Placement Viewer");
@@ -313,7 +313,7 @@ describe("connector routes and layout", () => {
         (placement) => placement.entityId,
       );
 
-    // An editor of the board cannot pull in an entity they cannot read. The response is the same as for a missing
+    // An editor of the board cannot pull in an entity they cannot even read. The response is the same as for a missing
     // entity, so it does not confirm that the entity exists, and nothing is written.
     const refused = await api.json<{ message: string }>("PUT", url, editor.session, place(billing));
     const missing = await api.json<{ message: string }>("PUT", url, editor.session, place(crypto.randomUUID()));
@@ -325,15 +325,30 @@ describe("connector routes and layout", () => {
     // Viewers cannot write placements at all.
     expect((await api.request("PUT", url, viewer.session, place(publicApi))).status).toBe(403);
 
-    // An entity on a link-shared canvas is readable by anyone, so an editor may place it.
+    // Reading the entity is not enough (#32). A new placement narrows who may edit it, because writes need the editor
+    // role on every canvas that shows it, so placing it needs that write access already. An entity readable only
+    // through a link share or a viewer role is refused like a missing one.
+    const linkOnly = await api.json<{ message: string }>("PUT", url, editor.session, place(publicApi));
+    expect(linkOnly.status).toBe(400);
+    expect(linkOnly.body).toEqual(missing.body);
+    await addMember(restricted, editor.user.email, "viewer");
+    const readOnly = await api.json<{ message: string }>("PUT", url, editor.session, place(billing));
+    expect(readOnly.status).toBe(400);
+    expect(readOnly.body).toEqual(missing.body);
+    expect(await boardEntityIds()).toEqual([]);
+
+    // An editor of every canvas that shows the entity may place it, and keeps editing it afterwards.
+    await addMember(shared, editor.user.email, "editor");
     expect((await api.json<{ saved: number }>("PUT", url, editor.session, place(publicApi))).body).toEqual({
       saved: 1,
     });
-
-    // Once the editor can read the restricted canvas, they may place its entity too.
-    await addMember(restricted, editor.user.email, "viewer");
+    await addMember(restricted, editor.user.email, "editor");
     expect((await api.json<{ saved: number }>("PUT", url, editor.session, place(billing))).body).toEqual({ saved: 1 });
     expect((await boardEntityIds()).sort()).toEqual([billing, publicApi].sort());
+    expect(
+      (await api.request("PATCH", `/api/entities/${billing}`, editor.session, { metadata: { documentation: "Kept." } }))
+        .status,
+    ).toBe(200);
 
     // Workspace managers and system admins can place any entity in the workspace.
     const third = await api.createCanvas(owner.session, owner.workspaceId, "Third");
