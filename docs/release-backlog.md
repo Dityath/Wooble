@@ -34,15 +34,15 @@ not an automatic completion claim.
 
 ### Current snapshot — 2026-10-20
 
-Read-only GitHub and git reads on 2026-10-20. No GitHub issue, PR, label or Project item was
-edited by this revision.
+GitHub and git reads on 2026-10-20, after #59 was merged. The counts include this backlog's own
+PR, #60, as the open PR.
 
 | Read | Result |
 | --- | --- |
-| `gh api repos/Dityath/Wooble/commits/main --jq .sha` | `95e54271d936213395b25fff2609cf76919b9d13` (merge of #58) |
+| `gh api repos/Dityath/Wooble/commits/main --jq .sha` | `aca66e9d37e629871e41a844685925c32cef168f` (merge of #59) |
 | `gh release list --repo Dityath/Wooble` | 1: `Wooble v0.1.0 — Preview`, unchanged. No later release or tag. |
-| `gh pr list --repo Dityath/Wooble --state all --limit 100` | 19 PRs: 1 open (#59), 17 merged, 1 closed unmerged (#30) |
-| `gh issue list --repo Dityath/Wooble --state all --limit 200` | 40 issues: 27 open, 13 closed |
+| `gh pr list --repo Dityath/Wooble --state all --limit 100` | 20 PRs: 1 open (#60), 18 merged, 1 closed unmerged (#30) |
+| `gh issue list --repo Dityath/Wooble --state all --limit 200` | 40 issues: 26 open, 14 closed |
 | `gh project item-list 1 --owner Dityath --limit 100 --format json` | 31 items: the 5 release cards, 22 issues and 4 PRs (#54–#57). Release-card status and dates unchanged: v0.2.0 In Progress; v0.3.0–v0.6.0 Todo. |
 | `gh api repos/Dityath/Wooble/branches/main/protection/required_status_checks` | unchanged: `strict: true`; Code quality and Tests |
 
@@ -53,14 +53,15 @@ editor branch), #56 (self-hosting operations and release pipeline; consolidates 
 #31), and #57 (collaboration ADR and this backlog). The predecessor draft PRs #24–#29 and #31
 show as merged because their commits landed through the stack. #30 was closed unmerged; its
 commit landed through #56 and closed #18. On 2026-10-15, #58 (Auto Neat canvas routing, not a
-release criterion) was merged.
+release criterion) was merged. On 2026-10-20, #59 merged the failure checks for the self-host
+smoke script and closed #19.
 
 | Issue | Closed / state on 2026-10-20 | Landed through |
 | --- | --- | --- |
 | #10, #11, #12, #15 | closed 2026-10-14 | #54 |
 | #9, #13, #14 | closed 2026-10-14 | #55 |
 | #17, #18, #21, #22 | closed 2026-10-14 | #56 |
-| #19 | reopened 2026-10-14; one criterion left (show the smoke script and port assertion fail when they should) | partial through #56; remainder in open PR #59 (Code quality, Tests, Browser journeys and Docker smoke test green; not yet reviewed) |
+| #19 | reopened 2026-10-14 for one criterion; closed 2026-10-20 | workflow through #56; the documented failure checks for the smoke script and port assertion through #59 (merge commit `aca66e9`) |
 | #20 | open | release workflow and image labels landed in #56; a release-workflow dry run without publishing has not been run |
 | #23 | open | rewritten guide landed in #56; the maintainer fresh-host validation checklist is not completed |
 | #6 | open | parent of the self-hosting chain; open until its runtime acceptance checks are demonstrated |
@@ -71,11 +72,11 @@ release criterion) was merged.
 A merged prerequisite is not a met release criterion. No v0.2–v0.5 criterion is released, and
 none has integrated release evidence yet; see the acceptance matrix below.
 
-**Stale GitHub tracking blocks.** The owned tracking blocks written into issue, PR and card
-bodies on 2026-10-13 were not refreshed after the merges. Several still read
-`State: active; PR draft (unmerged)` (for example #10 and #19) or describe #16's ADR as being on an
-unmerged branch. This revision does not edit them. A later marker-aware sync, authorized
-separately, should replace only the text between the markers.
+**GitHub tracking blocks refreshed.** The owned tracking blocks written on 2026-10-13 had gone
+stale after the merges; several still read `State: active; PR draft (unmerged)`. On 2026-10-20,
+with the user's authorization, only the text between the markers was replaced in issues #9–#19,
+PRs #24–#31 and the v0.2.0–v0.5.0 cards, and each write was read back. #19's block was refreshed
+again after #59 merged. Labels, Project statuses and dates, and the v0.6.0 card were not changed.
 
 ### Historical snapshot — 2026-10-13T02:35:11Z
 
@@ -318,7 +319,7 @@ v0.5 threads, stable object/text anchors, mentions/inbox and changing-anchor acc
 The #16 representation gate awaits maintainer acceptance of the ADR, which is on `main` but still
 Proposed. #12's transaction, activity and field-aware undo work is merged through #54; later
 features still have to integrate their own metadata and delete paths with it. #14/#15 are
-merged shared browser/upgrade harnesses, not release-specific journeys. #6 and #19, #20 and #23
+merged shared browser/upgrade harnesses, not release-specific journeys. #6, #20 and #23
 remain open in the self-hosting chain; merged #17, #18, #21 and #22 do not establish #6's
 complete fresh-host/second-device/update path.
 
@@ -335,7 +336,7 @@ Dependencies are prerequisites, not proof that a downstream release is active or
 | #16 | open; ADR on `main`, status Proposed | v0.2 documents; reusable transport for v0.3, text anchors for v0.5 | ADR accepted by maintainer, then persistence/recovery and license evidence in implementation |
 | #14 / #29 | merged through #55 | all v0.2–v0.5 release evidence issues | run combined feature journeys, not just PR-isolated CI |
 | #15 / #28 | merged through #54 | all v0.2–v0.5 data conversions | extend preserved-content seeds, previous-release cases and deterministic harness |
-| #6; #17–#23 | #17, #18, #21, #22 merged through #56; #6, #19 (PR #59), #20, #23 open | shared fresh-install/upgrade gate | smoke failure check, release dry run, fresh host, browser/second device, versioned update and restore rehearsal, maintainer review |
+| #6; #17–#23 | #17, #18, #21, #22 merged through #56; #19 merged through #59; #6, #20, #23 open | shared fresh-install/upgrade gate | release dry run, fresh host, browser/second device, versioned update and restore rehearsal, maintainer review |
 
 ### Shared release gate (single reusable verbatim definition)
 
@@ -1308,9 +1309,10 @@ card, dates and status are left completely untouched; its roadmap criteria remai
 - The 2026-10-13 sync wrote only tracking text, delta labels and the v0.2.0 card Status. The
   merges of 2026-10-14 came afterwards; nothing is released, and the release cards' criteria
   remain unchecked.
-- The 2026-10-20 refresh changed only `docs/release-backlog.md` and `docs/roadmap.md`, from
-  read-only GitHub and git reads. It did not re-run tests or CI, and it did not edit any issue, PR,
-  label or Project item, so the stale tracking blocks noted in the current snapshot remain.
+- The 2026-10-20 refresh changed `docs/release-backlog.md` and `docs/roadmap.md` from GitHub and
+  git reads, and replaced only the owned tracking blocks on GitHub as described in the current
+  snapshot. It did not re-run tests or CI to produce the snapshot, and it changed no label,
+  Project status or date.
 - No future feature suite, disposable database, browser, Docker, spike or deployment journey
   was run by this docs task. Verify profiles specify future work only. Docs lint/format checks
   are reported in the task handoff, not turned into feature evidence.

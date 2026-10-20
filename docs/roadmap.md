@@ -36,7 +36,7 @@ The detailed, dated tracking lives in [release backlog and acceptance evidence](
 
 Status words are used strictly and match the backlog: **planned** (accepted outcome, no active work), **active** (work is in progress, possibly only as a local branch or an unmerged draft pull request), **draft/unmerged PR** (open for review, not on `main`), **merged** (on `main`, not necessarily released), and **released** (tagged and published). A branch, a draft pull request, or a merged prerequisite does not mean a release criterion is done.
 
-As of 2026-10-20 (`main` at `95e5427`):
+As of 2026-10-20 (`main` at `aca66e9`):
 
 | Release | Status | Notes |
 | --- | --- | --- |
@@ -58,7 +58,7 @@ Releases build on shared work, so the order matters more than the dates:
 3. **Schema with stable IDs.** Database diagrams for `v0.4.0` need stable table and column identifiers, kept separate from diagram layout.
 4. **Comment anchors.** `v0.5.0` anchors build on the items above. Text anchors in documentation (Yjs relative positions) and orphan handling for moved or deleted anchors are separate work items from stable IDs.
 
-Self-hosting fresh-install and upgrade validation (#6, with child work #17 to #23) also remains before any release can claim the shared release gate. #17, #18, #21, and #22 were merged on 2026-10-14. Still open: the failure check for the Docker smoke test (#19, PR #59), a release-workflow dry run (#20), and the maintainer's fresh-host validation checklist (#23).
+Self-hosting fresh-install and upgrade validation (#6, with child work #17 to #23) also remains before any release can claim the shared release gate. #17, #18, #21, and #22 were merged on 2026-10-14, and #19 on 2026-10-20 (through #59). Still open: a release-workflow dry run (#20) and the maintainer's fresh-host validation checklist (#23).
 
 Event contracts (Kafka, NATS) get a format-aware source view, not a rich AsyncAPI editor or registry synchronization. Service contracts are not generated automatically from tables.
 
