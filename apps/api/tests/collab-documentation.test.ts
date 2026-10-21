@@ -67,7 +67,7 @@ async function lockFixture(tx: Transaction, f: Fixture): Promise<void> {
 }
 
 /** Observe the actual connection, including query-builder statements, excluding caller locks and BEGIN/COMMIT. */
-async function counted<T>(f: Fixture, callback: (tx: Transaction) => Promise<T>) {
+async function counted<T>(f: Fixture, callback: (tx: Transaction) => Promise<T>, checkWriter = false) {
   const client = await pool.connect();
   try {
     return await drizzle(client, { schema }).transaction(async (tx) => {
@@ -75,7 +75,10 @@ async function counted<T>(f: Fixture, callback: (tx: Transaction) => Promise<T>)
       const querySpy = spyOn(client, "query");
       try {
         const result = await callback(tx);
-        const statements = querySpy.mock.calls.map(([query]) => {
+        const calls = [...querySpy.mock.calls];
+        // Observe the caller transaction without counting the flag-check SELECT as writer work.
+        if (checkWriter) await expectWriterOff(tx);
+        const statements = calls.map(([query]) => {
           // pg's overload inferred by spyOn is string-only, but Drizzle also passes query configs.
           const input: unknown = query;
           if (typeof input === "string") return input;
@@ -175,7 +178,7 @@ async function bootstrap(
 /** Transaction-scoped triggers: reject unmarked writers and count even no-op UPDATEs. */
 async function guarded<T>(tx: Transaction, callback: () => Promise<T>): Promise<T> {
   await tx.execute(sql`
-    CREATE OR REPLACE FUNCTION pg_temp.t2_documentation_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+    CREATE OR REPLACE FUNCTION pg_temp.wooble_test_f4_documentation_guard() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN
       IF (OLD.metadata -> 'documentation') IS DISTINCT FROM (NEW.metadata -> 'documentation')
         AND current_setting('wooble.documentation_writer', true) IS DISTINCT FROM 'on' THEN
@@ -189,15 +192,15 @@ async function guarded<T>(tx: Transaction, callback: () => Promise<T>): Promise<
   `);
   for (const table of ["entities", "connections"]) {
     await tx.execute(sql`
-      CREATE TRIGGER t2_documentation_guard BEFORE UPDATE OF metadata ON ${sql.identifier(table)}
-      FOR EACH ROW EXECUTE FUNCTION pg_temp.t2_documentation_guard()
+      CREATE TRIGGER wooble_test_f4_documentation_guard BEFORE UPDATE OF metadata ON ${sql.identifier(table)}
+      FOR EACH ROW EXECUTE FUNCTION pg_temp.wooble_test_f4_documentation_guard()
     `);
   }
   try {
     return await callback();
   } finally {
     for (const table of ["entities", "connections"]) {
-      await tx.execute(sql`DROP TRIGGER t2_documentation_guard ON ${sql.identifier(table)}`);
+      await tx.execute(sql`DROP TRIGGER wooble_test_f4_documentation_guard ON ${sql.identifier(table)}`);
     }
   }
 }
@@ -237,31 +240,36 @@ describe("documentation persistence", () => {
             previous: { present: false },
             changed: true,
           });
-          expect(await metadata(tx, ref)).toEqual({ retained: "caller value", documentation: "First notes" });
           await expectWriterOff(tx);
+          expect(await metadata(tx, ref)).toEqual({ retained: "caller value", documentation: "First notes" });
           const count = await updateCount(tx);
           expect(await writeDocumentation(tx, ref, "First notes")).toEqual({
             previous: { present: true, value: "First notes" },
             changed: false,
           });
+          await expectWriterOff(tx);
           expect(await updateCount(tx)).toBe(count);
           expect(await writeDocumentation(tx, ref, "Replacement")).toEqual({
             previous: { present: true, value: "First notes" },
             changed: true,
           });
+          await expectWriterOff(tx);
           expect(await writeDocumentation(tx, ref, null)).toEqual({
             previous: { present: true, value: "Replacement" },
             changed: true,
           });
+          await expectWriterOff(tx);
           expect(await writeDocumentation(tx, ref, "")).toEqual({ previous: { present: false }, changed: false });
+          await expectWriterOff(tx);
           expect(await updateCount(tx)).toBe(count + 2);
           await writeDocumentation(tx, ref, "Delete with empty string");
+          await expectWriterOff(tx);
           expect(await writeDocumentation(tx, ref, "")).toEqual({
             previous: { present: true, value: "Delete with empty string" },
             changed: true,
           });
-          expect(await metadata(tx, ref)).toEqual({ retained: "caller value" });
           await expectWriterOff(tx);
+          expect(await metadata(tx, ref)).toEqual({ retained: "caller value" });
           // A direct writer is rejected; a savepoint keeps this transaction usable.
           await expect(
             tx.transaction(async (savepoint) => {
@@ -307,6 +315,7 @@ describe("documentation persistence", () => {
       await locked(f, async (tx) => {
         expect(await isBootstrapped(tx, ref)).toBe(false);
         expect(await reprojectMirror(tx, ref)).toBe(false);
+        await expectWriterOff(tx);
       });
       // Even a bootstrap_version and mirror without state are a placeholder.
       await bootstrap(ref, "Unused placeholder mirror", { state: null });
@@ -314,23 +323,31 @@ describe("documentation persistence", () => {
         guarded(tx, async () => {
           expect(await isBootstrapped(tx, ref, true)).toBe(false);
           expect(await reprojectMirror(tx, ref)).toBe(false);
+          await expectWriterOff(tx);
           expect(await restoreDocumentation(tx, ref, undefined)).toBe(false);
+          await expectWriterOff(tx);
           expect(await restoreDocumentation(tx, ref, { present: false })).toBe(false);
+          await expectWriterOff(tx);
           expect(await updateCount(tx)).toBe(0);
           expect(await restoreDocumentation(tx, ref, { present: true, value: "Old notes" })).toBe(true);
+          await expectWriterOff(tx);
           expect(await restoreDocumentation(tx, ref, undefined)).toBe(false);
+          await expectWriterOff(tx);
           expect(await metadata(tx, ref)).toEqual({ documentation: "Old notes" });
           expect(await restoreDocumentation(tx, ref, { present: true, value: null })).toBe(true);
+          await expectWriterOff(tx);
           expect(await metadata(tx, ref)).toEqual({ documentation: null });
           expect(await writeDocumentation(tx, ref, "Legacy edit")).toEqual({
             previous: { present: true, value: null },
             changed: true,
           });
+          await expectWriterOff(tx);
           expect(await restoreDocumentation(tx, ref, { present: false })).toBe(true);
+          await expectWriterOff(tx);
           expect(await metadata(tx, ref)).toEqual({});
           expect(await restoreDocumentation(tx, ref, { present: true, value: "" })).toBe(true);
-          expect(await metadata(tx, ref)).toEqual({ documentation: "" });
           await expectWriterOff(tx);
+          expect(await metadata(tx, ref)).toEqual({ documentation: "" });
         }),
       );
     });
@@ -353,10 +370,11 @@ describe("documentation persistence", () => {
             .where(eq(table.id, ref.id));
           await guarded(tx, async () => {
             expect(await restoreDocumentation(tx, ref, entry)).toBe(true);
+            await expectWriterOff(tx);
             expect(await metadata(tx, ref)).toEqual({ retained: true, documentation: "Canonical mirror" });
             expect(await reprojectMirror(tx, ref)).toBe(false);
-            expect(await updateCount(tx)).toBe(1);
             await expectWriterOff(tx);
+            expect(await updateCount(tx)).toBe(1);
           });
         });
       }
@@ -367,6 +385,7 @@ describe("documentation persistence", () => {
       await locked(f, (tx) =>
         guarded(tx, async () => {
           expect(await reprojectMirror(tx, ref)).toBe(true);
+          await expectWriterOff(tx);
           expect(await metadata(tx, ref)).toEqual({ retained: true });
         }),
       );
@@ -391,13 +410,14 @@ describe("documentation persistence", () => {
             expect(await updateCount(tx)).toBe(0);
             expect(await metadata(tx, ref)).toEqual({ documentation: "Stale projection" });
             expect(await restoreDocumentation(tx, ref, undefined)).toBe(true);
+            await expectWriterOff(tx);
             expect(await metadata(tx, ref)).toEqual(mirror === "" ? {} : { documentation: mirror });
             for (const entry of entries) {
               expect(await documentationRestoreWouldChange(tx, ref, entry)).toBe(false);
               expect(await restoreDocumentation(tx, ref, entry)).toBe(false);
+              await expectWriterOff(tx);
             }
             expect(await updateCount(tx)).toBe(1);
-            await expectWriterOff(tx);
           }),
         );
       });
@@ -430,9 +450,9 @@ describe("documentation persistence", () => {
             expect(await updateCount(tx)).toBe(count);
             expect(await metadata(tx, ref)).toEqual(before);
             expect(await restoreDocumentation(tx, ref, entry)).toBe(changed);
+            await expectWriterOff(tx);
             expect(await updateCount(tx)).toBe(count + Number(changed));
           }
-          await expectWriterOff(tx);
         }),
       );
     });
@@ -480,7 +500,9 @@ describe("documentation persistence", () => {
     await locked(f, async (tx) => {
       expect(await snapshotDocumentation(tx, f.refs)).toEqual({});
       await writeDocumentation(tx, f.entity, "Legacy entity notes");
+      await expectWriterOff(tx);
       await restoreDocumentation(tx, f.connection, { present: true, value: null });
+      await expectWriterOff(tx);
       expect(await snapshotDocumentation(tx, f.refs)).toEqual({
         [`entity:${f.entity.id}`]: { present: true, value: "Legacy entity notes" },
         [`connection:${f.connection.id}`]: { present: true, value: null },
@@ -522,6 +544,7 @@ describe("documentation persistence", () => {
     await locked(f, async (tx) => {
       for (const ref of uppercase) {
         expect(await restoreDocumentation(tx, ref, { present: true, value: "Legacy notes" })).toBe(true);
+        await expectWriterOff(tx);
       }
       expect(await snapshotDocumentation(tx, uppercase)).toEqual(
         Object.fromEntries(uppercase.map((ref) => [`${ref.kind}:${ref.id}`, { present: true, value: "Legacy notes" }])),
@@ -530,6 +553,7 @@ describe("documentation persistence", () => {
         tx,
         uppercase.map((ref) => ({ ref, entry: { present: true, value: null } })),
       );
+      await expectWriterOff(tx);
       expect(await allMetadata(tx, f.refs)).toEqual([{ documentation: null }, { documentation: null }]);
     });
     await bootstrap(f.entity, "Canonical mirror");
@@ -538,6 +562,7 @@ describe("documentation persistence", () => {
         tx,
         uppercase.map((ref) => ({ ref, entry: undefined })),
       );
+      await expectWriterOff(tx);
       expect(await metadata(tx, f.entity)).toEqual({ documentation: "Canonical mirror" });
       expect(await snapshotDocumentation(tx, uppercase)).toEqual({
         [`connection:${uppercase[1].id}`]: { present: true, value: null },
@@ -561,14 +586,17 @@ describe("documentation persistence", () => {
     const rollback = new Error("Rollback reference restores");
     await expect(
       locked(f, async (tx) => {
-        for (const { ref, entry } of items) await restoreDocumentation(tx, ref, entry);
+        for (const { ref, entry } of items) {
+          await restoreDocumentation(tx, ref, entry);
+          await expectWriterOff(tx);
+        }
         expected = await allMetadata(tx, f.refs);
         throw rollback;
       }),
     ).rejects.toBe(rollback);
     const before = await locked(f, (tx) => rowVersions(tx, f.refs));
     // Deliberately reverse snapshot order; the collab lock query must still impose its own order.
-    const { statements } = await counted(f, (tx) => restoreDocumentations(tx, [...items].reverse()));
+    const { statements } = await counted(f, (tx) => restoreDocumentations(tx, [...items].reverse()), true);
     const updates = statements.filter((statement) => /^update /i.test(statement));
     expect(updates.length).toBeGreaterThan(0);
     expect(statements).toHaveLength(3 + 2 + updates.length);
@@ -588,14 +616,53 @@ describe("documentation persistence", () => {
           expect(after[`${ref.kind}:${ref.id}`]).toBe(before[`${ref.kind}:${ref.id}`]);
         }
       }
-      await expectWriterOff(tx);
     });
     const settled = await locked(f, (tx) => rowVersions(tx, f.refs));
-    const noOp = await counted(f, (tx) => restoreDocumentations(tx, items));
+    const noOp = await counted(f, (tx) => restoreDocumentations(tx, items), true);
     expect(noOp.statements).toHaveLength(3);
     expect(noOp.statements.every((statement) => /^select /i.test(statement))).toBe(true);
     expect(await locked(f, (tx) => rowVersions(tx, f.refs))).toEqual(settled);
-    expect((await counted(f, (tx) => restoreDocumentations(tx, []))).statements).toHaveLength(0);
+    expect((await counted(f, (tx) => restoreDocumentations(tx, []), true)).statements).toHaveLength(0);
+  });
+
+  it("disables the writer flag before mixed batch restores return to the caller", async () => {
+    const f = await fixture();
+    const legacy: DocumentRef = {
+      kind: "entity",
+      id: await api.createNode(owner.session, f.canvasId, { name: "Fictional legacy owner" }),
+    };
+    f.refs.push(legacy);
+    await bootstrap(f.entity, "Canonical mirror");
+    const items = [
+      { ref: f.entity, entry: undefined },
+      { ref: f.connection, entry: { present: false as const } },
+      { ref: legacy, entry: { present: true as const, value: "Restored legacy notes" } },
+    ];
+    await locked(f, (tx) =>
+      guarded(tx, async () => {
+        await restoreDocumentations(tx, items);
+        await expectWriterOff(tx);
+        expect(await updateCount(tx)).toBe(2);
+        expect(await allMetadata(tx, f.refs)).toEqual([
+          { documentation: "Canonical mirror" },
+          {},
+          { documentation: "Restored legacy notes" },
+        ]);
+        // Check the guard in the caller's transaction; rollback only the rejected statement.
+        await expect(
+          tx.transaction(async (savepoint) => {
+            await savepoint.execute(sql`
+              UPDATE entities SET metadata = metadata || '{"documentation":"x"}'::jsonb
+              WHERE id = ${legacy.id}::uuid
+            `);
+          }),
+        ).rejects.toMatchObject({ cause: { message: "Documentation writer guard rejected update" } });
+        await expectWriterOff(tx);
+        await restoreDocumentations(tx, items);
+        await expectWriterOff(tx);
+        expect(await updateCount(tx)).toBe(2);
+      }),
+    );
   });
 
   it("preserves the original UPDATE error in single writes and batch restores", async () => {
@@ -652,7 +719,9 @@ describe("documentation persistence", () => {
         expect(await documentationRestoreWouldChange(tx, ref, undefined)).toBe(false);
         expect(await documentationRestoreWouldChange(tx, ref, { present: true, value: "Missing" })).toBe(false);
         expect(await restoreDocumentation(tx, ref, { present: true, value: "Missing" })).toBe(false);
+        await expectWriterOff(tx);
         expect(await reprojectMirror(tx, ref)).toBe(false);
+        await expectWriterOff(tx);
         expect(await isBootstrapped(tx, ref)).toBe(false);
       });
     }
