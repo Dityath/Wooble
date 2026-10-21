@@ -249,8 +249,8 @@ export function DocumentationEditor({
             <TriangleAlert size={15} aria-hidden="true" />
             <span>
               {inSource
-                ? `This document contains ${warning}. The block editor does not support these constructs. Unsupported content is kept verbatim in Markdown source. Switch to Markdown source before pasting.`
-                : `This paste contains ${warning}. The block editor does not support these constructs. Unsupported content is kept verbatim in Markdown source. Switch to Markdown source before pasting.`}
+                ? `This document contains ${warning}, which the block editor does not support. Edit it here in Markdown source; unsupported content is kept verbatim.`
+                : `Paste cancelled: it contains ${warning}, which the block editor does not support. Choose "Edit Markdown source", then paste again to keep it verbatim.`}
             </span>
           </p>
         )}

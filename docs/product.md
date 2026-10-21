@@ -36,7 +36,7 @@ The block editor does not support these constructs:
 - raw HTML (except `<br>` and `<br />` hard breaks, which are normalised as above)
 - footnotes
 
-Unsupported content is kept verbatim in Markdown source. Switch to Markdown source before pasting. Documents containing these constructs open in Markdown source mode; pasting them into block editing is stopped with a warning naming the constructs found. Export and copy return the stored Markdown unchanged, including unsupported content.
+Documents containing these constructs open in Markdown source mode with a warning; pastes containing them in block mode are cancelled with a warning naming the constructs found. Unsupported content is kept verbatim in Markdown source. Export and copy return the stored Markdown unchanged, including unsupported content.
 
 ## Areas to improve
 

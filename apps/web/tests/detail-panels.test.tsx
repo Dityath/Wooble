@@ -473,9 +473,7 @@ describe("rich documentation", () => {
     expect(notices.length).toBe(2);
     expect(notices.every((notice) => chrome?.contains(notice))).toBe(true);
     expect(notices.some((notice) => notice.textContent?.includes("Documentation could not be saved"))).toBe(true);
-    expect(notices.some((notice) => notice.textContent?.includes("Switch to Markdown source before pasting."))).toBe(
-      true,
-    );
+    expect(notices.some((notice) => notice.textContent?.includes("Paste cancelled: it contains"))).toBe(true);
     expect(saveStatus().getAttribute("data-state")).toBe("error");
   });
 
@@ -694,7 +692,7 @@ describe("rich documentation", () => {
     expect(source.tagName).toBe("TEXTAREA");
     expect(source.value).toBe(value);
     expect(screen.getByRole("alert").textContent).toContain(
-      "Unsupported content is kept verbatim in Markdown source. Switch to Markdown source before pasting.",
+      "Edit it here in Markdown source; unsupported content is kept verbatim.",
     );
     fireEvent.focus(source);
     fireEvent.blur(source);
@@ -728,7 +726,7 @@ describe("rich documentation", () => {
       clipboardData: { getData: (type: string) => (type === "text/plain" ? "![Diagram](diagram.png)" : "") },
     });
     expect(screen.getByRole("alert").textContent).toBe(
-      "This paste contains images. The block editor does not support these constructs. Unsupported content is kept verbatim in Markdown source. Switch to Markdown source before pasting.",
+      'Paste cancelled: it contains images, which the block editor does not support. Choose "Edit Markdown source", then paste again to keep it verbatim.',
     );
     expect(documentation().textContent).toBe("Original");
     await actor.click(screen.getByRole("button", { name: "Edit Markdown source" }));
@@ -757,7 +755,7 @@ describe("rich documentation", () => {
       clipboardData: { getData: (type: string) => (type === "text/plain" ? "# Diagram\n\n![Diagram](d.png)" : "") },
     });
     expect(screen.getByRole("alert").textContent).toBe(
-      "This paste contains images. The block editor does not support these constructs. Unsupported content is kept verbatim in Markdown source. Switch to Markdown source before pasting.",
+      'Paste cancelled: it contains images, which the block editor does not support. Choose "Edit Markdown source", then paste again to keep it verbatim.',
     );
     await caretToEnd();
     await typeInEditor(documentation(), "!");
