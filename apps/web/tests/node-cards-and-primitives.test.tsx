@@ -156,7 +156,7 @@ describe("small interaction details", () => {
   });
 
   it("marks the documentation editor as a multiline textbox that edits inline", async () => {
-    renderWithQuery(<RichDocumentation value="Text" onSave={mock(async () => {})} />);
+    renderWithQuery(<RichDocumentation name="Example service" value="Text" onSave={mock(async () => {})} />);
     const documentation = await screen.findByRole("textbox", { name: "Documentation" });
     expect(documentation.getAttribute("aria-multiline")).toBe("true");
     // Canvas shortcuts skip contenteditable targets, and the details dialog stays open on Escape while it has focus.

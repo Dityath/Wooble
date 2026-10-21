@@ -1,3 +1,4 @@
+import { DocumentationExportActions } from "./documentation/export-actions";
 import { CircleAlert } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { DocumentationEditor, type DocumentationEditorHandle } from "./documentation/documentation-editor";
@@ -20,6 +21,7 @@ export const AUTOSAVE_DELAY_MS = 900;
 const MAX_DOCUMENTATION_LENGTH = 20_000;
 
 export interface RichDocumentationProps {
+  name: string;
   value: string;
   onSave: (value: string) => Promise<void>;
   /**
@@ -60,7 +62,7 @@ function describeAge(savedAt: number): string {
  * other rejections do not offer a pointless retry, and network or server failures (and an ended session, once the user
  * has signed in again) can be retried by hand.
  */
-export function RichDocumentation({ value, onSave, draft: location, onUnsavedChange }: RichDocumentationProps) {
+export function RichDocumentation({ name, value, onSave, draft: location, onUnsavedChange }: RichDocumentationProps) {
   const editor = useRef<DocumentationEditorHandle>(null);
   const save = useRef(onSave);
   const locationRef = useRef(location);
@@ -413,6 +415,9 @@ export function RichDocumentation({ value, onSave, draft: location, onUnsavedCha
               : { state: "saved", label: "Saved" };
   return (
     <section ref={panel} className="documentation-card" aria-label="Documentation">
+      <header className="documentation-export-header">
+        <DocumentationExportActions markdown={value} name={name} />
+      </header>
       <DocumentationEditor
         ref={editor}
         initialMarkdown={value}

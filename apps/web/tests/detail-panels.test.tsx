@@ -305,7 +305,7 @@ describe("rich documentation", () => {
       "- [x] Drain the queue\n- [ ] Deploy the release",
       "| Step | Owner |\n| --- | --- |\n| Drain | Platform |",
     ].join("\n\n");
-    await renderDocumentation(<RichDocumentation value={value} onSave={mock(async () => {})} />);
+    await renderDocumentation(<RichDocumentation name="Example service" value={value} onSave={mock(async () => {})} />);
     const editor = documentation();
     expect(editor.getAttribute("contenteditable")).toBe("true");
     expect(within(editor).getByRole("heading", { level: 1, name: "Runbook" })).toBeTruthy();
@@ -324,7 +324,7 @@ describe("rich documentation", () => {
   });
 
   it("invites writing in an empty document", async () => {
-    await renderDocumentation(<RichDocumentation value="" onSave={mock(async () => {})} />);
+    await renderDocumentation(<RichDocumentation name="Example service" value="" onSave={mock(async () => {})} />);
     const paragraph = documentation().querySelector("p.is-editor-empty");
     expect(paragraph?.getAttribute("data-placeholder")).toBe('Type "/" for blocks, or paste Markdown');
   });
@@ -347,7 +347,7 @@ describe("rich documentation", () => {
       const onSave = mock(async (_value: string) => {});
       const { unmount, user: actor } = await renderDocumentation(
         <StrictMode>
-          <RichDocumentation value={value} onSave={onSave} />
+          <RichDocumentation name="Example service" value={value} onSave={onSave} />
         </StrictMode>,
       );
       await focusDocumentation();
@@ -362,7 +362,9 @@ describe("rich documentation", () => {
 
   it("autosaves trimmed Markdown 900 ms after the last edit", async () => {
     const onSave = mock(async (_value: string) => {});
-    const { user: actor } = await renderDocumentation(<RichDocumentation value="Gateway" onSave={onSave} />);
+    const { user: actor } = await renderDocumentation(
+      <RichDocumentation name="Example service" value="Gateway" onSave={onSave} />,
+    );
     const autosave = await autosaveAfter(async () => {
       await caretToEnd();
       await typeInEditor(documentation(), " API");
@@ -380,7 +382,7 @@ describe("rich documentation", () => {
 
   it("saves as soon as the editor loses focus", async () => {
     const { onSave, finish } = pendingSaves();
-    await renderDocumentation(<RichDocumentation value="# Runbook" onSave={onSave} />);
+    await renderDocumentation(<RichDocumentation name="Example service" value="# Runbook" onSave={onSave} />);
     await caretToEnd();
     await typeInEditor(documentation(), " v2");
     await blurDocumentation();
@@ -396,7 +398,9 @@ describe("rich documentation", () => {
     const onSave = mock(async (_value: string) => {
       if (fail) throw new Error("Documentation could not be saved");
     });
-    const { user: actor } = await renderDocumentation(<RichDocumentation value="" onSave={onSave} />);
+    const { user: actor } = await renderDocumentation(
+      <RichDocumentation name="Example service" value="" onSave={onSave} />,
+    );
     await typeInEditor(documentation(), "Rotate the keys");
     await blurDocumentation();
     expect((await screen.findByRole("alert")).textContent).toContain("Documentation could not be saved");
@@ -413,7 +417,7 @@ describe("rich documentation", () => {
 
   it("announces only the terminal Saved state, not every pause or a failure", async () => {
     const { onSave, finish } = pendingSaves();
-    await renderDocumentation(<RichDocumentation value="Notes" onSave={onSave} />);
+    await renderDocumentation(<RichDocumentation name="Example service" value="Notes" onSave={onSave} />);
     const live = () => document.querySelector(".documentation-live");
     expect(live()?.getAttribute("role")).toBe("status");
     expect(live()?.textContent).toBe("");
@@ -431,6 +435,7 @@ describe("rich documentation", () => {
   it("does not announce a failed save in the polite region", async () => {
     await renderDocumentation(
       <RichDocumentation
+        name="Example service"
         value="Notes"
         onSave={mock(async () => {
           throw new Error("Documentation could not be saved");
@@ -449,7 +454,7 @@ describe("rich documentation", () => {
     const onSave = mock(async (_value: string) => {
       throw new Error("Documentation could not be saved");
     });
-    await renderDocumentation(<RichDocumentation value="Runbook" onSave={onSave} />);
+    await renderDocumentation(<RichDocumentation name="Example service" value="Runbook" onSave={onSave} />);
     const chrome = document.querySelector(".documentation-chrome");
     expect(chrome).toBeTruthy();
     await caretToEnd();
@@ -468,13 +473,13 @@ describe("rich documentation", () => {
     expect(notices.length).toBe(2);
     expect(notices.every((notice) => chrome?.contains(notice))).toBe(true);
     expect(notices.some((notice) => notice.textContent?.includes("Documentation could not be saved"))).toBe(true);
-    expect(notices.some((notice) => notice.textContent?.includes("paste again"))).toBe(true);
+    expect(notices.some((notice) => notice.textContent?.includes("Paste cancelled: it contains"))).toBe(true);
     expect(saveStatus().getAttribute("data-state")).toBe("error");
   });
 
   it("sends one save at a time and saves edits made during a save after it", async () => {
     const { onSave, finish } = pendingSaves();
-    await renderDocumentation(<RichDocumentation value="" onSave={onSave} />);
+    await renderDocumentation(<RichDocumentation name="Example service" value="" onSave={onSave} />);
     await typeInEditor(documentation(), "First");
     await blurDocumentation();
     await caretToEnd();
@@ -491,8 +496,10 @@ describe("rich documentation", () => {
 
   it("shows documentation updated elsewhere while the editor is idle", async () => {
     const onSave = mock(async (_value: string) => {});
-    const { rerender } = await renderDocumentation(<RichDocumentation value="Old notes" onSave={onSave} />);
-    rerender(<RichDocumentation value={"* Updated notes"} onSave={onSave} />);
+    const { rerender } = await renderDocumentation(
+      <RichDocumentation name="Example service" value="Old notes" onSave={onSave} />,
+    );
+    rerender(<RichDocumentation name="Example service" value={"* Updated notes"} onSave={onSave} />);
     expect(within(documentation()).getByRole("listitem").textContent).toBe("Updated notes");
 
     // The update becomes the saved document, so leaving the editor does not save its canonical form.
@@ -508,18 +515,22 @@ describe("rich documentation", () => {
 
   it("keeps the editor's content when documentation is updated elsewhere while it has focus", async () => {
     const onSave = mock(async (_value: string) => {});
-    const { rerender } = await renderDocumentation(<RichDocumentation value="Old notes" onSave={onSave} />);
+    const { rerender } = await renderDocumentation(
+      <RichDocumentation name="Example service" value="Old notes" onSave={onSave} />,
+    );
     await focusDocumentation();
-    rerender(<RichDocumentation value="Remote notes" onSave={onSave} />);
+    rerender(<RichDocumentation name="Example service" value="Remote notes" onSave={onSave} />);
     expect(documentation().textContent).toBe("Old notes");
     expect(onSave).not.toHaveBeenCalled();
   });
 
   it("shows documentation updated elsewhere once the editor is left without an edit", async () => {
     const onSave = mock(async (_value: string) => {});
-    const { rerender } = await renderDocumentation(<RichDocumentation value="Old notes" onSave={onSave} />);
+    const { rerender } = await renderDocumentation(
+      <RichDocumentation name="Example service" value="Old notes" onSave={onSave} />,
+    );
     await focusDocumentation();
-    rerender(<RichDocumentation value="Remote notes" onSave={onSave} />);
+    rerender(<RichDocumentation name="Example service" value="Remote notes" onSave={onSave} />);
     expect(documentation().textContent).toBe("Old notes");
 
     await blurDocumentation();
@@ -530,10 +541,12 @@ describe("rich documentation", () => {
 
   it("does not show an update that was undone elsewhere before the editor was left", async () => {
     const onSave = mock(async (_value: string) => {});
-    const { rerender } = await renderDocumentation(<RichDocumentation value="Old notes" onSave={onSave} />);
+    const { rerender } = await renderDocumentation(
+      <RichDocumentation name="Example service" value="Old notes" onSave={onSave} />,
+    );
     await focusDocumentation();
-    rerender(<RichDocumentation value="Remote notes" onSave={onSave} />);
-    rerender(<RichDocumentation value="Old notes" onSave={onSave} />);
+    rerender(<RichDocumentation name="Example service" value="Remote notes" onSave={onSave} />);
+    rerender(<RichDocumentation name="Example service" value="Old notes" onSave={onSave} />);
     await blurDocumentation();
     expect(documentation().textContent).toBe("Old notes");
     expect(onSave).not.toHaveBeenCalled();
@@ -541,9 +554,11 @@ describe("rich documentation", () => {
 
   it("saves an edit over documentation updated elsewhere while the editor had focus", async () => {
     const onSave = mock(async (_value: string) => {});
-    const { rerender } = await renderDocumentation(<RichDocumentation value="Old notes" onSave={onSave} />);
+    const { rerender } = await renderDocumentation(
+      <RichDocumentation name="Example service" value="Old notes" onSave={onSave} />,
+    );
     await focusDocumentation();
-    rerender(<RichDocumentation value="Remote notes" onSave={onSave} />);
+    rerender(<RichDocumentation name="Example service" value="Remote notes" onSave={onSave} />);
     await caretToEnd();
     await typeInEditor(documentation(), " and local edits");
     await blurDocumentation();
@@ -557,16 +572,18 @@ describe("rich documentation", () => {
 
   it("recognizes its own save coming back before the save finishes", async () => {
     const { onSave, finish } = pendingSaves();
-    const { rerender } = await renderDocumentation(<RichDocumentation value="Notes" onSave={onSave} />);
+    const { rerender } = await renderDocumentation(
+      <RichDocumentation name="Example service" value="Notes" onSave={onSave} />,
+    );
     await caretToEnd();
     await typeInEditor(documentation(), " v2");
     await blurDocumentation();
-    rerender(<RichDocumentation value="Notes v2" onSave={onSave} />);
+    rerender(<RichDocumentation name="Example service" value="Notes v2" onSave={onSave} />);
     await act(async () => finish[0]());
     expect(saveState()).toBe("Saved");
 
     // A later change elsewhere, back to the old documentation, is still shown.
-    rerender(<RichDocumentation value="Notes" onSave={onSave} />);
+    rerender(<RichDocumentation name="Example service" value="Notes" onSave={onSave} />);
     expect(documentation().textContent).toBe("Notes");
     expect(onSave.mock.calls).toEqual([["Notes v2"]]);
   });
@@ -575,25 +592,29 @@ describe("rich documentation", () => {
     const onSave = mock(async (_value: string) => {
       throw new Error("Network unavailable");
     });
-    const { rerender } = await renderDocumentation(<RichDocumentation value="Old notes" onSave={onSave} />);
+    const { rerender } = await renderDocumentation(
+      <RichDocumentation name="Example service" value="Old notes" onSave={onSave} />,
+    );
     await caretToEnd();
     await typeInEditor(documentation(), " and local edits");
     await blurDocumentation();
     expect((await screen.findByRole("alert")).textContent).toContain("Network unavailable");
 
-    rerender(<RichDocumentation value="Remote notes" onSave={onSave} />);
+    rerender(<RichDocumentation name="Example service" value="Remote notes" onSave={onSave} />);
     expect(documentation().textContent).toBe("Old notes and local edits");
     expect(saveState()).toBe("Save failed");
   });
 
   it("keeps its undo history when its own save comes back as the documentation", async () => {
     const onSave = mock(async (_value: string) => {});
-    const { rerender } = await renderDocumentation(<RichDocumentation value="Notes" onSave={onSave} />);
+    const { rerender } = await renderDocumentation(
+      <RichDocumentation name="Example service" value="Notes" onSave={onSave} />,
+    );
     await caretToEnd();
     await typeInEditor(documentation(), " v2");
     await blurDocumentation();
     expect(onSave.mock.calls).toEqual([["Notes v2"]]);
-    rerender(<RichDocumentation value="Notes v2" onSave={onSave} />);
+    rerender(<RichDocumentation name="Example service" value="Notes v2" onSave={onSave} />);
 
     act(() => {
       editorFromElement(documentation()).commands.undo();
@@ -604,7 +625,9 @@ describe("rich documentation", () => {
 
   it("saves a pending edit when the editor closes before the autosave", async () => {
     const onSave = mock(async (_value: string) => {});
-    const { unmount } = await renderDocumentation(<RichDocumentation value="" onSave={onSave} />);
+    const { unmount } = await renderDocumentation(
+      <RichDocumentation name="Example service" value="" onSave={onSave} />,
+    );
     await typeInEditor(documentation(), "Closing soon");
     expect(onSave).not.toHaveBeenCalled();
     unmount();
@@ -615,7 +638,7 @@ describe("rich documentation", () => {
     const onSave = mock(async (_value: string) => {});
     const { unmount } = await renderDocumentation(
       <StrictMode>
-        <RichDocumentation value="Notes" onSave={onSave} />
+        <RichDocumentation name="Example service" value="Notes" onSave={onSave} />
       </StrictMode>,
     );
     await caretToEnd();
@@ -626,7 +649,9 @@ describe("rich documentation", () => {
 
   it("leaves the editor on Escape and saves", async () => {
     const onSave = mock(async (_value: string) => {});
-    const { user: actor } = await renderDocumentation(<RichDocumentation value="" onSave={onSave} />);
+    const { user: actor } = await renderDocumentation(
+      <RichDocumentation name="Example service" value="" onSave={onSave} />,
+    );
     await typeInEditor(documentation(), "Escape hatch");
     await actor.keyboard("{Escape}");
     await waitFor(() => expect(document.activeElement).not.toBe(documentation()));
@@ -641,7 +666,9 @@ describe("rich documentation", () => {
     document.addEventListener("keydown", preventEscape, { capture: true });
     try {
       const onSave = mock(async (_value: string) => {});
-      const { user: actor } = await renderDocumentation(<RichDocumentation value="" onSave={onSave} />);
+      const { user: actor } = await renderDocumentation(
+        <RichDocumentation name="Example service" value="" onSave={onSave} />,
+      );
       await typeInEditor(documentation(), "Inside a dialog");
       await actor.keyboard("{Escape}");
       await waitFor(() => expect(document.activeElement).not.toBe(documentation()));
@@ -658,11 +685,15 @@ describe("rich documentation", () => {
     "<details>\n<summary>Notes</summary>\n</details>",
   ])("preserves unsupported source on open, small edit, and save: %s", async (value) => {
     const onSave = mock(async (_value: string) => {});
-    const { unmount } = await renderDocumentation(<RichDocumentation value={value} onSave={onSave} />);
+    const { unmount } = await renderDocumentation(
+      <RichDocumentation name="Example service" value={value} onSave={onSave} />,
+    );
     const source = documentation() as HTMLTextAreaElement;
     expect(source.tagName).toBe("TEXTAREA");
     expect(source.value).toBe(value);
-    expect(screen.getByRole("alert").textContent).toContain("Edit Markdown source");
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Edit it here in Markdown source; unsupported content is kept verbatim.",
+    );
     fireEvent.focus(source);
     fireEvent.blur(source);
     expect(onSave).not.toHaveBeenCalled();
@@ -674,9 +705,11 @@ describe("rich documentation", () => {
 
   it("preserves an unsupported external update before the next edit", async () => {
     const onSave = mock(async (_value: string) => {});
-    const { rerender } = await renderDocumentation(<RichDocumentation value="Notes" onSave={onSave} />);
+    const { rerender } = await renderDocumentation(
+      <RichDocumentation name="Example service" value="Notes" onSave={onSave} />,
+    );
     const value = "Claim[^1]\n\n[^1]: Source.";
-    rerender(<RichDocumentation value={value} onSave={onSave} />);
+    rerender(<RichDocumentation name="Example service" value={value} onSave={onSave} />);
     await waitFor(() => expect((documentation() as HTMLTextAreaElement).value).toBe(value));
     fireEvent.change(documentation(), { target: { value: `${value} Updated` } });
     fireEvent.blur(documentation());
@@ -686,11 +719,15 @@ describe("rich documentation", () => {
   it("blocks a lossy paste and offers source editing without rewriting the original", async () => {
     const onSave = mock(async (_value: string) => {});
     const value = "__Original__";
-    const { user: actor } = await renderDocumentation(<RichDocumentation value={value} onSave={onSave} />);
+    const { user: actor } = await renderDocumentation(
+      <RichDocumentation name="Example service" value={value} onSave={onSave} />,
+    );
     fireEvent.paste(documentation(), {
       clipboardData: { getData: (type: string) => (type === "text/plain" ? "![Diagram](diagram.png)" : "") },
     });
-    expect(screen.getByRole("alert").textContent).toContain("paste again");
+    expect(screen.getByRole("alert").textContent).toBe(
+      'Paste cancelled: it contains images, which the block editor does not support. Choose "Edit Markdown source", then paste again to keep it verbatim.',
+    );
     expect(documentation().textContent).toBe("Original");
     await actor.click(screen.getByRole("button", { name: "Edit Markdown source" }));
     expect((documentation() as HTMLTextAreaElement).value).toBe(value);
@@ -702,7 +739,7 @@ describe("rich documentation", () => {
 
   it("pastes ordinary text that only mentions tags or footnote markers as literal text", async () => {
     const onSave = mock(async (_value: string) => {});
-    await renderDocumentation(<RichDocumentation value="" onSave={onSave} />);
+    await renderDocumentation(<RichDocumentation name="Example service" value="" onSave={onSave} />);
     const text = "Use the <Button> component and see [^1] below";
     fireEvent.paste(documentation(), {
       clipboardData: { getData: (type: string) => (type === "text/plain" ? text : "") },
@@ -713,11 +750,13 @@ describe("rich documentation", () => {
 
   it("clears a paste warning once the documentation changes", async () => {
     const onSave = mock(async (_value: string) => {});
-    await renderDocumentation(<RichDocumentation value="Notes" onSave={onSave} />);
+    await renderDocumentation(<RichDocumentation name="Example service" value="Notes" onSave={onSave} />);
     fireEvent.paste(documentation(), {
       clipboardData: { getData: (type: string) => (type === "text/plain" ? "# Diagram\n\n![Diagram](d.png)" : "") },
     });
-    expect(screen.getByRole("alert").textContent).toContain("paste again");
+    expect(screen.getByRole("alert").textContent).toBe(
+      'Paste cancelled: it contains images, which the block editor does not support. Choose "Edit Markdown source", then paste again to keep it verbatim.',
+    );
     await caretToEnd();
     await typeInEditor(documentation(), "!");
     expect(screen.queryByRole("alert")).toBeNull();
@@ -726,7 +765,7 @@ describe("rich documentation", () => {
   it("switches from Markdown source back to blocks once the source is supported", async () => {
     const onSave = mock(async (_value: string) => {});
     const { user: actor } = await renderDocumentation(
-      <RichDocumentation value={"Intro\n\n![Diagram](d.png)"} onSave={onSave} />,
+      <RichDocumentation name="Example service" value={"Intro\n\n![Diagram](d.png)"} onSave={onSave} />,
     );
     expect(screen.queryByRole("button", { name: "Edit as blocks" })).toBeNull();
     fireEvent.change(documentation(), { target: { value: "Intro\n\n**Ready**" } });
@@ -749,7 +788,9 @@ describe("rich documentation", () => {
     const onSave = mock(async (_value: string) => {});
     // Not in canonical form, and ending with a table, which gains a trailing paragraph when focused.
     const value = "* Gateway\n* Ledger\n\n| Service | Owner |\n|---|---|\n| Ledger | Core |";
-    const { user: actor } = await renderDocumentation(<RichDocumentation value={value} onSave={onSave} />);
+    const { user: actor } = await renderDocumentation(
+      <RichDocumentation name="Example service" value={value} onSave={onSave} />,
+    );
     await actor.click(screen.getByRole("button", { name: "Edit Markdown source" }));
     expect((documentation() as HTMLTextAreaElement).value).toBe(value);
     await actor.click(screen.getByRole("button", { name: "Edit as blocks" }));
@@ -767,7 +808,9 @@ describe("rich documentation", () => {
     // Use prose-sized words so this checks the save boundary rather than linkifying a 20,000-character token.
     const initial = `${"word ".repeat(3999)}word`;
     expect(initial).toHaveLength(19_999);
-    const { user: actor } = await renderDocumentation(<RichDocumentation value={initial} onSave={onSave} />);
+    const { user: actor } = await renderDocumentation(
+      <RichDocumentation name="Example service" value={initial} onSave={onSave} />,
+    );
     await caretToEnd();
     await typeInEditor(documentation(), "bc");
     await blurDocumentation();

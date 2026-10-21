@@ -1366,6 +1366,7 @@ function EntityDetailContent({
           )}
           {section === "documentation" && (
             <RichDocumentation
+              name={entity.name}
               draft={draftUserId ? { userId: draftUserId, kind: "entity", objectId: entity.id } : undefined}
               onUnsavedChange={onUnsavedDocumentationChange}
               value={entity.metadata.documentation ?? ""}
@@ -1464,6 +1465,7 @@ function ConnectionDetailContent({
           )}
           {section === "documentation" && (
             <RichDocumentation
+              name={connectionTitle(connection)}
               draft={draftUserId ? { userId: draftUserId, kind: "connection", objectId: connection.id } : undefined}
               onUnsavedChange={onUnsavedDocumentationChange}
               value={connection.metadata.documentation ?? ""}

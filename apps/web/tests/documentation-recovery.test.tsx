@@ -41,8 +41,8 @@ const caretToEnd = () =>
   });
 
 type Props = Parameters<typeof RichDocumentation>[0];
-async function renderDocumentation(props: Props) {
-  const rendered = renderWithQuery(<RichDocumentation {...props} />);
+async function renderDocumentation(props: Omit<Props, "name">) {
+  const rendered = renderWithQuery(<RichDocumentation name="Example service" {...props} />);
   await screen.findByRole("textbox", { name: "Documentation" });
   return rendered;
 }
@@ -187,7 +187,9 @@ describe("documentation drafts", () => {
     expect(draftOf()?.markdown).toBe("Older text");
 
     // Once the location is known the older draft is not overwritten: it is offered, and the edits stay in the editor.
-    view.rerender(<RichDocumentation value="Saved" onSave={mock(async () => {})} draft={location} />);
+    view.rerender(
+      <RichDocumentation name="Example service" value="Saved" onSave={mock(async () => {})} draft={location} />,
+    );
     await findPrompt();
     expect(draftOf()?.markdown).toBe("Older text");
     expect(documentation().textContent).toBe("Saved more");
@@ -200,7 +202,7 @@ describe("documentation drafts", () => {
       const view = await renderDocumentation({ value: "Saved", onSave });
       await caretToEnd();
       await typeInEditor(documentation(), " more");
-      view.rerender(<RichDocumentation value="Saved" onSave={onSave} draft={location} />);
+      view.rerender(<RichDocumentation name="Example service" value="Saved" onSave={onSave} draft={location} />);
       await findPrompt();
       return { view, onSave };
     }
@@ -290,7 +292,7 @@ describe("documentation drafts", () => {
       const view = await renderDocumentation({ value: "Saved", onSave });
       await typeAndBlur(" more");
       expect(onSave.mock.calls).toEqual([["Saved more"]]);
-      view.rerender(<RichDocumentation value="Saved" onSave={onSave} draft={location} />);
+      view.rerender(<RichDocumentation name="Example service" value="Saved" onSave={onSave} draft={location} />);
       const offer = await findPrompt();
       expect(offer.textContent).toContain("Restoring puts the earlier draft above what you typed.");
       return { view, onSave, settle };
@@ -346,7 +348,7 @@ describe("documentation drafts", () => {
     const elsewhere = document.createElement("button");
     document.body.append(elsewhere);
     elsewhere.focus();
-    view.rerender(<RichDocumentation value="Saved" onSave={onSave} draft={location} />);
+    view.rerender(<RichDocumentation name="Example service" value="Saved" onSave={onSave} draft={location} />);
     const offer = await findPrompt();
     expect(offer.getAttribute("role")).toBe("alert");
     expect(document.activeElement).toBe(elsewhere);
@@ -361,7 +363,7 @@ describe("documentation drafts", () => {
         const view = await renderDocumentation({ value: "Saved", onSave });
         await caretToEnd();
         await typeInEditor(documentation(), " more");
-        view.rerender(<RichDocumentation value="Saved" onSave={onSave} draft={location} />);
+        view.rerender(<RichDocumentation name="Example service" value="Saved" onSave={onSave} draft={location} />);
         await findPrompt();
         suspendDocumentationDrafts();
         clearAllDocumentationDrafts();
@@ -400,6 +402,7 @@ describe("documentation drafts", () => {
     expect(screen.queryByText(/was kept on this device/)).toBeNull();
     view.rerender(
       <RichDocumentation
+        name="Example service"
         value="Saved"
         onSave={mock(async () => {})}
         draft={{ userId: "user-a", kind: "connection", objectId: "shared-id" }}
@@ -441,7 +444,9 @@ describe("documentation draft recovery", () => {
     const onSave = mock(async (_value: string) => {});
     const view = await renderDocumentation({ value: "Saved", onSave, draft: location });
     await findPrompt();
-    view.rerender(<RichDocumentation value="Changed elsewhere" onSave={onSave} draft={location} />);
+    view.rerender(
+      <RichDocumentation name="Example service" value="Changed elsewhere" onSave={onSave} draft={location} />,
+    );
     await act(async () => {});
     expect(documentation().textContent).toBe("Saved");
     expect(document.activeElement).not.toBe(screen.getByRole("button", { name: "Restore" }));
@@ -524,7 +529,7 @@ describe("documentation draft recovery", () => {
     const onSave = mock(async (_value: string) => {});
     const view = await renderDocumentation({ value: "Saved", onSave, draft: location });
     await findPrompt();
-    view.rerender(<RichDocumentation value="Saved" onSave={onSave} />);
+    view.rerender(<RichDocumentation name="Example service" value="Saved" onSave={onSave} />);
     await waitFor(() => expect(prompt()).toBeNull());
     expect(draftOf()?.markdown).toBe("Draft text");
     await caretToEnd();
@@ -757,7 +762,7 @@ describe("documentation changed elsewhere after a blur-initiated save", () => {
     await typeAndBlur(" mine");
     expect(onSave.mock.calls).toEqual([["Original mine"]]);
 
-    view.rerender(<RichDocumentation value="Theirs" onSave={onSave} />);
+    view.rerender(<RichDocumentation name="Example service" value="Theirs" onSave={onSave} />);
     expect(documentation().textContent).toBe("Original mine");
 
     await act(async () => settle[0].resolve());
@@ -773,7 +778,7 @@ describe("documentation changed elsewhere after a blur-initiated save", () => {
     const { onSave, settle } = pendingSaves();
     const view = await renderDocumentation({ value: "Original", onSave });
     await typeAndBlur(" mine");
-    view.rerender(<RichDocumentation value="Theirs" onSave={onSave} />);
+    view.rerender(<RichDocumentation name="Example service" value="Theirs" onSave={onSave} />);
     await act(async () => settle[0].reject(new TypeError("Failed to fetch")));
     expect(await screen.findByRole("button", { name: "Retry" })).toBeTruthy();
     // Unsaved text is never replaced silently, even when the editor loses focus again.
@@ -787,7 +792,7 @@ describe("documentation changed elsewhere after a blur-initiated save", () => {
     const view = await renderDocumentation({ value: "Original", onSave });
     await typeAndBlur(" mine");
     await waitFor(() => expect(saveState()).toBe("Saved"));
-    view.rerender(<RichDocumentation value="Theirs" onSave={onSave} />);
+    view.rerender(<RichDocumentation name="Example service" value="Theirs" onSave={onSave} />);
     await waitFor(() => expect(documentation().textContent).toBe("Theirs"));
   });
 });
@@ -813,6 +818,7 @@ describe("documentation editor chunk", () => {
         <div>
           <p>Sibling content</p>
           <RichDocumentation
+            name="Example service"
             load={load}
             reload={reload}
             value={"# Runbook\n\nRestart **workers**"}
@@ -843,7 +849,7 @@ describe("documentation editor chunk", () => {
 
   it("loads the editor when the chunk is available", async () => {
     const load: EditorLoader = () => Promise.resolve({ default: LoadedEditor });
-    renderWithQuery(<RichDocumentation load={load} value="Notes" onSave={async () => {}} />);
+    renderWithQuery(<RichDocumentation name="Example service" load={load} value="Notes" onSave={async () => {}} />);
     expect(await screen.findByRole("textbox", { name: "Documentation" })).toBeTruthy();
   });
 });
