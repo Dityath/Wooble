@@ -10,11 +10,18 @@ if (configErrors.length) {
 }
 const { createApp } = await import("./app");
 const { stopLiveServer } = await import("./lib/live");
+const { Client } = await import("pg");
 const { pool } = await import("@wooble/db");
+const { startSingleInstanceGate, stopSingleInstanceGate } = await import("./lib/instance-gate");
 
 const app = await createApp();
 const port = Number(process.env.API_PORT ?? 3001);
 app.listen({ port, hostname: "0.0.0.0" });
+const claimTimeoutMs = 10_000;
+void startSingleInstanceGate(
+  () => new Client({ connectionString: pool.options.connectionString, connectionTimeoutMillis: claimTimeoutMs }),
+  { timeoutMs: claimTimeoutMs },
+);
 console.log(`API listening at http://0.0.0.0:${port}`);
 
 let shuttingDown = false;
@@ -24,7 +31,11 @@ const shutdown = async () => {
   try {
     await stopLiveServer(app);
   } finally {
-    await pool.end();
+    try {
+      await stopSingleInstanceGate();
+    } finally {
+      await pool.end();
+    }
   }
 };
 const onSignal = () =>
