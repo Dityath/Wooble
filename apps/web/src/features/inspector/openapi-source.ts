@@ -28,7 +28,7 @@ export function parseOpenApi(value: string): { title: string; version: string; o
     for (const [path, pathItem] of Object.entries(data.paths)) {
       if (!pathItem || typeof pathItem !== "object") continue;
       for (const [method, operation] of Object.entries(pathItem)) {
-        if (!methods.includes(method.toUpperCase()) || !operation || typeof operation !== "object") continue;
+        if (!methods.includes(method.toUpperCase()) || !isPathItem(operation)) continue;
         operations.push({
           id: crypto.randomUUID(),
           path,
@@ -88,6 +88,13 @@ export function generateOpenApi(title: string, version: string, operations: Oper
     if (Object.hasOwn(oldPaths, path) && !isPathItem(oldPaths[path])) {
       throw new OpenApiEditError(`The source's path item for ${path} is not an object. Fix it in the source editor.`);
     }
+    const pathItem = oldPaths[path];
+    const method = operation.method.toLowerCase();
+    if (isPathItem(pathItem) && Object.hasOwn(pathItem, method) && !isPathItem(pathItem[method])) {
+      throw new OpenApiEditError(
+        `The source has an invalid ${operation.method.toUpperCase()} operation at ${path}. Fix it in the source editor.`,
+      );
+    }
   }
   // Clone each path separately: YAML aliases must not link edits across paths.
   const paths = Object.fromEntries(Object.entries(oldPaths).map(([path, item]) => [path, structuredClone(item)]));
@@ -99,6 +106,7 @@ export function generateOpenApi(title: string, version: string, operations: Oper
     for (const method of Object.keys(pathItem)) {
       if (
         methods.includes(method.toUpperCase()) &&
+        isPathItem(pathItem[method]) &&
         !operations.some(
           (operation) =>
             operation.sourcePath === path &&

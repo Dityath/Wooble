@@ -90,6 +90,74 @@ for (const format of ["JSON", "YAML"]) {
       }
     });
 
+    it("hides malformed operations and preserves them through unrelated edits and deletion", () => {
+      const document = {
+        openapi: "3.1.0",
+        info: { title: "Orders", version: "1" },
+        paths: { "/a": { get: "keep", put: [], delete: null, patch: 42, post: { summary: "Change" } } },
+      };
+      const input = format === "JSON" ? JSON.stringify(document) : stringifyYaml(document);
+      const operations = fixtureOperations(input);
+      expect(operations).toHaveLength(1);
+      expect(operations[0].method).toBe("POST");
+      const edited = operations.map((operation) => ({ ...operation, summary: "Changed" }));
+      const expected = structuredClone(document);
+      expected.paths["/a"].post.summary = "Changed";
+      expect(JSON.parse(generateOpenApi("Orders", "1", edited, input))).toEqual(expected);
+      expect(JSON.parse(generateOpenApi("Orders", "1", [], input))).toEqual({
+        ...document,
+        paths: { "/a": { get: "keep", put: [], delete: null, patch: 42 } },
+      });
+    });
+
+    for (const invalid of ["keep", [], null, 42, false]) {
+      for (const action of ["move", "add"]) {
+        it(`refuses to ${action} onto a malformed operation ${JSON.stringify(invalid)}`, () => {
+          const document = {
+            openapi: "3.1.0",
+            info: { title: "Orders", version: "1" },
+            paths: { "/a": { get: invalid }, "/b": { get: { summary: "Read" } } },
+          };
+          const input = format === "JSON" ? JSON.stringify(document) : stringifyYaml(document);
+          const operations = fixtureOperations(input);
+          const edited =
+            action === "move"
+              ? operations.map((operation) => ({ ...operation, path: "a" }))
+              : [...operations, { id: "new", method: "GET", path: "a", summary: "New" }];
+          expect(() => generateOpenApi("Orders", "1", edited, input)).toThrow(
+            "The source has an invalid GET operation at /a. Fix it in the source editor.",
+          );
+        });
+      }
+    }
+
+    for (const action of ["move", "add"]) {
+      it(`shows an error without saving when a GUI ${action} targets a malformed operation`, async () => {
+        const document = {
+          openapi: "3.1.0",
+          info: { title: "Orders", version: "1" },
+          paths: { "/a": { get: "keep", post: { summary: "Change" } } },
+        };
+        const input = format === "JSON" ? JSON.stringify(document) : stringifyYaml(document);
+        const onSave = mock(async (_value: string) => {});
+        const { user } = renderWithQuery(createElement(ContractEditor, { value: input, kind: "rest", onSave }));
+        await user.click(screen.getByRole("tab", { name: "Visual editor" }));
+        if (action === "move") {
+          await user.selectOptions(screen.getByLabelText("Method 1"), "GET");
+        } else {
+          await user.click(screen.getByRole("button", { name: "Add endpoint" }));
+          await user.type(screen.getByLabelText("Path 2"), "/a");
+        }
+        await user.click(screen.getByRole("button", { name: "Save contract" }));
+        expect((await screen.findByRole("alert")).textContent).toBe(
+          "The source has an invalid GET operation at /a. Fix it in the source editor.",
+        );
+        expect(onSave).not.toHaveBeenCalled();
+        await user.click(screen.getByRole("tab", { name: "Source" }));
+        expect((screen.getByLabelText("Contract source") as HTMLTextAreaElement).value).toBe(input);
+      });
+    }
+
     it("rejects duplicate normalized destinations", () => {
       expect(() =>
         save([
