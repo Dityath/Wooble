@@ -79,10 +79,11 @@ export function ContractEditor({
     }
     setTab("gui");
   };
-  const save = async (body: string) => {
+  const save = async (input: string | (() => string)) => {
     setSaving(true);
     setError("");
     try {
+      const body = typeof input === "function" ? input() : input;
       await onSave(body);
       setDraft(body);
       setTab("preview");
@@ -253,7 +254,7 @@ export function ContractEditor({
             <Button
               size="sm"
               disabled={saving}
-              onClick={() => void save(generateOpenApi(title, version, operations, draft))}
+              onClick={() => void save(() => generateOpenApi(title, version, operations, draft))}
             >
               {saving ? "Saving…" : "Save contract"}
             </Button>

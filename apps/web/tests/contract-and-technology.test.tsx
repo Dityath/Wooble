@@ -92,6 +92,35 @@ describe("contract editor", () => {
     expect(screen.getByRole("tab", { name: "Preview" }).getAttribute("aria-selected")).toBe("true");
   });
 
+  for (const scenario of ["duplicate", "invalid destination"]) {
+    it(`shows ${scenario} errors without saving, then allows correction`, async () => {
+      const onSave = mock(async (_value: string) => {});
+      const original = JSON.parse(ordersApi);
+      const { user } = renderWithQuery(<ContractEditor value={ordersApi} kind="rest" onSave={onSave} />);
+      await user.click(screen.getByRole("tab", { name: "Visual editor" }));
+      if (scenario === "duplicate") {
+        await user.selectOptions(screen.getByLabelText("Method 2"), "GET");
+        fireEvent.change(screen.getByLabelText("Path 2"), { target: { value: "orders" } });
+      } else {
+        fireEvent.change(screen.getByLabelText("Path 2"), { target: { value: "/health" } });
+      }
+      await user.click(screen.getByRole("button", { name: "Save contract" }));
+      expect((await screen.findByRole("alert")).textContent).toBe(
+        scenario === "duplicate"
+          ? "Two operations use GET /orders. Change one before saving."
+          : "The source's path item for /health is not an object. Fix it in the source editor.",
+      );
+      expect(onSave).not.toHaveBeenCalled();
+      expect(screen.getByRole("tab", { name: "Visual editor" }).getAttribute("aria-selected")).toBe("true");
+      await user.selectOptions(screen.getByLabelText("Method 2"), "POST");
+      fireEvent.change(screen.getByLabelText("Path 2"), { target: { value: "/orders" } });
+      await user.click(screen.getByRole("button", { name: "Save contract" }));
+      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+      expect(JSON.parse(onSave.mock.calls[0][0])).toEqual(original);
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+  }
+
   it("starts a visual contract from an empty document", async () => {
     const onSave = mock(async (_value: string) => {});
     const { user } = renderWithQuery(<ContractEditor value="" kind="rest" onSave={onSave} />);

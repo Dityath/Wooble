@@ -1,10 +1,16 @@
 import { describe, expect, it, mock } from "bun:test";
 import { screen, waitFor } from "@testing-library/react";
 import { createElement } from "react";
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { ContractEditor } from "../src/features/inspector/contract-editor";
 import { generateOpenApi, type Operation, parseOpenApi } from "../src/features/inspector/openapi-source";
 import { renderWithQuery } from "./support/render";
+
+function fixtureOperations(source: string) {
+  const parsed = parseOpenApi(source);
+  if (!parsed) throw new Error("Fixture must parse");
+  return parsed.operations;
+}
 
 const issueYaml = `openapi: 3.0.3
 info: { title: Orders, version: "1" }
@@ -61,6 +67,60 @@ for (const format of ["JSON", "YAML"]) {
   const save = (operations: Operation[]) => JSON.parse(generateOpenApi("Orders", "1", operations, source));
 
   describe(`OpenAPI source preservation (${format})`, () => {
+    it("preserves absent summaries and empty paths while editing or clearing a summary", () => {
+      const document = {
+        openapi: "3.1.0",
+        info: { title: "Orders", version: "1" },
+        paths: {
+          "/empty": {},
+          "/orders": {
+            get: { summary: "Read", responses: { "200": { description: "OK" } } },
+            post: { responses: { "201": { description: "Created" } } },
+          },
+        },
+      };
+      const input = format === "JSON" ? JSON.stringify(document) : stringifyYaml(document);
+      for (const summary of ["Read details", ""]) {
+        const operations = fixtureOperations(input).map((operation) =>
+          operation.method === "GET" ? { ...operation, summary } : operation,
+        );
+        const expected = structuredClone(document);
+        expected.paths["/orders"].get.summary = summary;
+        expect(JSON.parse(generateOpenApi("Orders", "1", operations, input))).toEqual(expected);
+      }
+    });
+
+    it("rejects duplicate normalized destinations", () => {
+      expect(() =>
+        save([
+          ...parsed().operations,
+          { id: "duplicate", method: "GET", path: "orders/{orderId}", summary: "Duplicate" },
+        ]),
+      ).toThrow("Two operations use GET /orders/{orderId}. Change one before saving.");
+    });
+
+    for (const invalid of ["invalid", null, []]) {
+      it(`preserves untouched invalid path items and rejects moving into ${JSON.stringify(invalid)}`, () => {
+        const document = { ...original, paths: { ...original.paths, "/target": invalid } };
+        const input = format === "JSON" ? JSON.stringify(document) : stringifyYaml(document);
+        const operations = fixtureOperations(input);
+        const edited = operations.map((operation) =>
+          operation.method === "GET" ? { ...operation, summary: "Edited" } : operation,
+        );
+        const expected = structuredClone(document);
+        expected.paths[orderPath].get.summary = "Edited";
+        expect(JSON.parse(generateOpenApi("Orders", "1", edited, input))).toEqual(expected);
+        expect(() =>
+          generateOpenApi(
+            "Orders",
+            "1",
+            operations.map((operation) => (operation.method === "GET" ? { ...operation, path: "/target" } : operation)),
+            input,
+          ),
+        ).toThrow("The source's path item for /target is not an object. Fix it in the source editor.");
+      });
+    }
+
     it("preserves the issue fixture and records source identities", () => {
       const fixture = format === "JSON" ? JSON.stringify(parseYaml(issueYaml)) : issueYaml;
       const result = parseOpenApi(fixture);
@@ -176,3 +236,27 @@ for (const format of ["JSON", "YAML"]) {
     });
   });
 }
+
+describe("YAML path aliases", () => {
+  const source = `openapi: 3.1.0
+info: { title: Orders, version: "1" }
+paths:
+  /a: &shared { get: { summary: Read } }
+  /b: *shared
+`;
+  it("deletes an operation without deleting its alias", () => {
+    const operations = fixtureOperations(source).filter((operation) => operation.path !== "/a");
+    const expected = parseYaml(source);
+    delete expected.paths["/a"];
+    expect(JSON.parse(generateOpenApi("Orders", "1", operations, source))).toEqual(expected);
+  });
+  it("moves an operation without changing its alias", () => {
+    const operations = fixtureOperations(source).map((operation) =>
+      operation.path === "/a" ? { ...operation, path: "/moved", summary: "Moved" } : operation,
+    );
+    const expected = parseYaml(source);
+    delete expected.paths["/a"];
+    expected.paths["/moved"] = { get: { summary: "Moved" } };
+    expect(JSON.parse(generateOpenApi("Orders", "1", operations, source))).toEqual(expected);
+  });
+});
