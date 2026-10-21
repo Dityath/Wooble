@@ -1,4 +1,3 @@
-import { isDeepStrictEqual } from "node:util";
 import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import {
   canvases,
@@ -16,6 +15,7 @@ import {
   DOCUMENTATION_KEY,
   DOCUMENTATION_SNAPSHOT_KEY,
   type DocumentRef,
+  documentationRestoreWouldChange,
   documentationUndoEntry,
   isBootstrapped,
   restoreDocumentation,
@@ -553,7 +553,11 @@ async function applyUndo(tx: Transaction, event: CanvasEventRow, actor: Actor): 
       const entry = documentationUndoEntry(metadata);
       // No-op candidates must stay lock-free (see the lock order on applyNextUndo): decide on an unlocked read.
       const [seen] = await tx.select().from(entities).where(eq(entities.id, entityId)).limit(1);
-      if (!seen || (!entityRestore(seen, metadata) && !(await documentationWouldChange(tx, ref, seen.metadata, entry))))
+      if (
+        !seen ||
+        (!entityRestore(seen, metadata) &&
+          !(entry !== undefined && (await documentationRestoreWouldChange(tx, ref, entry))))
+      )
         return false;
       // A write is needed. Lock order: canvas row(s) first (the route holds the requested canvas), then this shared
       // entity row, the same as PATCH /api/entities/:id. Held to commit so the read-modify-write cannot lose a
@@ -565,7 +569,7 @@ async function applyUndo(tx: Transaction, event: CanvasEventRow, actor: Actor): 
       if (!(await undoAuthorized(tx, actor, event))) return "refused";
       const plan = entityRestore(current, metadata);
       // Became a no-op while waiting for the lock: nothing to write.
-      if (!plan && !(await documentationWouldChange(tx, ref, current.metadata, entry))) return false;
+      if (!plan && !(entry !== undefined && (await documentationRestoreWouldChange(tx, ref, entry)))) return false;
       await tx
         .update(entities)
         .set({
@@ -671,20 +675,6 @@ function autoNeatPrevious(metadata: Record<string, unknown>): {
 
 function snapshotValue<T>(metadata: Record<string, unknown>, field: string): T {
   return (metadata[field] ?? undefined) as T;
-}
-
-/** No-op checks must read bootstrap state without locking during the undo walk. */
-async function documentationWouldChange(
-  tx: Transaction,
-  ref: DocumentRef,
-  current: Record<string, unknown>,
-  entry: PreviousMetadataEntry | undefined,
-): Promise<boolean> {
-  if (entry === undefined || (await isBootstrapped(tx, ref))) return false;
-  const previous: PreviousMetadataEntry = Object.hasOwn(current, DOCUMENTATION_KEY)
-    ? { present: true, value: current[DOCUMENTATION_KEY] }
-    : { present: false };
-  return !isDeepStrictEqual(previous, entry);
 }
 
 /** New delete sections take precedence over documentation embedded in historical row snapshots. */
@@ -995,13 +985,17 @@ async function undoConnectionUpdated(
   const ref: DocumentRef = { kind: "connection", id: connectionId };
   const entry = documentationUndoEntry(metadata);
   const [seen] = await tx.select().from(connections).where(eq(connections.id, connectionId)).limit(1);
-  if (!seen || (!connectionRestore(seen, metadata) && !(await documentationWouldChange(tx, ref, seen.metadata, entry))))
+  if (
+    !seen ||
+    (!connectionRestore(seen, metadata) &&
+      !(entry !== undefined && (await documentationRestoreWouldChange(tx, ref, entry))))
+  )
     return false;
   const [current] = await tx.select().from(connections).where(eq(connections.id, connectionId)).for("update").limit(1);
   if (!current) return false;
   if (!(await undoAuthorized(tx, actor, event))) return "refused";
   const plan = connectionRestore(current, metadata);
-  if (!plan && !(await documentationWouldChange(tx, ref, current.metadata, entry))) return false;
+  if (!plan && !(entry !== undefined && (await documentationRestoreWouldChange(tx, ref, entry)))) return false;
   if (plan) {
     await tx
       .update(connections)

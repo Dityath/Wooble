@@ -14,6 +14,7 @@ import {
   DOCUMENTATION_WRITER_SETTING,
   DocumentWorkspaceMismatch,
   type DocumentRef,
+  documentationRestoreWouldChange,
   documentationUndoEntry,
   isBootstrapped,
   registerCollabDocumentation,
@@ -282,6 +283,71 @@ describe("documentation persistence", () => {
       );
     });
 
+    for (const mirror of ["Canonical mirror", ""]) {
+      it(`predicts ${kind} restore writes from a ${mirror === "" ? "blank" : "nonblank"} bootstrapped mirror`, async () => {
+        const f = await fixture();
+        const ref = f[kind];
+        await locked(f, (tx) => writeDocumentation(tx, ref, "Stale projection"));
+        await bootstrap(ref, mirror);
+        await locked(f, (tx) =>
+          guarded(tx, async () => {
+            const entries: Array<PreviousMetadataEntry | undefined> = [
+              undefined,
+              { present: false },
+              { present: true, value: "Stale projection" },
+            ];
+            for (const entry of entries) {
+              expect(await documentationRestoreWouldChange(tx, ref, entry)).toBe(true);
+            }
+            expect(await updateCount(tx)).toBe(0);
+            expect(await metadata(tx, ref)).toEqual({ documentation: "Stale projection" });
+            expect(await restoreDocumentation(tx, ref, undefined)).toBe(true);
+            expect(await metadata(tx, ref)).toEqual(mirror === "" ? {} : { documentation: mirror });
+            for (const entry of entries) {
+              expect(await documentationRestoreWouldChange(tx, ref, entry)).toBe(false);
+              expect(await restoreDocumentation(tx, ref, entry)).toBe(false);
+            }
+            expect(await updateCount(tx)).toBe(1);
+            await expectWriterOff(tx);
+          }),
+        );
+      });
+    }
+
+    it(`predicts legacy ${kind} restore writes from entry presence and deep equality`, async () => {
+      const f = await fixture();
+      const ref = f[kind];
+      // An unbootstrapped placeholder must not make its mirror authoritative.
+      await bootstrap(ref, "Unused placeholder mirror", { state: null });
+      await locked(f, (tx) =>
+        guarded(tx, async () => {
+          const cases: Array<{ entry: PreviousMetadataEntry | undefined; changed: boolean }> = [
+            { entry: undefined, changed: false },
+            { entry: { present: false }, changed: false },
+            { entry: { present: true, value: null }, changed: true },
+            { entry: { present: true, value: null }, changed: false },
+            { entry: { present: true, value: { a: 1, b: [2] } }, changed: true },
+            { entry: { present: true, value: { b: [2], a: 1 } }, changed: false },
+            { entry: { present: true, value: "Legacy notes" }, changed: true },
+            { entry: { present: true, value: "Legacy notes" }, changed: false },
+            { entry: undefined, changed: false },
+            { entry: { present: false }, changed: true },
+            { entry: { present: false }, changed: false },
+          ];
+          for (const { entry, changed } of cases) {
+            const count = await updateCount(tx);
+            const before = await metadata(tx, ref);
+            expect(await documentationRestoreWouldChange(tx, ref, entry)).toBe(changed);
+            expect(await updateCount(tx)).toBe(count);
+            expect(await metadata(tx, ref)).toEqual(before);
+            expect(await restoreDocumentation(tx, ref, entry)).toBe(changed);
+            expect(await updateCount(tx)).toBe(count + Number(changed));
+          }
+          await expectWriterOff(tx);
+        }),
+      );
+    });
+
     it(`fails closed for a ${kind} workspace mismatch and rolls back caller writes`, async () => {
       const f = await fixture();
       const ref = f[kind];
@@ -289,6 +355,7 @@ describe("documentation persistence", () => {
       const actions = [
         (tx: Transaction) => writeDocumentation(tx, ref, "Private replacement"),
         (tx: Transaction) => restoreDocumentation(tx, ref, undefined),
+        (tx: Transaction) => documentationRestoreWouldChange(tx, ref, undefined),
         (tx: Transaction) => reprojectMirror(tx, ref),
         (tx: Transaction) => isBootstrapped(tx, ref),
         (tx: Transaction) => snapshotDocumentation(tx, [ref]),
@@ -343,6 +410,8 @@ describe("documentation persistence", () => {
         "Documentation owner not found",
       );
       await locked(f, async (tx) => {
+        expect(await documentationRestoreWouldChange(tx, ref, undefined)).toBe(false);
+        expect(await documentationRestoreWouldChange(tx, ref, { present: true, value: "Missing" })).toBe(false);
         expect(await restoreDocumentation(tx, ref, { present: true, value: "Missing" })).toBe(false);
         expect(await reprojectMirror(tx, ref)).toBe(false);
         expect(await isBootstrapped(tx, ref)).toBe(false);

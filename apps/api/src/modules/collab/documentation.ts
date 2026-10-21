@@ -112,6 +112,22 @@ export async function writeDocumentation(
   return { previous: current.previous, changed: await applyEntry(tx, ref, current.previous, entry) };
 }
 
+/**
+ * Whether restoreDocumentation(tx, ref, entry) would write. Plain unlocked read (safe for the undo walk; no share-class lock).
+ * Bootstrapped → owner projection differs from the mirror (entry ignored). Not bootstrapped → entry defined and differs from the owner's current state.
+ * Owner missing → false.
+ */
+export async function documentationRestoreWouldChange(
+  tx: Transaction,
+  ref: DocumentRef,
+  entry: PreviousMetadataEntry | undefined,
+): Promise<boolean> {
+  const current = await readDocument(tx, ref, false);
+  if (!current) return false;
+  const target = current.document?.bootstrapped ? mirrorEntry(current.document.mirror) : entry;
+  return target !== undefined && !isDeepStrictEqual(current.previous, target);
+}
+
 /** Undo/restore under the same locks; collaborative text always comes from its mirror. */
 export async function restoreDocumentation(
   tx: Transaction,

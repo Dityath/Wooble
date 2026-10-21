@@ -1,6 +1,6 @@
 # ADR: Collaboration sync model for documentation
 
-Status: **Accepted** by the maintainer on 2026-10-20 (#16), with the [Amendments](#amendments-2026-10-20) of the same day. Nothing in this document is implemented yet. The work is tracked in #67 (table and single writer), #68 (server bootstrap), #69 (retention and tombstones), #70 (single-instance gate), #71 (legacy `PATCH` gate), #72 (sync route), #35 (co-editing and presence), #73 (Markdown export) and #74 (Markdown import), with #37 for release evidence.
+Status: **Accepted** by the maintainer on 2026-10-20 (#16), with the [Amendments](#amendments-2026-10-20) of the same day. The table and single writer (#67) are implemented on this branch; sync and bootstrap remain disabled, and the rest is not implemented. The work is tracked in #67 (table and single writer), #68 (server bootstrap), #69 (retention and tombstones), #70 (single-instance gate), #71 (legacy `PATCH` gate), #72 (sync route), #35 (co-editing and presence), #73 (Markdown export) and #74 (Markdown import), with #37 for release evidence.
 
 **Review status.** On 2026-10-13 an independent documentation review (code, architecture, security, and persistence/query perspectives) was run on the draft ADR branch `prompt-1/4-collaboration-roadmap`. Round-1 findings were incorporated into this document. The maintainer answered the open questions and accepted the ADR on 2026-10-20.
 
