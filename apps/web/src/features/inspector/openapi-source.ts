@@ -15,14 +15,7 @@ export const methods = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 export function parseOpenApi(value: string): { title: string; version: string; operations: Operation[] } | null {
   try {
     const data = (value.trim().startsWith("{") ? JSON.parse(value) : parseYaml(value)) as Record<string, unknown>;
-    if (
-      !data ||
-      typeof data !== "object" ||
-      typeof data.openapi !== "string" ||
-      typeof data.paths !== "object" ||
-      !data.paths
-    )
-      return null;
+    if (!data || typeof data !== "object" || typeof data.openapi !== "string" || !isPathItem(data.paths)) return null;
     const info = data.info as Record<string, unknown> | undefined;
     const operations: Operation[] = [];
     for (const [path, pathItem] of Object.entries(data.paths)) {
@@ -38,9 +31,9 @@ export function parseOpenApi(value: string): { title: string; version: string; o
           summary: String((operation as Record<string, unknown>).summary ?? ""),
           description: String((operation as Record<string, unknown>).description ?? ""),
           parameters: Array.isArray((operation as Record<string, unknown>).parameters)
-            ? ((operation as Record<string, unknown>).parameters as Record<string, unknown>[]).map(
-                (parameter) => `${parameter.name ?? "Parameter"} · ${parameter.in ?? "query"}`,
-              )
+            ? ((operation as Record<string, unknown>).parameters as unknown[])
+                .filter(isPathItem)
+                .map((parameter) => `${parameter.name ?? "Parameter"} · ${parameter.in ?? "query"}`)
             : [],
           responses: Object.entries(
             ((operation as Record<string, unknown>).responses ?? {}) as Record<string, { description?: string }>,

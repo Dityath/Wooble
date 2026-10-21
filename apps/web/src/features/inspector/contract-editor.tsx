@@ -3,6 +3,9 @@ import { FileUp, Plus, Trash2 } from "lucide-react";
 import { Button } from "../../components/ui";
 import { generateOpenApi, methods, type Operation, parseOpenApi } from "./openapi-source";
 
+const unreadableSourceError =
+  "The source could not be read as OpenAPI, so the visual editor cannot save it. Fix it in the source editor.";
+
 export function ContractPreview({ value, kind }: { value: string; kind: string }) {
   const parsed = kind === "rest" ? parseOpenApi(value) : null;
   if (!parsed) return <pre className="contract-raw-preview">{value || "No contract yet."}</pre>;
@@ -63,6 +66,7 @@ export function ContractEditor({
   const [error, setError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const parsed = useMemo(() => (rest ? parseOpenApi(draft) : null), [draft, rest]);
+  const visualError = tab === "gui" && draft.trim() && !parsed ? unreadableSourceError : "";
   const [title, setTitle] = useState(parsed?.title ?? "API");
   const [version, setVersion] = useState(parsed?.version ?? "1.0.0");
   const [operations, setOperations] = useState<Operation[]>(parsed?.operations ?? []);
@@ -71,6 +75,7 @@ export function ContractEditor({
     previousValue.current = value;
   }, [value]);
   const showGui = () => {
+    setError("");
     const next = parseOpenApi(draft);
     if (next) {
       setTitle(next.title);
@@ -254,7 +259,12 @@ export function ContractEditor({
             <Button
               size="sm"
               disabled={saving}
-              onClick={() => void save(() => generateOpenApi(title, version, operations, draft))}
+              onClick={() =>
+                void save(() => {
+                  if (draft.trim() && !parseOpenApi(draft)) throw new Error(unreadableSourceError);
+                  return generateOpenApi(title, version, operations, draft);
+                })
+              }
             >
               {saving ? "Saving…" : "Save contract"}
             </Button>
@@ -264,9 +274,9 @@ export function ContractEditor({
           </p>
         </div>
       )}
-      {error && (
+      {(visualError || error) && (
         <p className="form-error" role="alert">
-          {error}
+          {visualError || error}
         </p>
       )}
     </section>

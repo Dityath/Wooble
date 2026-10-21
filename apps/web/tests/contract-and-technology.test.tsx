@@ -121,6 +121,42 @@ describe("contract editor", () => {
     });
   }
 
+  for (const source of [
+    '{ "openapi": "3.1.0", "paths": "invalid" }',
+    '{ "openapi": "3.1.0", "paths": [] }',
+    "openapi: 3.1.0\npaths: invalid",
+    "openapi: 3.1.0\npaths: [",
+  ]) {
+    for (const fromDraft of [false, true]) {
+      it(`refuses unreadable ${fromDraft ? "draft" : "initial"} source: ${source}`, async () => {
+        const onSave = mock(async (_value: string) => {});
+        const { user } = renderWithQuery(
+          <ContractEditor value={fromDraft ? ordersApi : source} kind="rest" onSave={onSave} />,
+        );
+        if (fromDraft) {
+          await user.click(screen.getByRole("tab", { name: "Visual editor" }));
+          await user.click(screen.getByRole("tab", { name: "Source" }));
+          fireEvent.change(screen.getByLabelText("Contract source"), { target: { value: source } });
+        }
+        await user.click(screen.getByRole("tab", { name: "Visual editor" }));
+        const message =
+          "The source could not be read as OpenAPI, so the visual editor cannot save it. Fix it in the source editor.";
+        expect(screen.getByRole("alert").textContent).toBe(message);
+        await user.click(screen.getByRole("button", { name: "Save contract" }));
+        expect(screen.getByRole("alert").textContent).toBe(message);
+        expect(onSave).not.toHaveBeenCalled();
+        await user.click(screen.getByRole("tab", { name: "Source" }));
+        expect(screen.getByLabelText<HTMLTextAreaElement>("Contract source").value).toBe(source);
+        fireEvent.change(screen.getByLabelText("Contract source"), { target: { value: ordersApi } });
+        await user.click(screen.getByRole("tab", { name: "Visual editor" }));
+        expect(screen.queryByRole("alert")).toBeNull();
+        await user.click(screen.getByRole("button", { name: "Save contract" }));
+        await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+        expect(JSON.parse(onSave.mock.calls[0][0])).toEqual(JSON.parse(ordersApi));
+      });
+    }
+  }
+
   it("starts a visual contract from an empty document", async () => {
     const onSave = mock(async (_value: string) => {});
     const { user } = renderWithQuery(<ContractEditor value="" kind="rest" onSave={onSave} />);

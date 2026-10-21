@@ -90,6 +90,29 @@ for (const format of ["JSON", "YAML"]) {
       }
     });
 
+    it("skips malformed parameters for display and preserves them when saving a summary", async () => {
+      const document = structuredClone(original);
+      document.paths[orderPath].get.parameters = [null, "invalid", 42, false, [], { name: "verbose", in: "query" }];
+      const input = format === "JSON" ? JSON.stringify(document) : stringifyYaml(document);
+      const operations = fixtureOperations(input);
+      expect(operations).toHaveLength(3);
+      expect(operations.find((operation) => operation.method === "GET")?.parameters).toEqual(["verbose · query"]);
+      const onSave = mock(async (_value: string) => {});
+      const { user } = renderWithQuery(createElement(ContractEditor, { value: input, kind: "rest", onSave }));
+      await user.click(screen.getByRole("tab", { name: "Visual editor" }));
+      for (const [index, operation] of operations.entries()) {
+        expect(screen.getByLabelText<HTMLInputElement>(`Path ${index + 1}`).value).toBe(operation.path);
+      }
+      const index = operations.findIndex((operation) => operation.method === "GET");
+      await user.clear(screen.getByLabelText(`Summary ${index + 1}`));
+      await user.type(screen.getByLabelText(`Summary ${index + 1}`), "Updated summary");
+      await user.click(screen.getByRole("button", { name: "Save contract" }));
+      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+      const expected = structuredClone(document);
+      expected.paths[orderPath].get.summary = "Updated summary";
+      expect(JSON.parse(onSave.mock.calls[0][0])).toEqual(expected);
+    });
+
     it("hides malformed operations and preserves them through unrelated edits and deletion", () => {
       const document = {
         openapi: "3.1.0",
