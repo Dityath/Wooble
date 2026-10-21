@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import {
   canvases,
@@ -11,6 +12,15 @@ import {
 import type { ConnectionPath, ConnectionType, EntityMetadata, EntityType } from "@wooble/domain";
 import { canvasRole, objectAccess, type Actor } from "../../lib/auth";
 import { postgresErrorCode } from "../../lib/http-error";
+import {
+  DOCUMENTATION_KEY,
+  DOCUMENTATION_SNAPSHOT_KEY,
+  type DocumentRef,
+  documentationUndoEntry,
+  isBootstrapped,
+  restoreDocumentation,
+  withoutDocumentation,
+} from "../collab/documentation";
 import { CanvasLockContention } from "./activity";
 import { isUpdateEventMetadataV2, type PreviousMetadataEntry } from "./event-metadata";
 import { isExternalMetadataKey, listNonReversibleActions, restoreDeleteHooks, type Transaction } from "./undo-registry";
@@ -458,7 +468,8 @@ async function affectedObjectsFor(tx: Transaction, event: CanvasEventRow): Promi
 
 /**
  * Fields and "metadata.<key>" entries a version 2 update touches. Externally
- * managed metadata keys are owned by another subsystem and never count.
+ * managed metadata keys are owned by another subsystem. Documentation still
+ * counts for conflicts because canvas undo delegates its legacy restoration.
  */
 function touchedKeys(metadata: Record<string, unknown>): Set<string> {
   const touched = new Set<string>();
@@ -466,6 +477,7 @@ function touchedKeys(metadata: Record<string, unknown>): Set<string> {
   for (const field of fields) if (typeof field === "string" && field !== "metadata") touched.add(field);
   const previousMetadata = (metadata.previousMetadata ?? {}) as Record<string, unknown>;
   for (const key of Object.keys(previousMetadata)) if (!isExternalMetadataKey(key)) touched.add(`metadata.${key}`);
+  if (documentationUndoEntry(metadata) !== undefined) touched.add(`metadata.${DOCUMENTATION_KEY}`);
   return touched;
 }
 
@@ -537,9 +549,12 @@ async function applyUndo(tx: Transaction, event: CanvasEventRow, actor: Actor): 
       return deleteConnection(tx, event.canvasId, requireTargetId(event));
     case "entity.updated": {
       const entityId = requireTargetId(event);
+      const ref: DocumentRef = { kind: "entity", id: entityId };
+      const entry = documentationUndoEntry(metadata);
       // No-op candidates must stay lock-free (see the lock order on applyNextUndo): decide on an unlocked read.
       const [seen] = await tx.select().from(entities).where(eq(entities.id, entityId)).limit(1);
-      if (!seen || !entityRestore(seen, metadata)) return false;
+      if (!seen || (!entityRestore(seen, metadata) && !(await documentationWouldChange(tx, ref, seen.metadata, entry))))
+        return false;
       // A write is needed. Lock order: canvas row(s) first (the route holds the requested canvas), then this shared
       // entity row, the same as PATCH /api/entities/:id. Held to commit so the read-modify-write cannot lose a
       // concurrent undo or edit that reached the entity through another canvas; taken FOR UPDATE up front (never
@@ -550,11 +565,15 @@ async function applyUndo(tx: Transaction, event: CanvasEventRow, actor: Actor): 
       if (!(await undoAuthorized(tx, actor, event))) return "refused";
       const plan = entityRestore(current, metadata);
       // Became a no-op while waiting for the lock: nothing to write.
-      if (!plan) return false;
+      if (!plan && !(await documentationWouldChange(tx, ref, current.metadata, entry))) return false;
       await tx
         .update(entities)
-        .set({ ...plan.next, metadata: plan.nextMetadata as EntityMetadata, updatedAt: new Date() })
+        .set({
+          ...(plan ? { ...plan.next, metadata: plan.nextMetadata as EntityMetadata } : {}),
+          updatedAt: new Date(),
+        })
         .where(eq(entities.id, entityId));
+      if (entry !== undefined || (await isBootstrapped(tx, ref))) await restoreDocumentation(tx, ref, entry);
       return true;
     }
     case "connection.updated":
@@ -591,7 +610,7 @@ async function applyUndo(tx: Transaction, event: CanvasEventRow, actor: Actor): 
     }
     case "connection.deleted": {
       const connection = snapshotValue<ConnectionSnapshot | undefined>(metadata, "connection");
-      const restored = await restoreConnection(tx, event.canvasId, connection);
+      const restored = await restoreConnection(tx, event.canvasId, connection, metadata[DOCUMENTATION_SNAPSHOT_KEY]);
       if (restored && connection)
         await restoreDeleteHooks(tx, { kind: "connection", ids: [connection.id] }, metadata.hooks);
       return restored;
@@ -652,6 +671,33 @@ function autoNeatPrevious(metadata: Record<string, unknown>): {
 
 function snapshotValue<T>(metadata: Record<string, unknown>, field: string): T {
   return (metadata[field] ?? undefined) as T;
+}
+
+/** No-op checks must read bootstrap state without locking during the undo walk. */
+async function documentationWouldChange(
+  tx: Transaction,
+  ref: DocumentRef,
+  current: Record<string, unknown>,
+  entry: PreviousMetadataEntry | undefined,
+): Promise<boolean> {
+  if (entry === undefined || (await isBootstrapped(tx, ref))) return false;
+  const previous: PreviousMetadataEntry = Object.hasOwn(current, DOCUMENTATION_KEY)
+    ? { present: true, value: current[DOCUMENTATION_KEY] }
+    : { present: false };
+  return !isDeepStrictEqual(previous, entry);
+}
+
+/** New delete sections take precedence over documentation embedded in historical row snapshots. */
+function deletedDocumentationEntry(
+  section: unknown,
+  ref: DocumentRef,
+  metadata: Record<string, unknown>,
+): PreviousMetadataEntry | undefined {
+  const entries = section as Record<string, PreviousMetadataEntry> | undefined;
+  return (
+    entries?.[`${ref.kind}:${ref.id}`] ??
+    (Object.hasOwn(metadata, DOCUMENTATION_KEY) ? { present: true, value: metadata[DOCUMENTATION_KEY] } : undefined)
+  );
 }
 
 function previousField<T>(metadata: Record<string, unknown>, field: string, fallback: T): T {
@@ -841,9 +887,14 @@ async function restoreConnection(
   tx: Transaction,
   canvasId: string,
   connection: ConnectionSnapshot | undefined,
+  documentation: unknown,
 ): Promise<boolean> {
   if (!connection) return false;
-  await tx.insert(connections).values(connection).onConflictDoNothing();
+  const inserted = await tx
+    .insert(connections)
+    .values({ ...connection, metadata: withoutDocumentation(connection.metadata) })
+    .onConflictDoNothing()
+    .returning({ id: connections.id });
   await tx
     .insert(canvasConnections)
     .values({ canvasId, connectionId: connection.id, bend: connection.bend })
@@ -851,6 +902,10 @@ async function restoreConnection(
       target: [canvasConnections.canvasId, canvasConnections.connectionId],
       set: { bend: connection.bend },
     });
+  if (inserted.length) {
+    const ref: DocumentRef = { kind: "connection", id: connection.id };
+    await restoreDocumentation(tx, ref, deletedDocumentationEntry(documentation, ref, connection.metadata));
+  }
   await touchCanvas(tx, canvasId);
   return true;
 }
@@ -864,12 +919,35 @@ async function restoreEntitySubtree(
   const connectionRows = Array.isArray(snapshot.connections) ? (snapshot.connections as ConnectionSnapshot[]) : [];
   const placements = Array.isArray(snapshot.placements) ? (snapshot.placements as PlacementSnapshot[]) : [];
   if (!entityRows.length && !connectionRows.length && !placements.length) return false;
-  if (entityRows.length) await tx.insert(entities).values(entityRows).onConflictDoNothing();
+  const restoredOwners: Array<{ ref: DocumentRef; metadata: Record<string, unknown> }> = [];
+  if (entityRows.length) {
+    const inserted = await tx
+      .insert(entities)
+      .values(entityRows.map((entity) => ({ ...entity, metadata: withoutDocumentation(entity.metadata) })))
+      .onConflictDoNothing()
+      .returning({ id: entities.id });
+    const insertedIds = new Set(inserted.map((row) => row.id));
+    for (const entity of entityRows) {
+      if (insertedIds.has(entity.id))
+        restoredOwners.push({ ref: { kind: "entity", id: entity.id }, metadata: entity.metadata });
+    }
+  }
   if (connectionRows.length) {
-    await tx
+    const inserted = await tx
       .insert(connections)
-      .values(connectionRows.map(({ bend: _bend, ...connection }) => connection))
-      .onConflictDoNothing();
+      .values(
+        connectionRows.map(({ bend: _bend, ...connection }) => ({
+          ...connection,
+          metadata: withoutDocumentation(connection.metadata),
+        })),
+      )
+      .onConflictDoNothing()
+      .returning({ id: connections.id });
+    const insertedIds = new Set(inserted.map((row) => row.id));
+    for (const connection of connectionRows) {
+      if (insertedIds.has(connection.id))
+        restoredOwners.push({ ref: { kind: "connection", id: connection.id }, metadata: connection.metadata });
+    }
     for (const connection of connectionRows) {
       await tx
         .insert(canvasConnections)
@@ -881,6 +959,9 @@ async function restoreEntitySubtree(
     }
   }
   await restorePlacements(tx, canvasId, placements);
+  for (const { ref, metadata } of restoredOwners) {
+    await restoreDocumentation(tx, ref, deletedDocumentationEntry(snapshot[DOCUMENTATION_SNAPSHOT_KEY], ref, metadata));
+  }
   await touchCanvas(tx, canvasId);
   return true;
 }
@@ -911,17 +992,23 @@ async function undoConnectionUpdated(
   }
   // Same discipline as entity.updated: decide no-ops on an unlocked read, then take the shared connection row FOR
   // UPDATE (canvas row first, held to commit; matches PATCH /api/connections/:id) only for a real write.
+  const ref: DocumentRef = { kind: "connection", id: connectionId };
+  const entry = documentationUndoEntry(metadata);
   const [seen] = await tx.select().from(connections).where(eq(connections.id, connectionId)).limit(1);
-  if (!seen || !connectionRestore(seen, metadata)) return false;
+  if (!seen || (!connectionRestore(seen, metadata) && !(await documentationWouldChange(tx, ref, seen.metadata, entry))))
+    return false;
   const [current] = await tx.select().from(connections).where(eq(connections.id, connectionId)).for("update").limit(1);
   if (!current) return false;
   if (!(await undoAuthorized(tx, actor, event))) return "refused";
   const plan = connectionRestore(current, metadata);
-  if (!plan) return false;
-  await tx
-    .update(connections)
-    .set({ ...plan.next, metadata: plan.nextMetadata })
-    .where(eq(connections.id, connectionId));
+  if (!plan && !(await documentationWouldChange(tx, ref, current.metadata, entry))) return false;
+  if (plan) {
+    await tx
+      .update(connections)
+      .set({ ...plan.next, metadata: plan.nextMetadata })
+      .where(eq(connections.id, connectionId));
+  }
+  if (entry !== undefined || (await isBootstrapped(tx, ref))) await restoreDocumentation(tx, ref, entry);
   await touchCanvas(tx, canvasId);
   return true;
 }

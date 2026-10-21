@@ -3,6 +3,7 @@ import { beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { eq, sql } from "drizzle-orm";
 import { canvases, collabDocuments, connections, db, entities } from "@wooble/db";
 import { resetLoginAttempts } from "../src/modules/auth/routes";
+import { createApp } from "../src/app";
 import type { PreviousMetadataEntry } from "../src/modules/canvas/event-metadata";
 import { isExternalMetadataKey, type Transaction } from "../src/modules/canvas/undo-registry";
 import {
@@ -400,18 +401,11 @@ describe("documentation history helpers", () => {
     expect(withoutDocumentation({ other: null })).toEqual({ other: null });
   });
 
-  it("registers documentation idempotently without registering at module load", () => {
-    expect(isExternalMetadataKey(DOCUMENTATION_KEY)).toBe(false);
-    const unregister = registerCollabDocumentation();
+  it("registers documentation at app startup and idempotently", () => {
+    createApp();
+    expect(isExternalMetadataKey(DOCUMENTATION_KEY)).toBe(true);
     const unregisterAgain = registerCollabDocumentation();
-    try {
-      expect(isExternalMetadataKey(DOCUMENTATION_KEY)).toBe(true);
-      unregisterAgain();
-      expect(isExternalMetadataKey(DOCUMENTATION_KEY)).toBe(true);
-    } finally {
-      unregisterAgain();
-      unregister();
-    }
-    expect(isExternalMetadataKey(DOCUMENTATION_KEY)).toBe(false);
+    unregisterAgain();
+    expect(isExternalMetadataKey(DOCUMENTATION_KEY)).toBe(true);
   });
 });

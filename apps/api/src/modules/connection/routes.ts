@@ -5,6 +5,7 @@ import { badRequest, notFound } from "../../lib/http-error";
 import type { Api } from "../../lib/auth";
 import { canvasIdsForConnection, recordCanvasEvent, withCanvasLocks } from "../canvas/activity";
 import { previousMetadataEntries, type UpdateEventMetadataV2 } from "../canvas/event-metadata";
+import { DOCUMENTATION_KEY, DOCUMENTATION_UNDO_KEY, writeDocumentation } from "../collab/documentation";
 
 export function connectionRoutes(app: Api) {
   app.get("/api/connections/:connectionId", async (context) => {
@@ -51,10 +52,11 @@ export function connectionRoutes(app: Api) {
         const canvasIds = await currentCanvasIds();
         const metadata = { ...current.metadata };
         for (const [key, value] of Object.entries(body.data.metadata ?? {})) {
+          if (key === DOCUMENTATION_KEY) continue;
           if (value === null || value === "") delete metadata[key as keyof typeof metadata];
           else Object.assign(metadata, { [key]: value });
         }
-        const [updated] = await tx
+        let [updated] = await tx
           .update(connections)
           .set({
             type: body.data.type ?? current.type,
@@ -64,6 +66,18 @@ export function connectionRoutes(app: Api) {
           })
           .where(eq(connections.id, params.data.connectionId))
           .returning();
+        const documentationUndo = Object.hasOwn(body.data.metadata ?? {}, DOCUMENTATION_KEY)
+          ? (
+              await writeDocumentation(
+                tx,
+                { kind: "connection", id: current.id },
+                body.data.metadata?.documentation ?? null,
+              )
+            ).previous
+          : undefined;
+        if (documentationUndo) {
+          [updated] = await tx.select().from(connections).where(eq(connections.id, current.id));
+        }
         const previous: Record<string, unknown> = {};
         if (body.data.type !== undefined) previous.type = current.type;
         if (body.data.label !== undefined) previous.label = current.label;
@@ -72,7 +86,11 @@ export function connectionRoutes(app: Api) {
           version: 2,
           fields: Object.keys(body.data),
           previous,
-          previousMetadata: previousMetadataEntries(current.metadata, Object.keys(body.data.metadata ?? {})),
+          previousMetadata: previousMetadataEntries(
+            current.metadata,
+            Object.keys(body.data.metadata ?? {}).filter((key) => key !== DOCUMENTATION_KEY),
+          ),
+          ...(documentationUndo ? { [DOCUMENTATION_UNDO_KEY]: documentationUndo } : {}),
         };
         for (const canvasId of canvasIds) {
           await recordCanvasEvent(tx, {

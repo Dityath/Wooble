@@ -14,6 +14,7 @@ import { workspaceRoutes } from "./modules/workspace/routes";
 import { canvasRoutes } from "./modules/canvas/routes";
 import { entityRoutes } from "./modules/entity/routes";
 import { connectionRoutes } from "./modules/connection/routes";
+import { registerCollabDocumentation } from "./modules/collab/documentation";
 
 const requiredMigrationEntries = migrationJournal.entries.length;
 const requiredMigrationTimestamp = Math.max(...migrationJournal.entries.map((entry) => entry.when));
@@ -68,6 +69,7 @@ function registerErrorHandler(app: Api) {
 }
 
 export function createApp(options: { configure?: (app: Api) => void; liveRecheckMs?: number } = {}): Api {
+  registerCollabDocumentation();
   const app = new Elysia({ strictPath: true, serve: { reusePort: false } }).decorate("actor", null as Actor | null);
   registerErrorHandler(app);
   app.use(corsPlugin());
