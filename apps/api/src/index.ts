@@ -14,9 +14,9 @@ const { pool } = await import("@wooble/db");
 const { startSingleInstanceGate, stopSingleInstanceGate } = await import("./lib/instance-gate");
 
 const app = await createApp();
-await startSingleInstanceGate(pool);
 const port = Number(process.env.API_PORT ?? 3001);
 app.listen({ port, hostname: "0.0.0.0" });
+void startSingleInstanceGate(pool);
 console.log(`API listening at http://0.0.0.0:${port}`);
 
 let shuttingDown = false;
