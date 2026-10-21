@@ -81,6 +81,10 @@ export function ContractEditor({
       setTitle(next.title);
       setVersion(next.version);
       setOperations(next.operations);
+    } else if (!draft.trim()) {
+      setTitle("API");
+      setVersion("1.0.0");
+      setOperations([]);
     }
     setTab("gui");
   };
@@ -93,7 +97,8 @@ export function ContractEditor({
       setDraft(body);
       setTab("preview");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not save contract");
+      const message = cause instanceof Error ? cause.message : "Could not save contract";
+      if (message !== unreadableSourceError) setError(message);
     } finally {
       setSaving(false);
     }

@@ -174,6 +174,45 @@ describe("contract editor", () => {
     });
   });
 
+  it("resets visual fields after clearing a populated source", async () => {
+    const onSave = mock(async (_value: string) => {});
+    const { user } = renderWithQuery(<ContractEditor value={ordersApi} kind="rest" onSave={onSave} />);
+    await user.click(screen.getByRole("tab", { name: "Source" }));
+    await user.clear(screen.getByLabelText("Contract source"));
+    await user.click(screen.getByRole("tab", { name: "Visual editor" }));
+
+    expect(screen.getByLabelText<HTMLInputElement>("Title").value).toBe("API");
+    expect(screen.getByLabelText<HTMLInputElement>("Version").value).toBe("1.0.0");
+    expect(screen.queryByLabelText("Method 1")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Save contract" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(onSave.mock.calls[0][0])).toEqual({
+      openapi: "3.1.0",
+      info: { title: "API", version: "1.0.0" },
+      paths: {},
+    });
+  });
+
+  it("clears a rejected unreadable-source alert when the source is fixed", async () => {
+    const onSave = mock(async (_value: string) => {});
+    const { user } = renderWithQuery(<ContractEditor value={ordersApi} kind="rest" onSave={onSave} />);
+    await user.click(screen.getByRole("tab", { name: "Source" }));
+    await user.clear(screen.getByLabelText("Contract source"));
+    fireEvent.change(screen.getByLabelText("Contract source"), { target: { value: "not: [valid" } });
+    await user.click(screen.getByRole("tab", { name: "Visual editor" }));
+    await user.click(screen.getByRole("button", { name: "Save contract" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "The source could not be read as OpenAPI, so the visual editor cannot save it. Fix it in the source editor.",
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Source" }));
+    await user.clear(screen.getByLabelText("Contract source"));
+    fireEvent.change(screen.getByLabelText("Contract source"), { target: { value: ordersApi } });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
   it("edits the source, warns about invalid OpenAPI, and discards with Escape", async () => {
     const onSave = mock(async (_value: string) => {});
     const { user } = renderWithQuery(<ContractEditor value={ordersApi} kind="rest" onSave={onSave} />);
