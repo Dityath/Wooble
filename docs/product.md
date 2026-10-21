@@ -18,6 +18,23 @@ An architecture entity can appear on more than one canvas. Its identity and meta
 
 The repository contains workspace and canvas access control, password accounts, invitation links, link-shared read-only canvases, live canvas presence, a canvas activity log with undo, architecture editing, technology metadata, basic manual contract fields, database schema editing, and a block documentation editor for nodes and connections. In the documentation editor, typing `/` opens a keyboard-operable menu that inserts headings, lists, task lists, quotes, code blocks, dividers, and tables; pasted Markdown is converted into blocks; and changes save automatically shortly after typing stops, when the editor loses focus, or when the dialog closes. The [interim storage decision](decisions/documentation-storage.md) keeps Markdown first and defers Yjs collaboration. Documentation is still stored as Markdown, which the entity page and read-only viewers display as before. PostgreSQL stores the model and canvas layout. The [README](../README.md) explains the current development setup; [self-hosting](self-hosting.md) covers Docker and Bun.
 
+## Documentation Markdown
+
+The block editor supports these Markdown constructs:
+
+- Paragraphs and headings 1–6.
+- Bold, italic, strikethrough, inline code, and links to `http`, `https`, `mailto`, or relative destinations.
+- Nested bullet, ordered, and task lists.
+- Blockquotes, fenced code blocks with an optional language, and horizontal rules.
+- GFM tables with inline formatting and column alignment.
+- Hard line breaks, including `<br>`.
+
+The block editor does not support these constructs:
+
+- Images, footnotes, YAML front matter, and raw HTML (other than the supported `<br>` hard break).
+
+Documents containing these constructs open in Markdown source mode and are kept verbatim; pasting them into block editing shows a warning to switch to Markdown source. Export and copy return the stored Markdown unchanged, including unsupported content.
+
 ## Areas to improve
 
 The initial release sequence, target dates, and criteria of done for the first four directions are in the [product roadmap](roadmap.md). Dates are revisable targets, and these entries do not claim the features already exist:

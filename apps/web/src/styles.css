@@ -897,3 +897,6 @@ code, kbd, .sidebar-shortcut > span:first-child, .flow-watermark, .architecture-
 .slash-menu-description { overflow: hidden; color: var(--wooble-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .slash-menu-empty { margin: 0; padding: 10px 8px; color: var(--wooble-muted); font-size: 12px; }
 @media (forced-colors: active) { .slash-menu-option[aria-selected="true"] { outline: 2px solid Highlight; outline-offset: -2px; } }
+.documentation-export-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
+.documentation-export-actions [role="status"] { flex-basis: 100%; font-size: 12px; color: var(--muted-foreground); }
+.documentation-export-header { padding: 12px 12px 0; }

@@ -195,6 +195,40 @@ describe("documentation Markdown", () => {
     expect(saved).toBe(`\n${table}\n`);
   });
 
+  it("round-trips aligned tables with inline formatting in cells", () => {
+    const markdown =
+      "\n| **Service** | *Owner* | Docs |\n| :--- | :---: | ---: |\n| Gateway | Platform | [Runbook](https://example.test/runbook) |\n";
+    const { blocks, saved } = roundTrip(markdown);
+    expect(blocks[0]).toMatchObject({
+      type: "table",
+      content: [
+        { type: "tableRow", content: [{ type: "tableHeader" }, { type: "tableHeader" }, { type: "tableHeader" }] },
+        { type: "tableRow", content: [{ type: "tableCell" }, { type: "tableCell" }, { type: "tableCell" }] },
+      ],
+    });
+    expect(blocks[0].content?.[0].content?.map((cell) => cell.attrs?.align)).toEqual(["left", "center", "right"]);
+    expect(blocks[0].content?.[0].content?.[0].content?.[0].content?.[0].marks).toEqual([{ type: "bold" }]);
+    expect(blocks[0].content?.[1].content?.[2].content?.[0].content?.[0].marks).toMatchObject([
+      { type: "link", attrs: { href: "https://example.test/runbook" } },
+    ]);
+    expect(saved).toBe(markdown);
+  });
+
+  it("round-trips Markdown hard line breaks", () => {
+    const markdown = "First  \nsecond  \nthird  \nfourth";
+    const { blocks, saved } = roundTrip(markdown);
+    expect(blocks[0].content?.map((node) => node.type)).toEqual([
+      "text",
+      "hardBreak",
+      "text",
+      "hardBreak",
+      "text",
+      "hardBreak",
+      "text",
+    ]);
+    expect(saved).toBe(markdown);
+  });
+
   it("does not inflate a table with one long cell", () => {
     const table = [
       "| Name | Notes |",

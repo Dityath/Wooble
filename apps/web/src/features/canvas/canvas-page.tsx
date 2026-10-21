@@ -1,3 +1,4 @@
+import { DocumentationExportActions } from "../inspector/documentation/export-actions";
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -370,6 +371,10 @@ function CanvasViewer({
               // Connections have no read-only details page, so their documentation is shown here.
               <section className="viewer-documentation" aria-label="Connection documentation">
                 <h3>Documentation</h3>
+                <DocumentationExportActions
+                  markdown={selectedConnection.metadata.documentation ?? ""}
+                  name={connectionTitle(selectedConnection)}
+                />
                 {selectedConnection.metadata.documentation ? (
                   <MarkdownContent value={selectedConnection.metadata.documentation} />
                 ) : (

@@ -131,7 +131,12 @@ function expectReadOnlyRequests() {
 /** Asserts the documentation region is a reader surface: rendered markdown, no editing control at all. */
 function expectReadOnlyDocumentation(documentation: HTMLElement) {
   expect(within(documentation).queryByRole("textbox")).toBeNull();
-  expect(within(documentation).queryAllByRole("button")).toEqual([]);
+  expect(
+    within(documentation)
+      .getAllByRole("button")
+      .map((button) => button.getAttribute("aria-label") ?? button.textContent?.trim()),
+  ).toEqual(["Download Markdown", "Copy Markdown"]);
+  expect(within(documentation).queryByRole("button", { name: /save|edit/i })).toBeNull();
   expect(documentation.querySelector("[contenteditable]")).toBeNull();
   expect(documentation.querySelector("textarea")).toBeNull();
   expect(documentation.querySelector("input")).toBeNull();
@@ -181,7 +186,12 @@ describe("viewer canvas", () => {
     expect(within(documentation).getByRole("heading", { name: "Retry policy" })).toBeTruthy();
     expect(within(documentation).getByText("twice", { selector: "strong" })).toBeTruthy();
     expect(within(documentation).queryByRole("textbox")).toBeNull();
-    expect(within(documentation).queryByRole("button")).toBeNull();
+    expect(
+      within(documentation)
+        .getAllByRole("button")
+        .map((button) => button.getAttribute("aria-label") ?? button.textContent?.trim()),
+    ).toEqual(["Download Markdown", "Copy Markdown"]);
+    expect(within(documentation).queryByRole("button", { name: /save|edit/i })).toBeNull();
   });
 
   it("says when a connection has no documentation yet", async () => {
