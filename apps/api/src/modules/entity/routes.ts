@@ -6,6 +6,7 @@ import { badRequest, notFound } from "../../lib/http-error";
 import type { Api } from "../../lib/auth";
 import { canvasIdsForEntity, recordCanvasEvent, withCanvasLocks } from "../canvas/activity";
 import { previousMetadataEntries, type UpdateEventMetadataV2 } from "../canvas/event-metadata";
+import { DOCUMENTATION_KEY, DOCUMENTATION_UNDO_KEY, writeDocumentation } from "../collab/documentation";
 
 export function entityRoutes(app: Api) {
   app.get("/api/entities/:entityId", async (context) => {
@@ -36,10 +37,11 @@ export function entityRoutes(app: Api) {
           return { kind: "invalid" as const };
         const metadata: Record<string, unknown> = { ...current.metadata };
         for (const [key, value] of Object.entries(body.data.metadata ?? {})) {
+          if (key === DOCUMENTATION_KEY) continue;
           if (value === null || value === "") delete metadata[key];
           else metadata[key] = value;
         }
-        const [updated] = await tx
+        let [updated] = await tx
           .update(entities)
           .set({
             type: body.data.type ?? current.type,
@@ -50,6 +52,18 @@ export function entityRoutes(app: Api) {
           })
           .where(eq(entities.id, params.data.entityId))
           .returning();
+        const documentationUndo = Object.hasOwn(body.data.metadata ?? {}, DOCUMENTATION_KEY)
+          ? (
+              await writeDocumentation(
+                tx,
+                { kind: "entity", id: current.id },
+                body.data.metadata?.documentation ?? null,
+              )
+            ).previous
+          : undefined;
+        if (documentationUndo) {
+          [updated] = await tx.select().from(entities).where(eq(entities.id, current.id));
+        }
         const previous: Record<string, unknown> = {};
         if (body.data.type !== undefined) previous.type = current.type;
         if (body.data.name !== undefined) previous.name = current.name;
@@ -58,7 +72,11 @@ export function entityRoutes(app: Api) {
           version: 2,
           fields: Object.keys(body.data),
           previous,
-          previousMetadata: previousMetadataEntries(current.metadata, Object.keys(body.data.metadata ?? {})),
+          previousMetadata: previousMetadataEntries(
+            current.metadata,
+            Object.keys(body.data.metadata ?? {}).filter((key) => key !== DOCUMENTATION_KEY),
+          ),
+          ...(documentationUndo ? { [DOCUMENTATION_UNDO_KEY]: documentationUndo } : {}),
         };
         for (const canvasId of canvasIds) {
           await recordCanvasEvent(tx, {

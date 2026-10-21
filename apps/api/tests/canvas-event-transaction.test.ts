@@ -163,8 +163,8 @@ describe("update events carry exact version 2 undo data", () => {
       previousMetadata: {
         language: { present: true, value: "Go" },
         status: { present: false },
-        documentation: { present: false },
       },
+      documentationUndo: { present: false },
     });
 
     await api.request("PATCH", `/api/connections/${connectionId}`, owner.session, {

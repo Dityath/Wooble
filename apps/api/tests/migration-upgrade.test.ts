@@ -91,6 +91,8 @@ describe("database upgrades", () => {
         await migrateDatabase(scratch.url);
 
         expect((await database.execute(snapshot)).rows[0]?.content).toEqual(before);
+        const collabDocuments = await database.execute(sql.raw("SELECT count(*)::int AS count FROM collab_documents"));
+        expect(collabDocuments.rows[0]?.count).toBe(0);
         // Drizzle skips a migration whose journal timestamp is not newer than the last applied one, so check that
         // every migration in the journal actually ran on the upgraded database.
         const applied = await database.execute(

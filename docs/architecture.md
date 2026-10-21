@@ -42,6 +42,14 @@ Events are ordered by `seq`, an identity column on `canvas_events` (migrations `
 
 `entity.updated` and `connection.updated` events write version 2 metadata. `previous` holds only the top-level fields the request named. `previousMetadata` holds one entry per metadata key the request named: `{ "present": false }` when the key did not exist, or `{ "present": true, "value": ... }` when it did, including a `null` value.
 
+### Collaborative documentation storage
+
+Migration `0011` adds `collab_documents`, keyed uniquely by object kind, object id, and field, with a workspace index and cascading workspace foreign key. It reserves nullable binary state up to 2 MiB, a Markdown mirror up to 20,000 characters and its lowercase-hex SHA-256, original Markdown and hash, schema and bootstrap versions, revision, quarantine fields, and `deleted_at`. The table is additive; no rows are created yet.
+
+`apps/api/src/modules/collab/documentation.ts` is the only writer of `metadata.documentation` on entities and connections. Entity and connection PATCHes and canvas undo/restore route writes through it. Writers lock canvas, then owner, then collaboration row; the module checks the document workspace against the owner row and fails closed on mismatch. It registers `documentation` as externally managed metadata. Update events record the previous value under `documentationUndo`, while delete events omit it from row snapshots and keep it in a separate `documentation` section; undo remains compatible with older event formats.
+
+All documents remain non-bootstrapped, so current behavior is unchanged. Once a row has state and a bootstrap version, legacy writes return 409 pending the base-hash path (#71); undo and restore project the mirror instead of restoring old text. Bootstrap (#68), tombstones (#69), base hash (#71), and sync (#72) are not implemented.
+
 ```json
 {
   "version": 2,

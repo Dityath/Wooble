@@ -39,6 +39,7 @@ import {
 import { listCanvasEvents, recordCanvasEvent } from "./activity";
 import { applyNextUndo, retryOnLockConflict } from "./undo";
 import { captureDeleteHooks } from "./undo-registry";
+import { DOCUMENTATION_SNAPSHOT_KEY, snapshotDocumentation, withoutDocumentation } from "../collab/documentation";
 
 const placementColumns = {
   entityId: canvasNodes.entityId,
@@ -604,6 +605,9 @@ export function canvasRoutes(app: Api) {
           and(eq(canvasConnections.canvasId, canvas.id), eq(canvasConnections.connectionId, params.data.connectionId)),
         )
         .limit(1);
+      const documentation = existing
+        ? await snapshotDocumentation(tx, [{ kind: "connection", id: params.data.connectionId }])
+        : {};
       const hooks = existing
         ? await captureDeleteHooks(tx, { kind: "connection", ids: [params.data.connectionId] })
         : {};
@@ -630,10 +634,11 @@ export function canvasRoutes(app: Api) {
         targetName: existing?.connection.label || "Connection",
         metadata: {
           type: existing?.connection.type,
+          ...(Object.keys(documentation).length ? { [DOCUMENTATION_SNAPSHOT_KEY]: documentation } : {}),
           connection: existing
             ? (() => {
                 const { createdAt: _createdAt, ...connection } = existing.connection;
-                return { ...connection, bend: existing.bend };
+                return { ...connection, metadata: withoutDocumentation(connection.metadata), bend: existing.bend };
               })()
             : null,
           ...(Object.keys(hooks).length ? { hooks } : {}),
@@ -700,13 +705,18 @@ export function canvasRoutes(app: Api) {
             .innerJoin(connections, eq(canvasConnections.connectionId, connections.id))
             .where(and(eq(canvasConnections.canvasId, canvas.id), inArray(canvasConnections.connectionId, linkIds)))
         : [];
+      const documentation = await snapshotDocumentation(tx, [
+        ...subtreeEntities.map(({ id }) => ({ kind: "entity" as const, id })),
+        ...linkRows.map(({ connection }) => ({ kind: "connection" as const, id: connection.id })),
+      ]);
       const snapshot = {
-        entities: subtreeEntities,
+        entities: subtreeEntities.map((entity) => ({ ...entity, metadata: withoutDocumentation(entity.metadata) })),
         placements: subtreePlacements,
         connections: linkRows.map(({ connection, bend }) => {
           const { createdAt: _createdAt, ...rest } = connection;
-          return { ...rest, bend };
+          return { ...rest, metadata: withoutDocumentation(rest.metadata), bend };
         }),
+        ...(Object.keys(documentation).length ? { [DOCUMENTATION_SNAPSHOT_KEY]: documentation } : {}),
       };
       // Hooks snapshot their own data before the rows go away.
       const hooks = await captureDeleteHooks(tx, { kind: "entity", ids: subtreeEntities.map((item) => item.id) });
