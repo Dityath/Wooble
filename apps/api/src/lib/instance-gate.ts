@@ -1,6 +1,8 @@
 import type { Client } from "pg";
 
-export type ClaimClient = Pick<Client, "connect" | "query" | "on" | "end">;
+export type ClaimClient = Pick<Client, "connect" | "query" | "on" | "end"> & {
+  connection?: { stream?: { destroy?: () => unknown } };
+};
 
 export interface SingleInstanceClaim {
   readonly held: boolean;
@@ -10,6 +12,7 @@ export interface SingleInstanceClaim {
 type ClaimOptions = {
   key?: readonly [number, number];
   timeoutMs?: number;
+  closeGraceMs?: number;
   log?: (message: string, error?: unknown) => void;
 };
 
@@ -35,11 +38,25 @@ function beginClaim(connect: () => ClaimClient, options: ClaimOptions = {}) {
   const dispose = () => {
     if (!client || disposed) return;
     disposed = true;
+    const destroy = () => {
+      try {
+        client?.connection?.stream?.destroy?.();
+      } catch {
+        // Socket cleanup must not interrupt shutdown.
+      }
+    };
+    // An idle pg connection can wait indefinitely for the peer to close.
+    const closeTimer = setTimeout(destroy, options.closeGraceMs ?? 1_000);
+    closeTimer.unref?.();
     try {
       // Do not wait for the server to acknowledge the disconnect.
-      void client.end().catch(() => {});
+      void client.end().then(
+        () => clearTimeout(closeTimer),
+        () => clearTimeout(closeTimer),
+      );
     } catch {
-      // A disconnected or already released session needs no further cleanup.
+      clearTimeout(closeTimer);
+      destroy();
     }
   };
   const lost = () => {

@@ -215,6 +215,52 @@ function deferred<T>() {
 }
 
 describe("fake client gate", () => {
+  it("force-closes a stalled claim socket exactly once after the grace period", async () => {
+    const { client, releases } = fakeClient(async () => ({ rows: [{ claimed: true }] }));
+    let destroys = 0;
+    client.connection = {
+      stream: {
+        destroy: () => {
+          destroys += 1;
+        },
+      },
+    };
+    client.end = () => {
+      releases.push(true);
+      return new Promise<void>(() => {});
+    };
+    const claim = await claimSingleInstance(() => client, { closeGraceMs: 20 });
+    expect(claim.held).toBe(true);
+    await claim.release();
+    await claim.release();
+    expect(claim.held).toBe(false);
+    expect(destroys).toBe(0);
+    await waitUntil(() => destroys > 0);
+    await claim.release();
+    await Bun.sleep(40);
+    expect(destroys).toBe(1);
+    expect(releases).toEqual([true]);
+  });
+
+  it("does not force-close a claim socket when end settles promptly", async () => {
+    for (const rejects of [false, true]) {
+      const { client } = fakeClient(async () => ({ rows: [{ claimed: true }] }));
+      let destroys = 0;
+      client.connection = {
+        stream: {
+          destroy: () => {
+            destroys += 1;
+          },
+        },
+      };
+      client.end = () => (rejects ? Promise.reject(new Error("Already disconnected")) : Promise.resolve());
+      const claim = await claimSingleInstance(() => client, { closeGraceMs: 20 });
+      await claim.release();
+      await Bun.sleep(40);
+      expect(destroys).toBe(0);
+    }
+  });
+
   it("sanitizes errors with secret messages, stacks, and unknown codes", async () => {
     const error = Object.assign(new Error("postgres://wooble:secret-test-password@db.example.test/wooble"), {
       code: "EWEIRD",
