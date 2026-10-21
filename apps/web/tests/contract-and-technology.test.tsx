@@ -85,7 +85,8 @@ describe("contract editor", () => {
     const saved = JSON.parse(onSave.mock.calls[0][0]);
     expect(saved.info).toEqual({ title: "Orders API", version: "3.0.0" });
     expect(saved.paths["/orders"]).toEqual({
-      put: { responses: { "200": { description: "Successful response" } }, summary: "Replace order" },
+      parameters: [],
+      put: { summary: "Replace order", "x-internal": true },
     });
     expect(saved.paths["/refunds"].get.summary).toBe("Refund order");
     expect(screen.getByRole("tab", { name: "Preview" }).getAttribute("aria-selected")).toBe("true");

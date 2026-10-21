@@ -39,6 +39,7 @@ The initial release sequence, target dates, and criteria of done for the first f
   - A table cell holds text only, as in Markdown: lists, headings, and other blocks cannot be placed in a cell.
 - **Consistent interface:** tighten visual patterns and interaction behavior across the canvas, inspector, dialogs, and supporting pages; the first focused stability and usability pass is planned for `v0.6.0`.
 - **API and protobuf contracts:** go beyond basic manual fields to represent, edit, and inspect contracts properly; consider OpenAPI and protobuf import or synchronization.
+- **Visual OpenAPI editor:** YAML sources are saved as JSON; the format decision is tracked in #39.
 - **Database diagrams:** provide a dedicated view of schemas and relationships, building on the existing schema fields.
 - **External sources:** explore synchronization with databases, repositories, and deployment systems where it helps keep the model accurate.
 
