@@ -1,0 +1,35 @@
+CREATE TABLE "collab_documents" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"workspace_id" uuid NOT NULL,
+	"object_kind" text NOT NULL,
+	"object_id" uuid NOT NULL,
+	"field" text NOT NULL,
+	"state" "bytea",
+	"mirror_markdown" text,
+	"mirror_sha256" text,
+	"original_markdown" text,
+	"original_sha256" text,
+	"schema_version" integer,
+	"bootstrap_version" integer,
+	"revision" bigint DEFAULT 0 NOT NULL,
+	"quarantined_at" timestamp with time zone,
+	"quarantine_reason" text,
+	"deleted_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "collab_documents_identity_key" UNIQUE("object_kind","object_id","field"),
+	CONSTRAINT "collab_documents_object_kind_check" CHECK ("collab_documents"."object_kind" IN ('entity', 'connection')),
+	CONSTRAINT "collab_documents_field_check" CHECK ("collab_documents"."field" IN ('documentation')),
+	CONSTRAINT "collab_documents_state_size_check" CHECK ("collab_documents"."state" IS NULL OR octet_length("collab_documents"."state") <= 2097152),
+	CONSTRAINT "collab_documents_mirror_size_check" CHECK ("collab_documents"."mirror_markdown" IS NULL OR char_length("collab_documents"."mirror_markdown") <= 20000),
+	CONSTRAINT "collab_documents_mirror_sha256_check" CHECK ("collab_documents"."mirror_sha256" IS NULL OR "collab_documents"."mirror_sha256" ~ '^[0-9a-f]{64}$'),
+	CONSTRAINT "collab_documents_original_sha256_check" CHECK ("collab_documents"."original_sha256" IS NULL OR "collab_documents"."original_sha256" ~ '^[0-9a-f]{64}$'),
+	CONSTRAINT "collab_documents_mirror_pair_check" CHECK (("collab_documents"."mirror_markdown" IS NULL) = ("collab_documents"."mirror_sha256" IS NULL)),
+	CONSTRAINT "collab_documents_original_pair_check" CHECK (("collab_documents"."original_markdown" IS NULL) = ("collab_documents"."original_sha256" IS NULL)),
+	CONSTRAINT "collab_documents_bootstrapped_state_check" CHECK ("collab_documents"."state" IS NULL OR ("collab_documents"."bootstrap_version" IS NOT NULL AND "collab_documents"."mirror_markdown" IS NOT NULL)),
+	CONSTRAINT "collab_documents_quarantine_pair_check" CHECK (("collab_documents"."quarantined_at" IS NULL) = ("collab_documents"."quarantine_reason" IS NULL)),
+	CONSTRAINT "collab_documents_revision_check" CHECK ("collab_documents"."revision" >= 0)
+);
+--> statement-breakpoint
+ALTER TABLE "collab_documents" ADD CONSTRAINT "collab_documents_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "collab_documents_workspace_id_idx" ON "collab_documents" USING btree ("workspace_id");

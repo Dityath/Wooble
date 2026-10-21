@@ -5,5 +5,6 @@ export * from "./connections";
 export * from "./canvas-nodes";
 export * from "./canvas-connections";
 export * from "./canvas-events";
+export * from "./collab-documents";
 export * from "./relations";
 export * from "./access";
