@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import type userEvent from "@testing-library/user-event";
 import type { ArchitectureConnection, ConnectionPath } from "@wooble/domain";
@@ -142,6 +142,31 @@ function expectReadOnlyDocumentation(documentation: HTMLElement) {
   expect(documentation.querySelector("input")).toBeNull();
 }
 
+async function expectConnectionExports(actor: ReturnType<typeof userEvent.setup>, documentation: HTMLElement) {
+  const copy = spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+  const create = spyOn(URL, "createObjectURL").mockReturnValue("blob:connection-documentation");
+  const revoke = spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+  let filename = "";
+  const click = spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+    filename = this.download;
+  });
+  try {
+    await actor.click(within(documentation).getByRole("button", { name: "Copy Markdown" }));
+    expect(copy).toHaveBeenCalledWith(richDocumentation);
+    await actor.click(within(documentation).getByRole("button", { name: "Download Markdown" }));
+    expect(click).toHaveBeenCalledTimes(1);
+    expect(filename).toBe("Reads-orders.md");
+    expect(await (create.mock.calls[0][0] as Blob).text()).toBe(richDocumentation);
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith("blob:connection-documentation"));
+    expectReadOnlyRequests();
+  } finally {
+    copy.mockRestore();
+    create.mockRestore();
+    revoke.mockRestore();
+    click.mockRestore();
+  }
+}
+
 /** Clicks the connection edge the way a reader does: focus it from the edge label, then select the line. */
 async function selectConnection(actor: ReturnType<typeof userEvent.setup>) {
   await actor.click(screen.getByRole("button", { name: "Reads orders" }));
@@ -233,7 +258,8 @@ describe("viewer canvas", () => {
     server.on("PATCH /api/connections/:id", failWith(403, "Viewers cannot edit connections"));
     const { user: actor } = await openCanvas("viewer", data);
     await selectConnection(actor);
-    await screen.findByRole("region", { name: "Connection documentation" });
+    const documentation = await screen.findByRole("region", { name: "Connection documentation" });
+    await expectConnectionExports(actor, documentation);
     await actor.click(screen.getByRole("button", { name: "Zen mode" }));
     await actor.click(screen.getByRole("button", { name: "Exit Zen mode" }));
     expectReadOnlyRequests();
@@ -984,6 +1010,8 @@ describe("shared canvas guests", () => {
     expect(within(table).getByRole("columnheader", { name: "Purpose" })).toBeTruthy();
     expect(within(table).getByRole("cell", { name: "GET /orders" })).toBeTruthy();
     expectReadOnlyDocumentation(documentation);
+
+    await expectConnectionExports(actor, documentation);
 
     // A guest must not be able to leave the reader: no editor, no dialog, and no write on any surface.
     await actor.click(screen.getByRole("button", { name: "Zen mode" }));

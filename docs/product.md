@@ -20,20 +20,23 @@ The repository contains workspace and canvas access control, password accounts, 
 
 ## Documentation Markdown
 
-The block editor supports these Markdown constructs:
+The block editor supports these Markdown constructs. Canonical Markdown round-trips byte-for-byte; alternative spellings are normalised when saved from blocks:
 
-- Paragraphs and headings 1–6.
-- Bold, italic, strikethrough, inline code, and links to `http`, `https`, `mailto`, or relative destinations.
-- Nested bullet, ordered, and task lists.
-- Blockquotes, fenced code blocks with an optional language, and horizontal rules.
-- GFM tables with inline formatting and column alignment.
-- Hard line breaks, including `<br>`.
+- Paragraphs and headings 1–6. Saved in canonical form: paragraphs separated by a blank line and ATX headings (`#` through `######`); setext headings become ATX headings. Literal Markdown punctuation is escaped where needed.
+- Bold, italic, strikethrough, inline code, and links to `http`, `https`, `mailto`, or relative destinations. Saved in canonical form: `**bold**`, `*italic*`, `~~struck~~`, backtick-delimited code, and `[label](destination)` links; underscore emphasis becomes asterisk emphasis. Bare URLs remain bare.
+- Nested bullet, ordered, and task lists. Saved in canonical form: `-` bullets, sequential `1.`-style numbering, and `- [ ]` / `- [x]` tasks; nested items use two spaces for bullets/tasks and three spaces under a single-digit ordered marker. Asterisk bullets become hyphens and `[X]` becomes `[x]`.
+- Blockquotes, fenced code blocks with an optional language, and horizontal rules. Saved in canonical form: `> ` before quoted paragraphs (`>` on blank quote lines), backtick fences (including the language when present), and `---` dividers. Tilde fences and indented code become backtick fences; asterisk dividers become `---`.
+- GFM tables with inline formatting and column alignment. Saved in canonical form: outer pipes, one space around each cell, `---` separators with alignment colons where specified, and an extra newline before and after the table block. Compact tables gain these spaces and surrounding newlines; columns are not padded to equal widths.
+- Paragraph hard line breaks. Saved in canonical form: two trailing spaces followed by a newline; `<br>`, `<br />`, and backslash-newline breaks convert to this form without losing the break.
 
 The block editor does not support these constructs:
 
-- Images, footnotes, YAML front matter, and raw HTML (other than the supported `<br>` hard break).
+- YAML front matter
+- images
+- raw HTML (except `<br>` and `<br />` hard breaks, which are normalised as above)
+- footnotes
 
-Documents containing these constructs open in Markdown source mode and are kept verbatim; pasting them into block editing shows a warning to switch to Markdown source. Export and copy return the stored Markdown unchanged, including unsupported content.
+Unsupported content is kept verbatim in Markdown source. Switch to Markdown source before pasting. Documents containing these constructs open in Markdown source mode; pasting them into block editing is stopped with a warning naming the constructs found. Export and copy return the stored Markdown unchanged, including unsupported content.
 
 ## Areas to improve
 

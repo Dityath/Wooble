@@ -249,8 +249,8 @@ export function DocumentationEditor({
             <TriangleAlert size={15} aria-hidden="true" />
             <span>
               {inSource
-                ? `This document contains ${warning}. The block editor does not support these constructs; see Documentation Markdown in the product guide. Edit Markdown source to preserve this content.`
-                : `This paste contains ${warning}. The block editor does not support these constructs; see Documentation Markdown in the product guide. Switch to Markdown source, then paste again to preserve it.`}
+                ? `This document contains ${warning}. The block editor does not support these constructs. Unsupported content is kept verbatim in Markdown source. Switch to Markdown source before pasting.`
+                : `This paste contains ${warning}. The block editor does not support these constructs. Unsupported content is kept verbatim in Markdown source. Switch to Markdown source before pasting.`}
             </span>
           </p>
         )}

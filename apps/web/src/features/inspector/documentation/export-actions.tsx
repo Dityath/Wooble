@@ -1,12 +1,13 @@
 import { Copy, Download } from "lucide-react";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Button } from "../../../components/ui";
 import { copyMarkdown, documentationFileName, downloadMarkdown } from "./export";
 
 export function DocumentationExportActions({ markdown, name }: { markdown: string; name: string }) {
-  const [status, setStatus] = useState("");
+  const [status, setStatus] = useState({ message: "", operation: 0 });
+  const emptyDescriptionId = useId();
+  const announce = (message: string) => setStatus((previous) => ({ message, operation: previous.operation + 1 }));
   const disabled = markdown.length === 0;
-  const title = disabled ? "No saved documentation to export." : undefined;
   return (
     <div className="documentation-export-actions">
       <Button
@@ -14,13 +15,13 @@ export function DocumentationExportActions({ markdown, name }: { markdown: strin
         variant="outline"
         size="sm"
         disabled={disabled}
-        title={title}
+        aria-describedby={disabled ? emptyDescriptionId : undefined}
         onClick={() => {
           try {
             downloadMarkdown(markdown, documentationFileName(name));
-            setStatus("Markdown downloaded");
+            announce("Markdown downloaded");
           } catch {
-            setStatus("Could not download Markdown. Try again.");
+            announce("Could not download Markdown. Try again.");
           }
         }}
       >
@@ -31,20 +32,23 @@ export function DocumentationExportActions({ markdown, name }: { markdown: strin
         variant="outline"
         size="sm"
         disabled={disabled}
-        title={title}
+        aria-describedby={disabled ? emptyDescriptionId : undefined}
         onClick={async () => {
           try {
             await copyMarkdown(markdown);
-            setStatus("Markdown copied");
+            announce("Markdown copied");
           } catch {
-            setStatus("Could not copy Markdown. Check clipboard permissions or download the file instead.");
+            announce("Could not copy Markdown. Check clipboard permissions or download the file instead.");
           }
         }}
       >
         <Copy size={14} aria-hidden="true" /> Copy Markdown
       </Button>
-      <span role="status" aria-live="polite">
-        {status}
+      {disabled && <span id={emptyDescriptionId}>No saved documentation to export.</span>}
+      <span role="status" aria-live="polite" aria-atomic="true">
+        <span key={status.operation} data-operation={status.operation}>
+          {status.message}
+        </span>
       </span>
     </div>
   );

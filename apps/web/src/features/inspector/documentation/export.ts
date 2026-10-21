@@ -10,9 +10,13 @@ export function documentationFileName(name: string): string {
     base = base.replace(/^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])/i, "$1-documentation");
   }
   let capped = "";
+  const encoder = new TextEncoder();
+  let bytes = encoder.encode(".md").length;
   for (const character of base) {
-    if (capped.length + character.length > 100) break;
+    const size = encoder.encode(character).length;
+    if (bytes + size > 200) break;
     capped += character;
+    bytes += size;
   }
   return `${capped.replace(/[-. ]+$/g, "")}.md`;
 }
@@ -27,7 +31,7 @@ export function downloadMarkdown(markdown: string, fileName: string): void {
     anchor.click();
   } finally {
     anchor.remove();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 }
 

@@ -31,12 +31,50 @@ describe("documentation filenames", () => {
     ["Cafe\u0301", "Café.md"],
     ["", "documentation.md"],
     [" \t\n", "documentation.md"],
-    [`${"a".repeat(99)}😀end`, `${"a".repeat(99)}.md`],
-    ["文".repeat(120), `${"文".repeat(100)}.md`],
+    [`${"a".repeat(196)}😀end`, `${"a".repeat(196)}.md`],
+    ["文".repeat(120), `${"文".repeat(65)}.md`],
   ])("sanitizes %j", (name, expected) => expect(documentationFileName(name)).toBe(expected));
 });
 
+describe("documentation filename byte limits", () => {
+  it.each(["文".repeat(120), "😀".repeat(100)])("caps UTF-8 bytes for %j", (title) => {
+    const name = documentationFileName(title);
+    expect(new TextEncoder().encode(name).length).toBeLessThanOrEqual(200);
+    expect(name.endsWith(".md")).toBe(true);
+    expect(new TextDecoder().decode(new TextEncoder().encode(name))).toBe(name);
+  });
+});
+
 describe("documentation exports", () => {
+  it.each([false, true])("announces consecutive copy results (failure: %s)", async (failure) => {
+    const { user: actor } = renderWithQuery(<DocumentationExportActions markdown={markdown} name="Orders" />);
+    const copy = spyOn(navigator.clipboard, "writeText");
+    if (failure) copy.mockRejectedValue(new Error("Denied"));
+    else copy.mockResolvedValue(undefined);
+    await actor.click(screen.getByRole("button", { name: "Copy Markdown" }));
+    const first = screen.getByRole("status").firstElementChild;
+    const message = first?.textContent;
+    await actor.click(screen.getByRole("button", { name: "Copy Markdown" }));
+    const second = screen.getByRole("status").firstElementChild;
+    expect(second).not.toBe(first);
+    expect(second?.getAttribute("data-operation")).toBe("2");
+    expect(second?.textContent).toBe(message);
+    expect(copy).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports download activation failures and cleans up", async () => {
+    spyOn(URL, "createObjectURL").mockReturnValue("blob:failed-download");
+    const revoke = spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {
+      throw new Error("Blocked");
+    });
+    renderWithQuery(<DocumentationExportActions markdown={markdown} name="Orders" />);
+    fireEvent.click(screen.getByRole("button", { name: "Download Markdown" }));
+    expect(screen.getByRole("status").textContent).toContain("Could not download Markdown.");
+    expect(document.querySelector("a[download]")).toBeNull();
+    expect(revoke).not.toHaveBeenCalled();
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith("blob:failed-download"));
+  });
   it("copies exact stored Markdown with keyboard and polite feedback", async () => {
     const { user: actor } = renderWithQuery(<DocumentationExportActions markdown={markdown} name="Orders API" />);
     const copy = spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
@@ -85,7 +123,7 @@ describe("documentation exports", () => {
     const blob = create.mock.calls[0][0] as Blob;
     expect(blob.type).toBe("text/markdown;charset=utf-8");
     expect(await blob.text()).toBe(markdown);
-    expect(revoke).toHaveBeenCalledWith("blob:markdown");
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith("blob:markdown"));
     expect(document.querySelector("a[download]")).toBeNull();
     expect(screen.getByRole("status").textContent).toBe("Markdown downloaded");
   });
@@ -94,7 +132,8 @@ describe("documentation exports", () => {
     renderWithQuery(<DocumentationExportActions markdown="" name="Orders" />);
     for (const button of screen.getAllByRole<HTMLButtonElement>("button")) {
       expect(button.disabled).toBe(true);
-      expect(button.title).toBe("No saved documentation to export.");
+      const helper = screen.getByText("No saved documentation to export.");
+      expect(button.getAttribute("aria-describedby")).toBe(helper.id);
     }
   });
 
