@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, or, sql } from "drizzle-orm";
 import { collabDocuments, connections, entities } from "@wooble/db";
 import type { PreviousMetadataEntry } from "../canvas/event-metadata";
 import { registerExternalMetadataKey, type Transaction } from "../canvas/undo-registry";
@@ -35,6 +35,62 @@ export class DocumentWorkspaceMismatch extends Error {
 }
 
 const ownerTable = (ref: DocumentRef) => (ref.kind === "entity" ? entities : connections);
+// PostgreSQL returns UUIDs in lowercase even when a caller supplied uppercase hex digits.
+const documentKey = (ref: DocumentRef) => `${ref.kind}:${ref.id.toLowerCase()}`;
+
+/** Owners are already locked (or newly inserted) by the caller; snapshots need only unlocked reads. */
+async function readDocuments(tx: Transaction, refs: DocumentRef[], lock: boolean) {
+  const owners = new Map<string, { workspaceId: string; previous: PreviousMetadataEntry }>();
+  const conditions = [];
+  for (const kind of ["entity", "connection"] as const) {
+    const ids = [...new Set(refs.filter((ref) => ref.kind === kind).map((ref) => ref.id))];
+    if (!ids.length) continue;
+    const table = ownerTable({ kind, id: "" });
+    const rows = await tx
+      .select({
+        id: table.id,
+        workspaceId: table.workspaceId,
+        present: sql<boolean>`${table.metadata} ? ${DOCUMENTATION_KEY}`,
+        value: sql<unknown>`${table.metadata} -> ${DOCUMENTATION_KEY}`,
+      })
+      .from(table)
+      .where(sql`${table.id} = ANY(${sql.param(ids)}::uuid[])`);
+    for (const row of rows) {
+      owners.set(documentKey({ kind, id: row.id }), {
+        workspaceId: row.workspaceId,
+        previous: row.present ? { present: true, value: row.value } : { present: false },
+      });
+    }
+    // Match both parts of the identity; the same UUID may occur in both owner tables.
+    conditions.push(
+      and(eq(collabDocuments.objectKind, kind), sql`${collabDocuments.objectId} = ANY(${sql.param(ids)}::uuid[])`),
+    );
+  }
+  const documents = new Map<string, { bootstrapped: boolean; mirror: string | null }>();
+  if (!conditions.length) return { owners, documents };
+  const query = tx
+    .select({
+      kind: collabDocuments.objectKind,
+      id: collabDocuments.objectId,
+      workspaceId: collabDocuments.workspaceId,
+      bootstrapped: sql<boolean>`${collabDocuments.state} IS NOT NULL AND ${collabDocuments.bootstrapVersion} IS NOT NULL`,
+      mirror: collabDocuments.mirrorMarkdown,
+    })
+    .from(collabDocuments)
+    .where(and(eq(collabDocuments.field, DOCUMENTATION_KEY), or(...conditions)))
+    .orderBy(asc(collabDocuments.objectKind), asc(collabDocuments.objectId));
+  for (const document of await (lock ? query.for("update") : query)) {
+    const key = documentKey(document);
+    const owner = owners.get(key);
+    // Missing owners are skipped, including their retained/tombstoned collab rows.
+    if (!owner) continue;
+    if (document.workspaceId !== owner.workspaceId) {
+      throw new DocumentWorkspaceMismatch(document, owner.workspaceId, document.workspaceId);
+    }
+    documents.set(key, document);
+  }
+  return { owners, documents };
+}
 
 /** The caller already holds canvas locks, then the owner FOR UPDATE (or has inserted it). */
 async function readDocument(tx: Transaction, ref: DocumentRef, lock: boolean) {
@@ -78,19 +134,21 @@ async function applyEntry(
   entry: PreviousMetadataEntry,
 ): Promise<boolean> {
   if (isDeepStrictEqual(previous, entry)) return false;
+  await tx.execute(sql`SELECT set_config(${DOCUMENTATION_WRITER_SETTING}, 'on', true)`);
+  await updateEntry(tx, ref, entry);
+  // Reset only on success: an aborted transaction discards the local setting, and a reset would mask its error.
+  await tx.execute(sql`SELECT set_config(${DOCUMENTATION_WRITER_SETTING}, 'off', true)`);
+  return true;
+}
+
+async function updateEntry(tx: Transaction, ref: DocumentRef, entry: PreviousMetadataEntry): Promise<void> {
   const table = ownerTable(ref);
   const metadata = entry.present
     ? sql`${table.metadata} || jsonb_build_object(${DOCUMENTATION_KEY}::text, ${JSON.stringify(entry.value)}::jsonb)`
     : sql`${table.metadata} - ${DOCUMENTATION_KEY}`;
 
-  await tx.execute(sql`SELECT set_config(${DOCUMENTATION_WRITER_SETTING}, 'on', true)`);
-  try {
-    // Target only this key: callers may already have changed other metadata in this transaction.
-    await tx.update(table).set({ metadata }).where(eq(table.id, ref.id));
-  } finally {
-    await tx.execute(sql`SELECT set_config(${DOCUMENTATION_WRITER_SETTING}, 'off', true)`);
-  }
-  return true;
+  // Target only this key: callers may already have changed other metadata in this transaction.
+  await tx.update(table).set({ metadata }).where(eq(table.id, ref.id));
 }
 
 function mirrorEntry(mirror: string | null): PreviousMetadataEntry {
@@ -134,12 +192,45 @@ export async function restoreDocumentation(
   ref: DocumentRef,
   entry: PreviousMetadataEntry | undefined,
 ): Promise<boolean> {
-  const current = await readDocument(tx, ref, true);
-  if (!current) return false;
-  if (current.document?.bootstrapped) {
-    return applyEntry(tx, ref, current.previous, mirrorEntry(current.document.mirror));
+  return restoreDocumentationBatch(tx, [{ ref, entry }]);
+}
+
+/** Restore all owners under the caller's canvas/owner locks, then sorted collab row locks. */
+export async function restoreDocumentations(
+  tx: Transaction,
+  items: Array<{ ref: DocumentRef; entry: PreviousMetadataEntry | undefined }>,
+): Promise<void> {
+  await restoreDocumentationBatch(tx, items);
+}
+
+// Both public APIs share this implementation; the single-item API also reports whether it changed.
+async function restoreDocumentationBatch(
+  tx: Transaction,
+  items: Array<{ ref: DocumentRef; entry: PreviousMetadataEntry | undefined }>,
+): Promise<boolean> {
+  const { owners, documents } = await readDocuments(
+    tx,
+    items.map((item) => item.ref),
+    true,
+  );
+  const updates: Array<{ ref: DocumentRef; entry: PreviousMetadataEntry }> = [];
+  for (const { ref, entry } of items) {
+    const key = documentKey(ref);
+    const owner = owners.get(key);
+    if (!owner) continue;
+    const document = documents.get(key);
+    const target = document?.bootstrapped ? mirrorEntry(document.mirror) : entry;
+    if (target === undefined || isDeepStrictEqual(owner.previous, target)) continue;
+    updates.push({ ref, entry: target });
+    // Preserve sequential semantics if an owner occurs more than once in the batch.
+    owner.previous = target;
   }
-  return entry === undefined ? false : applyEntry(tx, ref, current.previous, entry);
+  if (!updates.length) return false;
+  await tx.execute(sql`SELECT set_config(${DOCUMENTATION_WRITER_SETTING}, 'on', true)`);
+  for (const { ref, entry } of updates) await updateEntry(tx, ref, entry);
+  // As above, resetting after a failed UPDATE would hide the original database error.
+  await tx.execute(sql`SELECT set_config(${DOCUMENTATION_WRITER_SETTING}, 'off', true)`);
+  return true;
 }
 
 /** Re-project a bootstrapped mirror under the caller's canvas and owner locks. */
@@ -185,10 +276,12 @@ export async function snapshotDocumentation(
   refs: DocumentRef[],
 ): Promise<Record<string, PreviousMetadataEntry>> {
   const snapshot: Record<string, PreviousMetadataEntry> = {};
+  const { owners, documents } = await readDocuments(tx, refs, false);
   for (const ref of refs) {
-    const current = await readDocument(tx, ref, false);
-    if (current && !current.document?.bootstrapped && current.previous.present) {
-      snapshot[`${ref.kind}:${ref.id}`] = current.previous;
+    const key = documentKey(ref);
+    const owner = owners.get(key);
+    if (owner?.previous.present && !documents.get(key)?.bootstrapped) {
+      snapshot[`${ref.kind}:${ref.id}`] = owner.previous;
     }
   }
   return snapshot;

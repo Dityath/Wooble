@@ -77,7 +77,7 @@ The v0.2 issues were split and triaged as shown below. The counts in the read ta
 | #32 | closed 2026-10-20 | decided: placing an entity on another canvas needs write access to it; implemented in #63 |
 | #62 | opened and closed 2026-10-20 | link access ends when link sharing is turned off; implemented in #65 |
 | #33, #34, #36 | open, tracking only | split on 2026-10-20 into #67–#72, #73 and #74; each original acceptance item is mapped in the issue body |
-| #67 | open, implemented on this branch | collaborative document table and single writer; sync and bootstrap disabled |
+| #67 | implemented, sync and bootstrap disabled | collaborative document table and single writer for documentation |
 | #70, #73 | open, status:ready | single-instance gate; Markdown export and copy |
 | #68, #69, #71, #72, #74, #35, #37 | open, status:needs-triage | scope agreed; waiting on #67 (and #69 on a retention decision) |
 | #66 | open, status:ready | bug: the visual OpenAPI editor drops source it does not show (found in the v0.3 triage) |

@@ -19,6 +19,7 @@ import {
   documentationUndoEntry,
   isBootstrapped,
   restoreDocumentation,
+  restoreDocumentations,
   withoutDocumentation,
 } from "../collab/documentation";
 import { CanvasLockContention } from "./activity";
@@ -894,7 +895,9 @@ async function restoreConnection(
     });
   if (inserted.length) {
     const ref: DocumentRef = { kind: "connection", id: connection.id };
-    await restoreDocumentation(tx, ref, deletedDocumentationEntry(documentation, ref, connection.metadata));
+    await restoreDocumentations(tx, [
+      { ref, entry: deletedDocumentationEntry(documentation, ref, connection.metadata) },
+    ]);
   }
   await touchCanvas(tx, canvasId);
   return true;
@@ -949,9 +952,13 @@ async function restoreEntitySubtree(
     }
   }
   await restorePlacements(tx, canvasId, placements);
-  for (const { ref, metadata } of restoredOwners) {
-    await restoreDocumentation(tx, ref, deletedDocumentationEntry(snapshot[DOCUMENTATION_SNAPSHOT_KEY], ref, metadata));
-  }
+  await restoreDocumentations(
+    tx,
+    restoredOwners.map(({ ref, metadata }) => ({
+      ref,
+      entry: deletedDocumentationEntry(snapshot[DOCUMENTATION_SNAPSHOT_KEY], ref, metadata),
+    })),
+  );
   await touchCanvas(tx, canvasId);
   return true;
 }

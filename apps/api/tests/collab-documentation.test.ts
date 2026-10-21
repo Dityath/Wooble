@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
-import { beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { beforeAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { eq, sql } from "drizzle-orm";
-import { canvases, collabDocuments, connections, db, entities } from "@wooble/db";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { canvases, collabDocuments, connections, db, entities, pool } from "@wooble/db";
+import * as schema from "../../../packages/db/src/schema";
 import { resetLoginAttempts } from "../src/modules/auth/routes";
 import { createApp } from "../src/app";
 import type { PreviousMetadataEntry } from "../src/modules/canvas/event-metadata";
@@ -20,6 +22,7 @@ import {
   registerCollabDocumentation,
   reprojectMirror,
   restoreDocumentation,
+  restoreDocumentations,
   snapshotDocumentation,
   withoutDocumentation,
   writeDocumentation,
@@ -50,19 +53,105 @@ const tableFor = (ref: DocumentRef) => (ref.kind === "entity" ? entities : conne
 
 async function locked<T>(f: Fixture, callback: (tx: Transaction) => Promise<T>): Promise<T> {
   return db.transaction(async (tx) => {
-    await tx.select({ id: canvases.id }).from(canvases).where(eq(canvases.id, f.canvasId)).for("update");
-    for (const ref of [...f.refs].sort((a, b) => `${a.kind}:${a.id}`.localeCompare(`${b.kind}:${b.id}`))) {
-      const table = tableFor(ref);
-      await tx.select({ id: table.id }).from(table).where(eq(table.id, ref.id)).for("update");
-    }
+    await lockFixture(tx, f);
     return callback(tx);
   });
+}
+
+async function lockFixture(tx: Transaction, f: Fixture): Promise<void> {
+  await tx.select({ id: canvases.id }).from(canvases).where(eq(canvases.id, f.canvasId)).for("update");
+  for (const ref of [...f.refs].sort((a, b) => `${a.kind}:${a.id}`.localeCompare(`${b.kind}:${b.id}`))) {
+    const table = tableFor(ref);
+    await tx.select({ id: table.id }).from(table).where(eq(table.id, ref.id)).for("update");
+  }
+}
+
+/** Observe the actual connection, including query-builder statements, excluding caller locks and BEGIN/COMMIT. */
+async function counted<T>(f: Fixture, callback: (tx: Transaction) => Promise<T>) {
+  const client = await pool.connect();
+  try {
+    return await drizzle(client, { schema }).transaction(async (tx) => {
+      await lockFixture(tx, f);
+      const querySpy = spyOn(client, "query");
+      try {
+        const result = await callback(tx);
+        const statements = querySpy.mock.calls.map(([query]) => {
+          // pg's overload inferred by spyOn is string-only, but Drizzle also passes query configs.
+          const input: unknown = query;
+          if (typeof input === "string") return input;
+          if (typeof input === "object" && input !== null && "text" in input && typeof input.text === "string") {
+            return input.text;
+          }
+          throw new Error("Unexpected PostgreSQL query argument");
+        });
+        return { result, statements };
+      } finally {
+        querySpy.mockRestore();
+      }
+    });
+  } finally {
+    client.release();
+  }
+}
+
+async function manyOwners() {
+  const f = await fixture();
+  const entityRows = await db
+    .insert(entities)
+    .values(
+      Array.from({ length: 50 }, (_, index) => ({
+        workspaceId: owner.workspaceId,
+        type: "service" as const,
+        name: `Fictional batch service ${index}`,
+        // Include historical JSON null, which the current domain input type no longer accepts.
+        metadata: sql`${JSON.stringify(index % 3 === 0 ? { retained: index } : { retained: index, documentation: index % 2 ? "Notes" : null })}::jsonb`,
+      })),
+    )
+    .returning({ id: entities.id, metadata: entities.metadata });
+  const connectionRows = await db
+    .insert(connections)
+    .values(
+      Array.from({ length: 10 }, (_, index) => ({
+        workspaceId: owner.workspaceId,
+        sourceEntityId: f.entity.id,
+        targetEntityId: entityRows[index].id,
+        type: "rest" as const,
+        label: "Fictional batch link",
+        metadata: index % 2 ? { retained: index, documentation: "" } : { retained: index },
+      })),
+    )
+    .returning({ id: connections.id, metadata: connections.metadata });
+  const rows = [
+    ...entityRows.map((row) => ({ ...row, ref: { kind: "entity" as const, id: row.id } })),
+    ...connectionRows.map((row) => ({ ...row, ref: { kind: "connection" as const, id: row.id } })),
+  ];
+  return { ...f, refs: rows.map((row) => row.ref), rows };
+}
+
+async function rowVersions(tx: Transaction, refs: DocumentRef[]) {
+  const versions: Record<string, string> = {};
+  for (const kind of ["entity", "connection"] as const) {
+    const table = tableFor({ kind, id: "" });
+    const ids = refs.filter((ref) => ref.kind === kind).map((ref) => ref.id);
+    const rows = await tx
+      .select({ id: table.id, xmin: sql<string>`xmin::text` })
+      .from(table)
+      .where(sql`${table.id} = ANY(${sql.param(ids)}::uuid[])`);
+    for (const row of rows) versions[`${kind}:${row.id}`] = row.xmin;
+  }
+  return versions;
 }
 
 async function metadata(tx: Transaction, ref: DocumentRef): Promise<Record<string, unknown>> {
   const table = tableFor(ref);
   const [row] = await tx.select({ metadata: table.metadata }).from(table).where(eq(table.id, ref.id));
   return row.metadata;
+}
+
+async function allMetadata(tx: Transaction, refs: DocumentRef[]): Promise<Record<string, unknown>[]> {
+  const result = [];
+  for (const ref of refs) result.push(await metadata(tx, ref));
+  return result;
 }
 
 async function bootstrap(
@@ -355,6 +444,11 @@ describe("documentation persistence", () => {
       const actions = [
         (tx: Transaction) => writeDocumentation(tx, ref, "Private replacement"),
         (tx: Transaction) => restoreDocumentation(tx, ref, undefined),
+        (tx: Transaction) =>
+          restoreDocumentations(
+            tx,
+            f.refs.map((ownerRef) => ({ ref: ownerRef, entry: { present: true, value: "Undo" } })),
+          ),
         (tx: Transaction) => documentationRestoreWouldChange(tx, ref, undefined),
         (tx: Transaction) => reprojectMirror(tx, ref),
         (tx: Transaction) => isBootstrapped(tx, ref),
@@ -400,6 +494,151 @@ describe("documentation persistence", () => {
       });
     });
     expect(DOCUMENTATION_SNAPSHOT_KEY).toBe("documentation");
+  });
+
+  it("snapshots 50 entities and 10 connections in three queries with legacy presence semantics", async () => {
+    const f = await manyOwners();
+    const collaborative = f.refs[1];
+    await bootstrap(collaborative, "Canonical mirror");
+    await bootstrap(f.refs[2], "Placeholder mirror", { state: null });
+    const missing: DocumentRef = { kind: "entity", id: crypto.randomUUID() };
+    await bootstrap(missing, "Orphan mirror", { workspaceId: otherOwner.workspaceId });
+    const expected: Record<string, PreviousMetadataEntry> = {};
+    for (const { ref, metadata } of f.rows) {
+      if (ref === collaborative || !Object.hasOwn(metadata, DOCUMENTATION_KEY)) continue;
+      expected[`${ref.kind}:${ref.id}`] = { present: true, value: metadata.documentation };
+    }
+    const { result, statements } = await counted(f, (tx) => snapshotDocumentation(tx, [...f.refs, missing]));
+    expect(result).toEqual(expected);
+    expect(statements).toHaveLength(3);
+    expect(statements.every((statement) => /^select /i.test(statement))).toBe(true);
+    expect(statements.some((statement) => /for update|for share|for key share/i.test(statement))).toBe(false);
+    expect((await counted(f, (tx) => snapshotDocumentation(tx, []))).statements).toHaveLength(0);
+  });
+
+  it("matches uppercase UUID refs while preserving the snapshot's caller-supplied keys", async () => {
+    const f = await fixture();
+    const uppercase = f.refs.map((ref) => ({ ...ref, id: ref.id.toUpperCase() }));
+    await locked(f, async (tx) => {
+      for (const ref of uppercase) {
+        expect(await restoreDocumentation(tx, ref, { present: true, value: "Legacy notes" })).toBe(true);
+      }
+      expect(await snapshotDocumentation(tx, uppercase)).toEqual(
+        Object.fromEntries(uppercase.map((ref) => [`${ref.kind}:${ref.id}`, { present: true, value: "Legacy notes" }])),
+      );
+      await restoreDocumentations(
+        tx,
+        uppercase.map((ref) => ({ ref, entry: { present: true, value: null } })),
+      );
+      expect(await allMetadata(tx, f.refs)).toEqual([{ documentation: null }, { documentation: null }]);
+    });
+    await bootstrap(f.entity, "Canonical mirror");
+    await locked(f, async (tx) => {
+      await restoreDocumentations(
+        tx,
+        uppercase.map((ref) => ({ ref, entry: undefined })),
+      );
+      expect(await metadata(tx, f.entity)).toEqual({ documentation: "Canonical mirror" });
+      expect(await snapshotDocumentation(tx, uppercase)).toEqual({
+        [`connection:${uppercase[1].id}`]: { present: true, value: null },
+      });
+    });
+  });
+
+  it("batch restore matches sequential restore, locks collab rows in order and skips unchanged owners", async () => {
+    const f = await manyOwners();
+    await bootstrap(f.refs[0], "Canonical mirror");
+    await bootstrap(f.refs[51], "");
+    await bootstrap(f.refs[2], "Unused placeholder", { state: null });
+    const items = f.refs.map((ref, index) => ({
+      ref,
+      entry: [undefined, { present: false }, { present: true, value: null }, { present: true, value: "Restored" }][
+        index % 4
+      ] as PreviousMetadataEntry | undefined,
+    }));
+    items.push({ ref: { kind: "connection", id: crypto.randomUUID() }, entry: { present: true, value: "Missing" } });
+    let expected: Record<string, unknown>[] = [];
+    const rollback = new Error("Rollback reference restores");
+    await expect(
+      locked(f, async (tx) => {
+        for (const { ref, entry } of items) await restoreDocumentation(tx, ref, entry);
+        expected = await allMetadata(tx, f.refs);
+        throw rollback;
+      }),
+    ).rejects.toBe(rollback);
+    const before = await locked(f, (tx) => rowVersions(tx, f.refs));
+    // Deliberately reverse snapshot order; the collab lock query must still impose its own order.
+    const { statements } = await counted(f, (tx) => restoreDocumentations(tx, [...items].reverse()));
+    const updates = statements.filter((statement) => /^update /i.test(statement));
+    expect(updates.length).toBeGreaterThan(0);
+    expect(statements).toHaveLength(3 + 2 + updates.length);
+    expect(statements.filter((statement) => /set_config/.test(statement))).toHaveLength(2);
+    const collabQueries = statements.filter((statement) => /from "collab_documents"/.test(statement));
+    expect(collabQueries).toHaveLength(1);
+    expect(collabQueries[0]).toMatch(
+      /order by "collab_documents"\."object_kind" asc, "collab_documents"\."object_id" asc for update$/,
+    );
+    await locked(f, async (tx) => {
+      expect(await allMetadata(tx, f.refs)).toEqual(expected);
+      const after = await rowVersions(tx, f.refs);
+      expect(Object.keys(after).filter((key) => after[key] !== before[key])).toHaveLength(updates.length);
+      for (let index = 0; index < f.rows.length; index++) {
+        if (JSON.stringify(f.rows[index].metadata) === JSON.stringify(expected[index])) {
+          const { ref } = f.rows[index];
+          expect(after[`${ref.kind}:${ref.id}`]).toBe(before[`${ref.kind}:${ref.id}`]);
+        }
+      }
+      await expectWriterOff(tx);
+    });
+    const settled = await locked(f, (tx) => rowVersions(tx, f.refs));
+    const noOp = await counted(f, (tx) => restoreDocumentations(tx, items));
+    expect(noOp.statements).toHaveLength(3);
+    expect(noOp.statements.every((statement) => /^select /i.test(statement))).toBe(true);
+    expect(await locked(f, (tx) => rowVersions(tx, f.refs))).toEqual(settled);
+    expect((await counted(f, (tx) => restoreDocumentations(tx, []))).statements).toHaveLength(0);
+  });
+
+  it("preserves the original UPDATE error in single writes and batch restores", async () => {
+    const f = await fixture();
+    // A temporary function and a trigger scoped to this scratch owner; clean both on the same connection.
+    const client = await pool.connect();
+    const database = drizzle(client, { schema });
+    const trigger = `wooble_test_documentation_failure_${f.entity.id.replaceAll("-", "")}`;
+    try {
+      await database.execute(sql`
+        CREATE FUNCTION pg_temp.wooble_test_documentation_failure() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          RAISE EXCEPTION 'boom-original';
+        END $$
+      `);
+      await database.execute(sql`
+        CREATE TRIGGER ${sql.identifier(trigger)} BEFORE UPDATE OF metadata ON entities
+        FOR EACH ROW WHEN (OLD.id = ${sql.raw(`'${f.entity.id}'::uuid`)})
+        EXECUTE FUNCTION pg_temp.wooble_test_documentation_failure()
+      `);
+      const actions = [
+        (tx: Transaction) => writeDocumentation(tx, f.entity, "Trigger failure"),
+        (tx: Transaction) => restoreDocumentations(tx, [{ ref: f.entity, entry: { present: true, value: "Failure" } }]),
+      ];
+      for (const action of actions) {
+        let failure: unknown;
+        try {
+          await database.transaction(async (tx) => {
+            await lockFixture(tx, f);
+            await action(tx);
+          });
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure).toMatchObject({ cause: { message: "boom-original" } });
+        const error = failure as Error & { cause: Error };
+        expect(`${error.message} ${error.cause.message}`).not.toContain("current transaction is aborted");
+      }
+    } finally {
+      await database.execute(sql`DROP TRIGGER IF EXISTS ${sql.identifier(trigger)} ON entities`);
+      await database.execute(sql`DROP FUNCTION IF EXISTS pg_temp.wooble_test_documentation_failure()`);
+      client.release();
+    }
   });
 
   it("throws for a missing write owner and skips missing restore/read owners", async () => {

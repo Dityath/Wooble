@@ -1,10 +1,19 @@
 import { createHash } from "node:crypto";
 import { beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
-import { canvasConnections, canvasEvents, canvasNodes, collabDocuments, connections, db, entities } from "@wooble/db";
+import {
+  canvasConnections,
+  canvasEvents,
+  canvasNodes,
+  collabDocuments,
+  connections,
+  db,
+  entities,
+  pool,
+} from "@wooble/db";
 import { resetLoginAttempts } from "../src/modules/auth/routes";
 import type { PreviousMetadataEntry } from "../src/modules/canvas/event-metadata";
-import { isExternalMetadataKey } from "../src/modules/canvas/undo-registry";
+import { isExternalMetadataKey, registerDeleteUndoHook } from "../src/modules/canvas/undo-registry";
 import { type DocumentRef, withoutDocumentation } from "../src/modules/collab/documentation";
 import { apiClient } from "./support/client";
 
@@ -384,4 +393,130 @@ describe("delete undo restores documentation only for reinserted owners", () => 
     expect((await undo(f)).body).toMatchObject({ undone: true, action: "connection.deleted" });
     expect(await readMetadata(f.connection)).toEqual({ documentation: "Current owner text" });
   });
+});
+
+describe("documentation projection rolls back with failed undo", () => {
+  for (const bootstrapped of [false, true]) {
+    it(`rolls back ${bootstrapped ? "bootstrapped mirror" : "legacy documentation"} projection when marking an update undone fails`, async () => {
+      const f = await fixture();
+      await setMetadata(f.entity, { documentation: "Current text", retained: true });
+      const metadata = updateMetadata("new", { present: true, value: "Old text" });
+      metadata.fields = ["name", "metadata"];
+      metadata.previous = { name: "Before rename" };
+      const event = await record(f, f.entity, "updated", metadata);
+      if (bootstrapped) await bootstrap(f.entity);
+      const [before] = await db.select().from(entities).where(eq(entities.id, f.entity.id));
+      const hash = (text: unknown) => createHash("sha256").update(String(text)).digest("hex");
+      const beforeHash = hash((before.metadata as Record<string, unknown>).documentation);
+      const projected = bootstrapped ? "Mirror text" : "Old text";
+      const name = `wooble_test_undo_${crypto.randomUUID().replaceAll("-", "")}`;
+      try {
+        // Fail only after both the ordinary field restore and documentation projection are visible.
+        // If projection never ran, undo succeeds and the status assertion below fails.
+        await pool.query(`CREATE FUNCTION ${name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+          IF NEW.id = '${event.id}'::uuid AND NEW.undone_at IS NOT NULL AND EXISTS (
+            SELECT 1 FROM entities WHERE id = '${f.entity.id}'::uuid
+              AND name = 'Before rename' AND metadata->>'documentation' = '${projected}'
+          ) THEN RAISE EXCEPTION 'mark undone refused after documentation projection for test'; END IF;
+          RETURN NEW; END $$`);
+        await pool.query(
+          `CREATE TRIGGER ${name} BEFORE UPDATE ON canvas_events FOR EACH ROW EXECUTE FUNCTION ${name}()`,
+        );
+        expect((await undo(f)).status).toBe(500);
+        const [after] = await db.select().from(entities).where(eq(entities.id, f.entity.id));
+        expect(after.name).toBe(before.name);
+        expect(after.metadata).toEqual(before.metadata);
+        expect(hash((after.metadata as Record<string, unknown>).documentation)).toBe(beforeHash);
+        const [stored] = await db.select().from(canvasEvents).where(eq(canvasEvents.id, event.id));
+        expect(stored.undoneAt).toBeNull();
+      } finally {
+        await pool.query(`DROP TRIGGER IF EXISTS ${name} ON canvas_events`);
+        await pool.query(`DROP FUNCTION IF EXISTS ${name}()`);
+      }
+    });
+  }
+
+  for (const kind of kinds) {
+    it(`rolls back ${kind} delete restoration after documentation has been projected`, async () => {
+      const f = await fixture();
+      const refs = kind === "entity" ? [f.entity, f.connection] : [f.connection];
+      for (const ref of refs) await setMetadata(ref, { documentation: "Snapshot text", retained: ref.kind });
+      const { entity, connection } = await snapshotRows(f);
+      const [placement] = await db.select().from(canvasNodes).where(eq(canvasNodes.entityId, f.entity.id));
+      const [link] = await db
+        .select()
+        .from(canvasConnections)
+        .where(eq(canvasConnections.connectionId, f.connection.id));
+      const hookName = `wooble_test_restore_${crypto.randomUUID()}`;
+      let reachedHook = false;
+      const unregister = registerDeleteUndoHook({
+        name: hookName,
+        async snapshot() {
+          return true;
+        },
+        async restore(tx, target) {
+          expect(target).toEqual({ kind, ids: [f[kind].id] });
+          for (const ref of refs) {
+            const table = tableFor(ref);
+            const [row] = await tx.select().from(table).where(eq(table.id, ref.id));
+            expect(row?.metadata as Record<string, unknown>).toEqual({
+              documentation: "Snapshot text",
+              retained: ref.kind,
+            });
+          }
+          const links = await tx
+            .select()
+            .from(canvasConnections)
+            .where(eq(canvasConnections.connectionId, f.connection.id));
+          expect(links).toHaveLength(1);
+          if (kind === "entity") {
+            const nodes = await tx.select().from(canvasNodes).where(eq(canvasNodes.entityId, f.entity.id));
+            expect(nodes).toHaveLength(1);
+          }
+          reachedHook = true;
+          throw new Error("delete undo refused after documentation projection for test");
+        },
+      });
+      try {
+        const documentation = Object.fromEntries(
+          refs.map((ref) => [`${ref.kind}:${ref.id}`, { present: true, value: "Snapshot text" }]),
+        );
+        const connectionSnapshot = {
+          ...connection,
+          metadata: withoutDocumentation(connection.metadata),
+          bend: link.bend,
+        };
+        const metadata =
+          kind === "entity"
+            ? {
+                snapshot: {
+                  entities: [{ ...entity, metadata: withoutDocumentation(entity.metadata) }],
+                  connections: [connectionSnapshot],
+                  placements: [placement],
+                  documentation,
+                },
+              }
+            : { connection: connectionSnapshot, documentation };
+        if (kind === "entity") await db.delete(entities).where(eq(entities.id, f.entity.id));
+        else await db.delete(connections).where(eq(connections.id, f.connection.id));
+        const event = await record(f, f[kind], "deleted", { ...metadata, hooks: { [hookName]: true } });
+        expect((await undo(f)).status).toBe(500);
+        expect(reachedHook).toBe(true);
+        for (const ref of refs) {
+          const table = tableFor(ref);
+          expect(await db.select().from(table).where(eq(table.id, ref.id))).toHaveLength(0);
+        }
+        expect(
+          await db.select().from(canvasConnections).where(eq(canvasConnections.connectionId, f.connection.id)),
+        ).toHaveLength(0);
+        if (kind === "entity") {
+          expect(await db.select().from(canvasNodes).where(eq(canvasNodes.entityId, f.entity.id))).toHaveLength(0);
+        }
+        const [stored] = await db.select().from(canvasEvents).where(eq(canvasEvents.id, event.id));
+        expect(stored.undoneAt).toBeNull();
+      } finally {
+        unregister();
+      }
+    });
+  }
 });

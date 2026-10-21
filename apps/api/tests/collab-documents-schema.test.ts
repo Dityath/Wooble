@@ -75,6 +75,32 @@ describe("collab_documents schema", () => {
     await rejects({ revision: -1 });
   });
 
+  for (const column of ["object_kind", "object_id", "field"] as const) {
+    it(`rejects NULL ${column} with a NOT NULL violation`, async () => {
+      // Use SQL directly so TypeScript's non-null insert types cannot mask the database contract.
+      const values = { object_kind: "entity", object_id: randomUUID(), field: "documentation", [column]: null };
+      await expect(
+        database.$client.query(
+          "INSERT INTO collab_documents (workspace_id, object_kind, object_id, field) VALUES ($1, $2, $3, $4)",
+          [workspaceId, values.object_kind, values.object_id, values.field],
+        ),
+      ).rejects.toMatchObject({ code: "23502", column });
+    });
+  }
+
+  it("allows entity and connection documents to share an object UUID", async () => {
+    const objectId = randomUUID();
+    try {
+      const [entity] = await insertDocument({ objectKind: "entity", objectId });
+      const [connection] = await insertDocument({ objectKind: "connection", objectId });
+      expect(entity).toMatchObject({ objectKind: "entity", objectId, field: "documentation" });
+      expect(connection).toMatchObject({ objectKind: "connection", objectId, field: "documentation" });
+      expect(entity?.id).not.toBe(connection?.id);
+    } finally {
+      await database.delete(collabDocuments).where(eq(collabDocuments.objectId, objectId));
+    }
+  });
+
   it("accepts placeholders and cascades when the workspace is deleted", async () => {
     const [placeholder] = await insertDocument();
     expect(placeholder?.state).toBeNull();
