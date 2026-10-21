@@ -18,6 +18,26 @@ An architecture entity can appear on more than one canvas. Its identity and meta
 
 The repository contains workspace and canvas access control, password accounts, invitation links, link-shared read-only canvases, live canvas presence, a canvas activity log with undo, architecture editing, technology metadata, basic manual contract fields, database schema editing, and a block documentation editor for nodes and connections. In the documentation editor, typing `/` opens a keyboard-operable menu that inserts headings, lists, task lists, quotes, code blocks, dividers, and tables; pasted Markdown is converted into blocks; and changes save automatically shortly after typing stops, when the editor loses focus, or when the dialog closes. The [interim storage decision](decisions/documentation-storage.md) keeps Markdown first and defers Yjs collaboration. Documentation is still stored as Markdown, which the entity page and read-only viewers display as before. PostgreSQL stores the model and canvas layout. The [README](../README.md) explains the current development setup; [self-hosting](self-hosting.md) covers Docker and Bun.
 
+## Documentation Markdown
+
+The block editor supports these Markdown constructs. Canonical Markdown round-trips byte-for-byte; alternative spellings are normalised when saved from blocks:
+
+- Paragraphs and headings 1–6. Saved in canonical form: paragraphs separated by a blank line and ATX headings (`#` through `######`); setext headings become ATX headings. Literal Markdown punctuation is escaped where needed.
+- Bold, italic, strikethrough, inline code, and links to `http`, `https`, `mailto`, or relative destinations. Saved in canonical form: `**bold**`, `*italic*`, `~~struck~~`, backtick-delimited code, and `[label](destination)` links; underscore emphasis becomes asterisk emphasis. Bare URLs remain bare.
+- Nested bullet, ordered, and task lists. Saved in canonical form: `-` bullets, sequential `1.`-style numbering, and `- [ ]` / `- [x]` tasks; nested items use two spaces for bullets/tasks and three spaces under a single-digit ordered marker. Asterisk bullets become hyphens and `[X]` becomes `[x]`.
+- Blockquotes, fenced code blocks with an optional language, and horizontal rules. Saved in canonical form: `> ` before quoted paragraphs (`>` on blank quote lines), backtick fences (including the language when present), and `---` dividers. Tilde fences and indented code become backtick fences; asterisk dividers become `---`.
+- GFM tables with inline formatting and column alignment. Saved in canonical form: outer pipes, one space around each cell, `---` separators with alignment colons where specified, and an extra newline before and after the table block. Compact tables gain these spaces and surrounding newlines; columns are not padded to equal widths.
+- Paragraph hard line breaks. Saved in canonical form: two trailing spaces followed by a newline; `<br>`, `<br />`, and backslash-newline breaks convert to this form without losing the break.
+
+The block editor does not support these constructs:
+
+- YAML front matter
+- images
+- raw HTML (except `<br>` and `<br />` hard breaks, which are normalised as above)
+- footnotes
+
+Documents containing these constructs open in Markdown source mode with a warning; pastes containing them in block mode are cancelled with a warning naming the constructs found. Unsupported content is kept verbatim in Markdown source. Export and copy return the stored Markdown unchanged, including unsupported content.
+
 ## Areas to improve
 
 The initial release sequence, target dates, and criteria of done for the first four directions are in the [product roadmap](roadmap.md). Dates are revisable targets, and these entries do not claim the features already exist:
@@ -39,6 +59,7 @@ The initial release sequence, target dates, and criteria of done for the first f
   - A table cell holds text only, as in Markdown: lists, headings, and other blocks cannot be placed in a cell.
 - **Consistent interface:** tighten visual patterns and interaction behavior across the canvas, inspector, dialogs, and supporting pages; the first focused stability and usability pass is planned for `v0.6.0`.
 - **API and protobuf contracts:** go beyond basic manual fields to represent, edit, and inspect contracts properly; consider OpenAPI and protobuf import or synchronization.
+- **Visual OpenAPI editor:** YAML sources are saved as JSON; the format decision is tracked in #39.
 - **Database diagrams:** provide a dedicated view of schemas and relationships, building on the existing schema fields.
 - **External sources:** explore synchronization with databases, repositories, and deployment systems where it helps keep the model accurate.
 

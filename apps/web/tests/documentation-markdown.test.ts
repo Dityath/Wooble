@@ -9,9 +9,10 @@ const paragraph = (text: string) => ({ type: "paragraph", content: [{ type: "tex
 const blocksOf = (editor: Editor): JSONContent[] => editor.getJSON().content ?? [];
 
 /** Opens Markdown in the editor and saves it, then reopens the saved Markdown, as reloading documentation does. */
-function roundTrip(markdown: string) {
+function roundTrip(markdown: string, canonical = markdown) {
   const { editor } = renderDocumentationEditor(markdown);
   const saved = editor.getMarkdown();
+  expect(saved).toBe(canonical);
   const reopened = renderDocumentationEditor(saved).editor;
   // Reopening saved documentation must neither change its Markdown nor lose content.
   expect(reopened.getMarkdown()).toBe(saved);
@@ -112,6 +113,34 @@ describe("documentation Markdown", () => {
     expect(saved).toBe(markdown);
   });
 
+  it("keeps nested ordered lists", () => {
+    const markdown = "1. Provision\n   1. Database\n   2. Cache\n2. Deploy";
+    const { blocks, saved } = roundTrip(markdown);
+    expect(blocks[0].content?.[0].content?.[1]).toMatchObject({
+      type: "orderedList",
+      content: [
+        { type: "listItem", content: [paragraph("Database")] },
+        { type: "listItem", content: [paragraph("Cache")] },
+      ],
+    });
+    expect(saved).toBe(markdown);
+  });
+
+  it.each([
+    ["relative", "../runbook"],
+    ["http", "http://example.test/runbook"],
+    ["https", "https://example.test/runbook"],
+    ["mailto", "mailto:team@example.test"],
+  ])("keeps explicit %s links", (_kind, destination) => {
+    const markdown = `[Runbook](${destination})`;
+    const { blocks, saved } = roundTrip(markdown);
+    expect(blocks[0].content?.[0]).toMatchObject({
+      text: "Runbook",
+      marks: [{ type: "link", attrs: { href: destination } }],
+    });
+    expect(saved).toBe(markdown);
+  });
+
   it("keeps checked, unchecked, and nested task items", () => {
     const markdown =
       "- [ ] Draft the ADR\n- [x] Review with the platform team\n  - [x] Security sign-off\n  - [ ] Capacity plan";
@@ -175,7 +204,7 @@ describe("documentation Markdown", () => {
   });
 
   it("keeps tables with a header row", () => {
-    const table = "| Service | Owner |\n| --- | --- |\n| Gateway | Platform |\n| Ledger | Payments |";
+    const table = "\n| Service | Owner |\n| --- | --- |\n| Gateway | Platform |\n| Ledger | Payments |\n";
     const { blocks, saved } = roundTrip(table);
     const row = (cellType: string, cells: string[]) => ({
       type: "tableRow",
@@ -192,7 +221,41 @@ describe("documentation Markdown", () => {
       },
     ]);
     // Tables use compact cells and a blank line around the block.
-    expect(saved).toBe(`\n${table}\n`);
+    expect(saved).toBe(table);
+  });
+
+  it("round-trips aligned tables with inline formatting in cells", () => {
+    const markdown =
+      "\n| **Service** | *Owner* | Docs |\n| :--- | :---: | ---: |\n| Gateway | Platform | [Runbook](https://example.test/runbook) |\n";
+    const { blocks, saved } = roundTrip(markdown);
+    expect(blocks[0]).toMatchObject({
+      type: "table",
+      content: [
+        { type: "tableRow", content: [{ type: "tableHeader" }, { type: "tableHeader" }, { type: "tableHeader" }] },
+        { type: "tableRow", content: [{ type: "tableCell" }, { type: "tableCell" }, { type: "tableCell" }] },
+      ],
+    });
+    expect(blocks[0].content?.[0].content?.map((cell) => cell.attrs?.align)).toEqual(["left", "center", "right"]);
+    expect(blocks[0].content?.[0].content?.[0].content?.[0].content?.[0].marks).toEqual([{ type: "bold" }]);
+    expect(blocks[0].content?.[1].content?.[2].content?.[0].content?.[0].marks).toMatchObject([
+      { type: "link", attrs: { href: "https://example.test/runbook" } },
+    ]);
+    expect(saved).toBe(markdown);
+  });
+
+  it("round-trips Markdown hard line breaks", () => {
+    const markdown = "First  \nsecond  \nthird  \nfourth";
+    const { blocks, saved } = roundTrip(markdown);
+    expect(blocks[0].content?.map((node) => node.type)).toEqual([
+      "text",
+      "hardBreak",
+      "text",
+      "hardBreak",
+      "text",
+      "hardBreak",
+      "text",
+    ]);
+    expect(saved).toBe(markdown);
   });
 
   it("does not inflate a table with one long cell", () => {
@@ -202,7 +265,8 @@ describe("documentation Markdown", () => {
       `| Gateway | ${"x".repeat(1000)} |`,
       ...Array.from({ length: 8 }, () => "| API | ok |"),
     ].join("\n");
-    expect(roundTrip(table).saved.trim()).toBe(table);
+    const canonical = `\n${table}\n`;
+    expect(roundTrip(canonical).saved).toBe(canonical);
   });
 
   it("keeps 100 plain URLs plain", () => {
@@ -279,6 +343,14 @@ describe("documentation Markdown", () => {
   });
 
   const equivalentSyntax: Array<[string, string, string]> = [
+    ["HTML hard breaks", "First<br>second<br />third", "First  \nsecond  \nthird"],
+    ["backslash hard breaks", "First\\\nsecond", "First  \nsecond"],
+    [
+      "compact tables",
+      "|Name|Owner|\n|---|---|\n|Gateway|Platform|",
+      "\n| Name | Owner |\n| --- | --- |\n| Gateway | Platform |\n",
+    ],
+    ["ordered list numbering", "1. Provision\n1. Deploy", "1. Provision\n2. Deploy"],
     ["asterisk bullets", "* Gateway\n* Ledger", "- Gateway\n- Ledger"],
     ["underscore emphasis", "__Bold__ and _italic_", "**Bold** and *italic*"],
     ["setext headings", "Overview\n========", "# Overview"],
@@ -290,7 +362,8 @@ describe("documentation Markdown", () => {
   ];
   for (const [name, input, canonical] of equivalentSyntax) {
     it(`writes ${name} in one canonical form`, () => {
-      expect(roundTrip(input).saved).toBe(canonical);
+      expect(roundTrip(input, canonical).saved).toBe(canonical);
+      expect(roundTrip(canonical).saved).toBe(canonical);
     });
   }
 

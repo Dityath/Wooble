@@ -1,3 +1,4 @@
+import { DocumentationExportActions } from "../inspector/documentation/export-actions";
 import { Link, useParams, useSearch } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Box, Cpu, Database, ExternalLink, GitBranch, Layers3, Server } from "lucide-react";
@@ -102,6 +103,7 @@ export function EntityDetailPage() {
               <p>Architecture notes and usage context</p>
             </div>
           </div>
+          <DocumentationExportActions markdown={entity.metadata.documentation ?? ""} name={entity.name} />
           <MarkdownContent value={entity.metadata.documentation ?? ""} />
         </section>
       </div>

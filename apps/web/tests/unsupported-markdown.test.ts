@@ -2,6 +2,12 @@ import { describe, expect, it } from "bun:test";
 import { unsupportedMarkdown } from "../src/features/inspector/documentation/unsupported-markdown";
 
 describe("unsupported documentation Markdown", () => {
+  it("uses the documented labels for every unsupported construct", () => {
+    const source =
+      "---\ntitle: Notes\n---\n\n![Diagram](diagram.png)\n\n<details>Notes</details>\n\nClaim[^1]\n\n[^1]: Source.";
+    expect(unsupportedMarkdown(source)).toEqual(["YAML front matter", "images", "raw HTML", "footnotes"]);
+  });
+
   it.each([
     ["![Diagram](https://example.com/diagram.png)", "images"],
     ["![Diagram][diagram]\n\n[diagram]: diagram.png", "images"],

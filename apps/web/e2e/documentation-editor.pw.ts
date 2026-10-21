@@ -17,7 +17,7 @@ const node = (page: Page, entityId: string) => page.locator(`.react-flow__node[d
 const edgeLabel = (page: Page) => page.locator(".architecture-edge-label").filter({ hasText: "REST" });
 const detailsDialog = (page: Page) => page.getByRole("dialog", { name: "Canvas details" });
 const documentationEditor = (page: Page) => detailsDialog(page).getByRole("textbox", { name: "Documentation" });
-const saveState = (page: Page) => detailsDialog(page).locator(".documentation-card").getByRole("status");
+const saveState = (page: Page) => detailsDialog(page).locator(".documentation-card .documentation-live");
 const slashMenu = (page: Page) => page.getByRole("listbox", { name: "Insert block" });
 // The modal details dialog hides the rest of the page from assistive technology, toolbox included.
 const toolButton = (page: Page, name: string) =>

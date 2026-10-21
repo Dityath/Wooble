@@ -1,99 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { parse as parseYaml } from "yaml";
 import { FileUp, Plus, Trash2 } from "lucide-react";
 import { Button } from "../../components/ui";
+import { generateOpenApi, methods, type Operation, parseOpenApi } from "./openapi-source";
 
-type Operation = {
-  id: string;
-  method: string;
-  path: string;
-  summary: string;
-  description?: string;
-  parameters?: string[];
-  responses?: { status: string; description: string }[];
-};
-const methods = ["GET", "POST", "PUT", "PATCH", "DELETE"];
-function parseOpenApi(value: string): { title: string; version: string; operations: Operation[] } | null {
-  try {
-    const data = (value.trim().startsWith("{") ? JSON.parse(value) : parseYaml(value)) as Record<string, unknown>;
-    if (
-      !data ||
-      typeof data !== "object" ||
-      typeof data.openapi !== "string" ||
-      typeof data.paths !== "object" ||
-      !data.paths
-    )
-      return null;
-    const info = data.info as Record<string, unknown> | undefined;
-    const operations: Operation[] = [];
-    for (const [path, pathItem] of Object.entries(data.paths)) {
-      if (!pathItem || typeof pathItem !== "object") continue;
-      for (const [method, operation] of Object.entries(pathItem)) {
-        if (!methods.includes(method.toUpperCase()) || !operation || typeof operation !== "object") continue;
-        operations.push({
-          id: crypto.randomUUID(),
-          path,
-          method: method.toUpperCase(),
-          summary: String((operation as Record<string, unknown>).summary ?? ""),
-          description: String((operation as Record<string, unknown>).description ?? ""),
-          parameters: Array.isArray((operation as Record<string, unknown>).parameters)
-            ? ((operation as Record<string, unknown>).parameters as Record<string, unknown>[]).map(
-                (parameter) => `${parameter.name ?? "Parameter"} · ${parameter.in ?? "query"}`,
-              )
-            : [],
-          responses: Object.entries(
-            ((operation as Record<string, unknown>).responses ?? {}) as Record<string, { description?: string }>,
-          ).map(([status, response]) => ({ status, description: response?.description ?? "" })),
-        });
-      }
-    }
-    return {
-      title: typeof info?.title === "string" ? info.title : "API",
-      version: typeof info?.version === "string" ? info.version : "1.0.0",
-      operations,
-    };
-  } catch {
-    return null;
-  }
-}
-function generateOpenApi(title: string, version: string, operations: Operation[], source: string) {
-  let base: Record<string, unknown> = {};
-  try {
-    const parsed = source.trim().startsWith("{") ? JSON.parse(source) : parseYaml(source);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) base = parsed as Record<string, unknown>;
-  } catch {
-    /* A new visual contract starts with an empty document. */
-  }
-  const oldPaths =
-    base.paths && typeof base.paths === "object" ? (base.paths as Record<string, Record<string, unknown>>) : {};
-  const paths: Record<string, Record<string, unknown>> = {};
-  for (const operation of operations) {
-    if (!operation.path.trim()) continue;
-    const path = operation.path.startsWith("/") ? operation.path : `/${operation.path}`;
-    paths[path] ??= {};
-    const original = oldPaths[path]?.[operation.method.toLowerCase()];
-    paths[path][operation.method.toLowerCase()] = {
-      ...(original && typeof original === "object"
-        ? original
-        : { responses: { "200": { description: "Successful response" } } }),
-      summary: operation.summary,
-    };
-  }
-  return JSON.stringify(
-    {
-      ...base,
-      openapi: base.openapi ?? "3.1.0",
-      info: {
-        ...(base.info && typeof base.info === "object" ? base.info : {}),
-        title: title || "API",
-        version: version || "1.0.0",
-      },
-      paths,
-    },
-    null,
-    2,
-  );
-}
+const unreadableSourceError =
+  "The source could not be read as OpenAPI, so the visual editor cannot save it. Fix it in the source editor.";
 
 export function ContractPreview({ value, kind }: { value: string; kind: string }) {
   const parsed = kind === "rest" ? parseOpenApi(value) : null;
@@ -155,6 +66,7 @@ export function ContractEditor({
   const [error, setError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const parsed = useMemo(() => (rest ? parseOpenApi(draft) : null), [draft, rest]);
+  const visualError = tab === "gui" && draft.trim() && !parsed ? unreadableSourceError : "";
   const [title, setTitle] = useState(parsed?.title ?? "API");
   const [version, setVersion] = useState(parsed?.version ?? "1.0.0");
   const [operations, setOperations] = useState<Operation[]>(parsed?.operations ?? []);
@@ -163,23 +75,30 @@ export function ContractEditor({
     previousValue.current = value;
   }, [value]);
   const showGui = () => {
+    setError("");
     const next = parseOpenApi(draft);
     if (next) {
       setTitle(next.title);
       setVersion(next.version);
       setOperations(next.operations);
+    } else if (!draft.trim()) {
+      setTitle("API");
+      setVersion("1.0.0");
+      setOperations([]);
     }
     setTab("gui");
   };
-  const save = async (body: string) => {
+  const save = async (input: string | (() => string)) => {
     setSaving(true);
     setError("");
     try {
+      const body = typeof input === "function" ? input() : input;
       await onSave(body);
       setDraft(body);
       setTab("preview");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not save contract");
+      const message = cause instanceof Error ? cause.message : "Could not save contract";
+      if (message !== unreadableSourceError) setError(message);
     } finally {
       setSaving(false);
     }
@@ -345,7 +264,12 @@ export function ContractEditor({
             <Button
               size="sm"
               disabled={saving}
-              onClick={() => void save(generateOpenApi(title, version, operations, draft))}
+              onClick={() =>
+                void save(() => {
+                  if (draft.trim() && !parseOpenApi(draft)) throw new Error(unreadableSourceError);
+                  return generateOpenApi(title, version, operations, draft);
+                })
+              }
             >
               {saving ? "Saving…" : "Save contract"}
             </Button>
@@ -355,9 +279,9 @@ export function ContractEditor({
           </p>
         </div>
       )}
-      {error && (
+      {(visualError || error) && (
         <p className="form-error" role="alert">
-          {error}
+          {visualError || error}
         </p>
       )}
     </section>

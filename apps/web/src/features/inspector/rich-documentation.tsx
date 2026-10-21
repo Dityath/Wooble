@@ -1,3 +1,4 @@
+import { DocumentationExportActions } from "./documentation/export-actions";
 import { CircleAlert } from "lucide-react";
 import { Component, lazy, type ReactNode, Suspense, useMemo } from "react";
 import { type EditorLoader, loadEditor } from "./documentation/editor-loader";
@@ -47,6 +48,7 @@ export function RichDocumentation({
               Reload
             </button>
           </p>
+          <DocumentationExportActions markdown={props.value} name={props.name} />
           <MarkdownContent value={props.value} />
         </section>
       }

@@ -173,7 +173,10 @@ async function expectReadOnlyDocumentation(page: Page, browser: ReturnType<typeo
   await expect(table.getByRole("columnheader", { name: "Attempt" })).toBeVisible();
   await expect(table.getByRole("cell", { name: "500 ms" })).toBeVisible();
   await expect(documentation.getByRole("textbox")).toHaveCount(0);
-  await expect(documentation.getByRole("button")).toHaveCount(0);
+  await expect(documentation.getByRole("button")).toHaveCount(2);
+  await expect(documentation.getByRole("button", { name: "Download Markdown" })).toBeVisible();
+  await expect(documentation.getByRole("button", { name: "Copy Markdown" })).toBeVisible();
+  await expect(documentation.getByRole("button", { name: /save|edit/i })).toHaveCount(0);
   await expect(documentation.locator("[contenteditable]")).toHaveCount(0);
   await expect(page.locator(".canvas-toolbox")).toHaveCount(0);
   await expect(page.locator(".inspector-panel")).toHaveCount(0);
