@@ -32,6 +32,9 @@ services:
   api:
     image: ghcr.io/dityath/wooble-api:${WOOBLE_VERSION:?Set WOOBLE_VERSION to a release tag}
     restart: unless-stopped
+    # Keep the API single-instance; see docs/self-hosting.md.
+    deploy:
+      replicas: 1
     environment:
       API_PORT: 3001
       DATABASE_URL: postgres://wooble:${WOOBLE_DB_PASSWORD}@postgres:5432/wooble

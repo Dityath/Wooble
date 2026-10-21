@@ -22,10 +22,12 @@
         "@wooble/domain": "workspace:*",
         "drizzle-orm": "^0.44.2",
         "elysia": "^1.4.30",
+        "pg": "^8.16.0",
         "zod": "^3.25.28",
       },
       "devDependencies": {
         "@types/bun": "^1.4.2",
+        "@types/pg": "^8.15.4",
       },
     },
     "apps/web": {
