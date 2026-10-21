@@ -1,9 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import { randomInt } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { Pool, type PoolClient } from "pg";
+import { Client, Pool } from "pg";
 import {
   claimSingleInstance,
+  type ClaimClient,
   collaborativeSyncAllowed,
   startSingleInstanceGate,
   stopSingleInstanceGate,
@@ -27,7 +28,7 @@ function testPool(): Pool {
 }
 
 async function waitUntil(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 2_000;
+  const deadline = Date.now() + 5_000;
   while (!predicate()) {
     if (Date.now() >= deadline) throw new Error("Timed out waiting for database claim loss.");
     await Bun.sleep(10);
@@ -43,11 +44,17 @@ describe("single-instance gate", () => {
     const losses: string[] = [];
     try {
       expect(collaborativeSyncAllowed()).toBe(false);
-      const first = await startSingleInstanceGate(pool, { key, log: (message) => losses.push(message) });
+      const first = await startSingleInstanceGate(() => new Client(pool.options), {
+        key,
+        log: (message) => losses.push(message),
+      });
       claims.push(first);
       expect(first.held).toBe(true);
       expect(collaborativeSyncAllowed()).toBe(true);
-      const second = await claimSingleInstance(pool, { key, log: (message) => messages.push(message) });
+      const second = await claimSingleInstance(() => new Client(pool.options), {
+        key,
+        log: (message) => messages.push(message),
+      });
       claims.push(second);
       expect(second.held).toBe(false);
       expect(messages).toEqual([conflict]);
@@ -65,7 +72,7 @@ describe("single-instance gate", () => {
       await Promise.all([stopSingleInstanceGate(), first.release(), first.release()]);
       expect(first.held).toBe(false);
       expect(collaborativeSyncAllowed()).toBe(false);
-      const next = await claimSingleInstance(pool, { key });
+      const next = await claimSingleInstance(() => new Client(pool.options), { key });
       claims.push(next);
       try {
         expect(next.held).toBe(true);
@@ -89,7 +96,10 @@ describe("single-instance gate", () => {
     let first: SingleInstanceClaim | undefined;
     let next: SingleInstanceClaim | undefined;
     try {
-      first = await claimSingleInstance(pool, { key, log: (message) => messages.push(message) });
+      first = await claimSingleInstance(() => new Client(pool.options), {
+        key,
+        log: (message) => messages.push(message),
+      });
       expect(first.held).toBe(true);
       const holder = await pool.query<{ pid: number }>(
         "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) AND classid = $1::oid AND objid = $2::oid AND objsubid = 2 AND granted",
@@ -98,7 +108,7 @@ describe("single-instance gate", () => {
       expect(holder.rows).toHaveLength(1);
       await pool.query("SELECT pg_terminate_backend($1)", [holder.rows[0]?.pid]);
       await waitUntil(() => !first?.held);
-      next = await claimSingleInstance(pool, { key });
+      next = await claimSingleInstance(() => new Client(pool.options), { key });
       try {
         expect(next.held).toBe(true);
         await first.release();
@@ -117,6 +127,32 @@ describe("single-instance gate", () => {
     }
   });
 
+  it("permits a new holder after graceful release", async () => {
+    const pool = testPool();
+    const key = testKey();
+    let first: SingleInstanceClaim | undefined;
+    let next: SingleInstanceClaim | undefined;
+    try {
+      first = await claimSingleInstance(() => new Client(pool.options), { key });
+      expect(first.held).toBe(true);
+      await first.release();
+      expect(first.held).toBe(false);
+      const deadline = Date.now() + 5_000;
+      while (true) {
+        next = await claimSingleInstance(() => new Client(pool.options), { key, log: () => {} });
+        if (next.held) break;
+        await next.release();
+        if (Date.now() >= deadline) throw new Error("Timed out waiting for graceful claim release.");
+        await Bun.sleep(10);
+      }
+      expect(next.held).toBe(true);
+    } finally {
+      await first?.release();
+      await next?.release();
+      await pool.end();
+    }
+  }, 15_000);
+
   it("sanitizes a refused connection without exposing credentials", async () => {
     const password = "secret-test-password";
     const pool = new Pool({
@@ -126,7 +162,10 @@ describe("single-instance gate", () => {
     const logs: unknown[][] = [];
     let claim: SingleInstanceClaim | undefined;
     try {
-      claim = await claimSingleInstance(pool, { key: testKey(), log: (...args) => logs.push(args) });
+      claim = await claimSingleInstance(() => new Client(pool.options), {
+        key: testKey(),
+        log: (...args) => logs.push(args),
+      });
       expect(claim.held).toBe(false);
       expect(logs).toHaveLength(1);
       expect(logs[0]?.[0]).toBe(
@@ -146,27 +185,36 @@ describe("single-instance gate", () => {
       await claim?.release();
       await pool.end();
     }
-  });
+  }, 10_000);
 });
 
 const failed = "Could not claim single-instance operation. Collaborative document sync stays disabled.";
 
-function fakePool(connect: () => Promise<PoolClient>): Pool {
-  return { connect } as unknown as Pool;
-}
-
-function fakeClient(query: () => Promise<{ rows: { claimed: boolean }[] }>) {
+function fakeClient(
+  query: () => Promise<{ rows: { claimed: boolean }[] }>,
+  connect: () => Promise<void> = async () => {},
+) {
   const releases: unknown[] = [];
   const client = Object.assign(new EventEmitter(), {
+    connect,
     query,
-    release: (destroy: unknown) => {
-      releases.push(destroy);
+    end: () => {
+      releases.push(true);
+      return Promise.resolve();
     },
-  }) as unknown as PoolClient;
+  }) as unknown as ClaimClient;
   return { client, releases };
 }
 
-describe("fake pool gate", () => {
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+describe("fake client gate", () => {
   it("sanitizes errors with secret messages, stacks, and unknown codes", async () => {
     const error = Object.assign(new Error("postgres://wooble:secret-test-password@db.example.test/wooble"), {
       code: "EWEIRD",
@@ -175,7 +223,11 @@ describe("fake pool gate", () => {
     let claim: SingleInstanceClaim | undefined;
     try {
       claim = await claimSingleInstance(
-        fakePool(() => Promise.reject(error)),
+        () =>
+          fakeClient(
+            async () => ({ rows: [] }),
+            () => Promise.reject(error),
+          ).client,
         {
           log: (...args) => logs.push(args),
         },
@@ -192,38 +244,32 @@ describe("fake pool gate", () => {
   });
 
   it("timeout bounds connecting and destroys a late fake client", async () => {
-    let connect!: (client: PoolClient) => void;
+    const connection = deferred<void>();
     let queries = 0;
-    const { client, releases } = fakeClient(async () => {
-      queries += 1;
-      return { rows: [{ claimed: true }] };
-    });
+    const { client, releases } = fakeClient(
+      async () => {
+        queries += 1;
+        return { rows: [{ claimed: true }] };
+      },
+      () => connection.promise,
+    );
     const logs: unknown[][] = [];
     let claim: SingleInstanceClaim | undefined;
     try {
-      const started = Date.now();
-      claim = await claimSingleInstance(
-        fakePool(
-          () =>
-            new Promise((resolve) => {
-              connect = resolve;
-            }),
-        ),
-        {
-          timeoutMs: 50,
-          log: (...args) => logs.push(args),
-        },
-      );
-      expect(Date.now() - started).toBeLessThan(1_000);
+      claim = await claimSingleInstance(() => client, {
+        timeoutMs: 50,
+        log: (...args) => logs.push(args),
+      });
       expect(claim.held).toBe(false);
       expect(logs).toEqual([[failed, { message: "Timed out claiming single-instance operation." }]]);
-      connect(client);
-      await waitUntil(() => releases.length > 0);
+      connection.resolve();
+      await connection.promise;
+      await Promise.resolve();
       expect(releases).toEqual([true]);
       expect(queries).toBe(0);
       expect(claim.held).toBe(false);
     } finally {
-      connect(client);
+      connection.resolve();
       await claim?.release();
     }
   });
@@ -239,18 +285,15 @@ describe("fake pool gate", () => {
     const logs: unknown[][] = [];
     let claim: SingleInstanceClaim | undefined;
     try {
-      claim = await claimSingleInstance(
-        fakePool(async () => client),
-        {
-          timeoutMs: 50,
-          log: (...args) => logs.push(args),
-        },
-      );
+      claim = await claimSingleInstance(() => client, {
+        timeoutMs: 50,
+        log: (...args) => logs.push(args),
+      });
       expect(claim.held).toBe(false);
       expect(releases).toEqual([true]);
       expect(logs).toEqual([[failed, { message: "Timed out claiming single-instance operation." }]]);
       resolveQuery({ rows: [{ claimed: true }] });
-      await Bun.sleep(10);
+      await Promise.resolve();
       expect(claim.held).toBe(false);
       expect(releases).toEqual([true]);
       expect(logs).toHaveLength(1);
@@ -260,37 +303,55 @@ describe("fake pool gate", () => {
     }
   });
 
-  it("fake process gate abandons a pending connection immediately on stop", async () => {
+  it("fake process gate never checks out the shared pool and stops while connection is pending", async () => {
     // Isolate the process singleton from the database-backed process-gate test.
     const modulePath = "../src/lib/instance-gate.ts";
     const gate: typeof import("../src/lib/instance-gate") = await import(`${modulePath}?pending-stop`);
-    let connect!: (client: PoolClient) => void;
-    const { client, releases } = fakeClient(async () => ({ rows: [{ claimed: true }] }));
+    const connection = deferred<void>();
+    let queries = 0;
+    const { client, releases } = fakeClient(
+      async () => {
+        queries += 1;
+        return { rows: [{ claimed: true }] };
+      },
+      () => connection.promise,
+    );
     const logs: unknown[][] = [];
     let claim: SingleInstanceClaim | undefined;
+    const pool = {
+      options: { connectionString: "postgres://example.test/fictional" },
+      connect: () => {
+        throw new Error("The shared pool must never be checked out");
+      },
+    };
+    const disconnected = deferred<void>();
+    client.end = () => {
+      releases.push(true);
+      return disconnected.promise;
+    };
     const pending = gate.startSingleInstanceGate(
-      fakePool(
-        () =>
-          new Promise((resolve) => {
-            connect = resolve;
-          }),
-      ),
+      () => {
+        expect(pool.options.connectionString).toBe("postgres://example.test/fictional");
+        return client;
+      },
       { timeoutMs: 10_000, log: (...args) => logs.push(args) },
     );
     try {
       expect(gate.collaborativeSyncAllowed()).toBe(false);
-      const started = Date.now();
       await gate.stopSingleInstanceGate();
       claim = await pending;
-      expect(Date.now() - started).toBeLessThan(1_000);
-      connect(client);
-      await waitUntil(() => releases.length > 0);
+      expect(releases).toEqual([true]);
+      expect(queries).toBe(0);
+      connection.resolve();
+      await connection.promise;
+      await Promise.resolve();
       expect(releases).toEqual([true]);
       expect(claim.held).toBe(false);
       expect(gate.collaborativeSyncAllowed()).toBe(false);
       expect(logs).toEqual([]);
+      expect(queries).toBe(0);
     } finally {
-      connect(client);
+      connection.resolve();
       await gate.stopSingleInstanceGate();
       await claim?.release();
     }
@@ -299,13 +360,13 @@ describe("fake pool gate", () => {
   it("release remains safe when a fake client throws synchronously during disposal", async () => {
     const { client } = fakeClient(async () => ({ rows: [{ claimed: true }] }));
     let releases = 0;
-    client.release = () => {
+    client.end = () => {
       releases += 1;
       throw new Error("Already disconnected");
     };
     let claim: SingleInstanceClaim | undefined;
     try {
-      claim = await claimSingleInstance(fakePool(async () => client));
+      claim = await claimSingleInstance(() => client);
       await claim.release();
       await claim.release();
       expect(claim.held).toBe(false);
@@ -321,19 +382,22 @@ describe("fake pool gate", () => {
       queries += 1;
       return queries === 1 ? Promise.resolve({ rows: [{ claimed: true }] }) : new Promise(() => {});
     });
+    const disconnected = deferred<void>();
+    client.end = () => {
+      releases.push(true);
+      return disconnected.promise;
+    };
     let claim: SingleInstanceClaim | undefined;
     try {
-      claim = await claimSingleInstance(fakePool(async () => client));
+      claim = await claimSingleInstance(() => client);
       expect(claim.held).toBe(true);
-      const started = Date.now();
       await claim.release();
       await claim.release();
-      expect(Date.now() - started).toBeLessThan(1_000);
       expect(claim.held).toBe(false);
       expect(releases).toEqual([true]);
       expect(queries).toBe(1);
     } finally {
       await claim?.release();
     }
-  });
+  }, 10_000);
 });

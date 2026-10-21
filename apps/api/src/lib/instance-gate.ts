@@ -1,4 +1,6 @@
-import type { Pool, PoolClient } from "pg";
+import type { Client } from "pg";
+
+export type ClaimClient = Pick<Client, "connect" | "query" | "on" | "end">;
 
 export interface SingleInstanceClaim {
   readonly held: boolean;
@@ -15,10 +17,10 @@ type ClaimOptions = {
 // Two int4 keys: ASCII "WOOB" namespace, operation 1 (collaborative sync).
 const productionKey = [0x574f4f42, 1] as const;
 
-function beginClaim(pool: Pool, options: ClaimOptions = {}) {
+function beginClaim(connect: () => ClaimClient, options: ClaimOptions = {}) {
   const key = options.key ?? productionKey;
   const log = options.log ?? console.error;
-  let client: PoolClient | undefined;
+  let client: ClaimClient | undefined;
   let held = false;
   let abandoned = false;
   let disposed = false;
@@ -34,7 +36,8 @@ function beginClaim(pool: Pool, options: ClaimOptions = {}) {
     if (!client || disposed) return;
     disposed = true;
     try {
-      client.release(true);
+      // Do not wait for the server to acknowledge the disconnect.
+      void client.end().catch(() => {});
     } catch {
       // A disconnected or already released session needs no further cleanup.
     }
@@ -73,9 +76,10 @@ function beginClaim(pool: Pool, options: ClaimOptions = {}) {
   timer.unref?.();
   const acquire = async () => {
     try {
-      client = await pool.connect();
+      client = connect();
       client.on("error", lost);
       client.on("end", lost);
+      await client.connect();
       if (abandoned) {
         dispose();
         return;
@@ -115,16 +119,22 @@ function beginClaim(pool: Pool, options: ClaimOptions = {}) {
   return { claim, ready: completed.then(() => claim) };
 }
 
-export function claimSingleInstance(pool: Pool, options: ClaimOptions = {}): Promise<SingleInstanceClaim> {
-  return beginClaim(pool, options).ready;
+export function claimSingleInstance(
+  connect: () => ClaimClient,
+  options: ClaimOptions = {},
+): Promise<SingleInstanceClaim> {
+  return beginClaim(connect, options).ready;
 }
 
 let processClaim: SingleInstanceClaim | undefined;
 let starting: Promise<SingleInstanceClaim> | undefined;
 
-export function startSingleInstanceGate(pool: Pool, options?: ClaimOptions): Promise<SingleInstanceClaim> {
+export function startSingleInstanceGate(
+  connect: () => ClaimClient,
+  options?: ClaimOptions,
+): Promise<SingleInstanceClaim> {
   if (!starting) {
-    const acquisition = beginClaim(pool, options);
+    const acquisition = beginClaim(connect, options);
     processClaim = acquisition.claim;
     starting = acquisition.ready;
   }
